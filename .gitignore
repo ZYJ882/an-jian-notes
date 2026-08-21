@@ -1,0 +1,17 @@
+# Local Android SDK configuration
+local.properties
+
+# Build and Gradle caches
+.gradle/
+build/
+app/build/
+
+# IDE and operating-system files
+.idea/
+*.iml
+.DS_Store
+
+# Signing material
+*.jks
+*.keystore
+key.properties
