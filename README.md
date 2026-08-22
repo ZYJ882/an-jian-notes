@@ -12,13 +12,17 @@
 | 标签 | 输入以英文或中文逗号分隔的标签，展示为标签胶囊。 |
 | 置顶 | 置顶笔记始终显示在列表顶部，并按更新时间排序。 |
 | 删除确认 | 删除已有笔记前显示确认提示，避免误操作。 |
-| 深色模式 | 自动跟随 Android 系统的深浅色设置。 |
+| 深色模式 | 自动跟随 Android 系统的深浅色设置，并使用低刺激暖灰配色。 |
+| Markdown 编辑与预览 | 编辑器内可单独开启 Markdown，支持标题、粗体、斜体、删除线、行内代码、列表、引用与分隔线的轻量预览。 |
+| 快速响应 | 搜索采用 80ms 极短防抖；界面展开和内容尺寸动效控制在 80–140ms；数据库容器由应用级懒初始化管理。 |
 
 ## 项目结构
 
 | 路径 | 职责 |
 |---|---|
-| `app/src/main/java/com/example/anjiannotes/MainActivity.kt` | Compose 页面、编辑弹窗及交互入口。 |
+| `app/src/main/java/com/example/anjiannotes/MainActivity.kt` | Compose 页面、Markdown 编辑弹窗及交互入口。 |
+| `app/src/main/java/com/example/anjiannotes/ui/Markdown.kt` | 轻量级 Markdown 预览、摘要与语法提示组件。 |
+| `app/src/main/java/com/example/anjiannotes/AnJianApplication.kt` | 应用级数据库容器与 Room 迁移配置。 |
 | `app/src/main/java/com/example/anjiannotes/NotesViewModel.kt` | 搜索、保存、置顶、删除等界面状态与业务逻辑。 |
 | `app/src/main/java/com/example/anjiannotes/data/NoteData.kt` | Room 实体、DAO、数据库与仓库。 |
 | `app/src/main/java/com/example/anjiannotes/ui/theme/` | Material 3 深浅色主题。 |

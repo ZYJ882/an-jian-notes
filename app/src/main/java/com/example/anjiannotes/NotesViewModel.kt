@@ -6,20 +6,23 @@ import androidx.lifecycle.viewModelScope
 import com.example.anjiannotes.data.NoteEntity
 import com.example.anjiannotes.data.NotesRepository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalCoroutinesApi::class)
+@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class NotesViewModel(private val repository: NotesRepository) : ViewModel() {
     private val searchQuery = MutableStateFlow("")
     val query: StateFlow<String> = searchQuery.asStateFlow()
 
     val notes: StateFlow<List<NoteEntity>> = searchQuery
+        .debounce(80)
         .flatMapLatest(repository::observeNotes)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -34,6 +37,7 @@ class NotesViewModel(private val repository: NotesRepository) : ViewModel() {
         rawTags: String,
         color: Long,
         pinned: Boolean,
+        markdown: Boolean,
         createdAt: Long = System.currentTimeMillis()
     ) {
         val cleanedTags = rawTags.split(',', '，')
@@ -52,7 +56,8 @@ class NotesViewModel(private val repository: NotesRepository) : ViewModel() {
                     color = color,
                     createdAt = createdAt,
                     updatedAt = System.currentTimeMillis(),
-                    isPinned = pinned
+                    isPinned = pinned,
+                    isMarkdown = markdown
                 )
             )
         }

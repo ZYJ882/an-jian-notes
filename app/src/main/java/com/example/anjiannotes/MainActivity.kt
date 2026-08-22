@@ -3,6 +3,13 @@ package com.example.anjiannotes
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -14,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -50,10 +58,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.room.Room
 import com.example.anjiannotes.data.NoteEntity
-import com.example.anjiannotes.data.NotesDatabase
 import com.example.anjiannotes.data.NotesRepository
+import com.example.anjiannotes.ui.MarkdownPreview
+import com.example.anjiannotes.ui.MarkdownSyntaxHint
+import com.example.anjiannotes.ui.markdownToPlainText
 import com.example.anjiannotes.ui.theme.AnJianTheme
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -62,8 +71,8 @@ import java.util.Locale
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val database = Room.databaseBuilder(applicationContext, NotesDatabase::class.java, "an_jian_notes.db").build()
-        val factory = NotesViewModelFactory(NotesRepository(database.noteDao()))
+        val app = application as AnJianApplication
+        val factory = NotesViewModelFactory(NotesRepository(app.database.noteDao()))
         setContent {
             AnJianTheme {
                 val notesViewModel: NotesViewModel = viewModel(factory = factory)
@@ -84,27 +93,30 @@ private fun NotesApp(viewModel: NotesViewModel) {
     var noteToDelete by remember { mutableStateOf<NoteEntity?>(null) }
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
                 title = {
                     Column {
                         Text("安笺", fontWeight = FontWeight.Bold)
-                        Text("记录此刻，整理思绪", style = MaterialTheme.typography.labelSmall)
+                        Text("轻写，轻放", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 },
                 actions = {
                     TextButton(onClick = {
                         showSearch = !showSearch
                         if (!showSearch) viewModel.setSearchQuery("")
-                    }) { Text(if (showSearch) "关闭" else "搜索") }
+                    }) { Text(if (showSearch) "收起" else "搜索") }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { selectedNote = null; showEditor = true }) {
-                Text("新建", modifier = Modifier.padding(horizontal = 8.dp))
-            }
+            FloatingActionButton(
+                onClick = { selectedNote = null; showEditor = true },
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+            ) { Text("新建", modifier = Modifier.padding(horizontal = 8.dp), fontWeight = FontWeight.SemiBold) }
         }
     ) { padding ->
         Column(
@@ -113,7 +125,11 @@ private fun NotesApp(viewModel: NotesViewModel) {
                 .padding(padding)
                 .padding(horizontal = 16.dp)
         ) {
-            if (showSearch) {
+            AnimatedVisibility(
+                visible = showSearch,
+                enter = expandVertically(animationSpec = tween(140)) + fadeIn(animationSpec = tween(100)),
+                exit = shrinkVertically(animationSpec = tween(120)) + fadeOut(animationSpec = tween(80))
+            ) {
                 OutlinedTextField(
                     value = query,
                     onValueChange = viewModel::setSearchQuery,
@@ -126,10 +142,17 @@ private fun NotesApp(viewModel: NotesViewModel) {
                 EmptyNotes(query = query, onCreate = { selectedNote = null; showEditor = true })
             } else {
                 androidx.compose.foundation.lazy.LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    item { Text("共 ${notes.size} 条笔记", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    item {
+                        Text(
+                            "共 ${notes.size} 条笔记",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = 2.dp)
+                        )
+                    }
                     items(notes.size, key = { notes[it].id }) { index ->
                         val note = notes[index]
                         NoteCard(
@@ -148,8 +171,8 @@ private fun NotesApp(viewModel: NotesViewModel) {
         NoteEditorDialog(
             note = selectedNote,
             onDismiss = { showEditor = false },
-            onSave = { id, title, content, tags, color, pinned, createdAt ->
-                viewModel.saveNote(id, title, content, tags, color, pinned, createdAt)
+            onSave = { id, title, content, tags, color, pinned, markdown, createdAt ->
+                viewModel.saveNote(id, title, content, tags, color, pinned, markdown, createdAt)
                 showEditor = false
             },
             onDelete = { selectedNote?.let { noteToDelete = it }; showEditor = false }
@@ -176,8 +199,14 @@ private fun EmptyNotes(query: String, onCreate: () -> Unit) {
 
 @Composable
 private fun NoteCard(note: NoteEntity, onOpen: () -> Unit, onTogglePinned: () -> Unit) {
+    val summary = remember(note.id, note.content, note.isMarkdown) {
+        if (note.isMarkdown) markdownToPlainText(note.content) else note.content
+    }
     Card(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize(animationSpec = tween(120))
+            .clickable(onClick = onOpen),
         colors = CardDefaults.cardColors(containerColor = Color(note.color)),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
@@ -191,10 +220,13 @@ private fun NoteCard(note: NoteEntity, onOpen: () -> Unit, onTogglePinned: () ->
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (note.isMarkdown) {
+                    Text("MD", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 4.dp))
+                }
                 TextButton(onClick = onTogglePinned, modifier = Modifier.wrapContentWidth()) { Text(if (note.isPinned) "已置顶" else "置顶") }
             }
-            if (note.content.isNotBlank()) {
-                Text(note.content, maxLines = 3, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (summary.isNotBlank()) {
+                Text(summary, maxLines = 3, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (note.tags.isNotBlank()) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
@@ -212,7 +244,7 @@ private fun NoteCard(note: NoteEntity, onOpen: () -> Unit, onTogglePinned: () ->
 private fun NoteEditorDialog(
     note: NoteEntity?,
     onDismiss: () -> Unit,
-    onSave: (Long, String, String, String, Long, Boolean, Long) -> Unit,
+    onSave: (Long, String, String, String, Long, Boolean, Boolean, Long) -> Unit,
     onDelete: () -> Unit
 ) {
     var title by remember(note?.id) { mutableStateOf(note?.title.orEmpty()) }
@@ -220,9 +252,11 @@ private fun NoteEditorDialog(
     var tags by remember(note?.id) { mutableStateOf(note?.tags.orEmpty()) }
     var color by remember(note?.id) { mutableStateOf(note?.color ?: NoteColors.first()) }
     var pinned by remember(note?.id) { mutableStateOf(note?.isPinned ?: false) }
+    var markdownEnabled by remember(note?.id) { mutableStateOf(note?.isMarkdown ?: false) }
+    var previewMode by remember(note?.id) { mutableStateOf(false) }
 
     Dialog(onDismissRequest = onDismiss) {
-        Surface(shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp) {
+        Surface(shape = MaterialTheme.shapes.extraLarge, color = MaterialTheme.colorScheme.surface, tonalElevation = 1.dp) {
             Column(
                 modifier = Modifier.padding(20.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -232,15 +266,37 @@ private fun NoteEditorDialog(
                     TextButton(onClick = { pinned = !pinned }) { Text(if (pinned) "取消置顶" else "置顶") }
                 }
                 OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("标题") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                OutlinedTextField(
-                    value = content,
-                    onValueChange = { content = it },
-                    label = { Text("正文") },
-                    modifier = Modifier.fillMaxWidth().height(176.dp),
-                    minLines = 6
-                )
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    AssistChip(
+                        onClick = { markdownEnabled = !markdownEnabled; previewMode = false },
+                        label = { Text(if (markdownEnabled) "Markdown：开" else "Markdown：关") }
+                    )
+                    if (markdownEnabled) {
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(onClick = { previewMode = false }) { Text("编辑", fontWeight = if (!previewMode) FontWeight.Bold else FontWeight.Normal) }
+                        TextButton(onClick = { previewMode = true }) { Text("预览", fontWeight = if (previewMode) FontWeight.Bold else FontWeight.Normal) }
+                    }
+                }
+                if (markdownEnabled) MarkdownSyntaxHint()
+                if (markdownEnabled && previewMode) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 176.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.44f),
+                        shape = MaterialTheme.shapes.large
+                    ) {
+                        MarkdownPreview(content, modifier = Modifier.padding(16.dp))
+                    }
+                } else {
+                    OutlinedTextField(
+                        value = content,
+                        onValueChange = { content = it },
+                        label = { Text(if (markdownEnabled) "Markdown 正文" else "正文") },
+                        modifier = Modifier.fillMaxWidth().height(176.dp),
+                        minLines = 6
+                    )
+                }
                 OutlinedTextField(value = tags, onValueChange = { tags = it }, label = { Text("标签（用逗号分隔）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                Text("笔记颜色", style = MaterialTheme.typography.labelLarge)
+                Text("笔记颜色", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     NoteColors.forEach { option ->
                         Box(
@@ -250,14 +306,16 @@ private fun NoteEditorDialog(
                                 .background(Color(option))
                                 .clickable { color = option },
                             contentAlignment = Alignment.Center
-                        ) { if (color == option) Text("✓", color = Color(0xFF3B332A), fontWeight = FontWeight.Bold) }
+                        ) { if (color == option) Text("✓", color = Color(0xFF514A42), fontWeight = FontWeight.Bold) }
                     }
                 }
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     if (note != null) TextButton(onClick = onDelete) { Text("删除", color = MaterialTheme.colorScheme.error) } else Spacer(Modifier.width(1.dp))
                     Row {
                         TextButton(onClick = onDismiss) { Text("取消") }
-                        ElevatedButton(onClick = { onSave(note?.id ?: 0, title, content, tags, color, pinned, note?.createdAt ?: System.currentTimeMillis()) }) { Text("保存") }
+                        ElevatedButton(onClick = {
+                            onSave(note?.id ?: 0, title, content, tags, color, pinned, markdownEnabled, note?.createdAt ?: System.currentTimeMillis())
+                        }) { Text("保存") }
                     }
                 }
             }
@@ -268,7 +326,7 @@ private fun NoteEditorDialog(
 @Composable
 private fun ConfirmDeleteDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) {
     Dialog(onDismissRequest = onDismiss) {
-        Surface(shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp) {
+        Surface(shape = MaterialTheme.shapes.extraLarge, color = MaterialTheme.colorScheme.surface, tonalElevation = 1.dp) {
             Column(modifier = Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("删除这条笔记？", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text("删除后无法恢复。", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -281,5 +339,5 @@ private fun ConfirmDeleteDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) {
     }
 }
 
-private val NoteColors = listOf(0xFFFFF8F0, 0xFFFFF0F0, 0xFFF1F8FF, 0xFFF0FAF3, 0xFFFFF8D9)
+private val NoteColors = listOf(0xFFF5F0E8, 0xFFF5ECEB, 0xFFEDF3F5, 0xFFEEF5F0, 0xFFF5F1E3)
 private fun formatDate(time: Long): String = SimpleDateFormat("yyyy年M月d日 HH:mm", Locale.CHINA).format(Date(time))
