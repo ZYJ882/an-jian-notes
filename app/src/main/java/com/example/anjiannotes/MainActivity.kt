@@ -129,6 +129,8 @@ private fun NotesApp(viewModel: NotesViewModel) {
     var feedbackMessage by remember { mutableStateOf<String?>(null) }
     var pendingBackupPayload by remember { mutableStateOf<String?>(null) }
     var pendingRestorePayload by remember { mutableStateOf<String?>(null) }
+    var pendingTextBackupPayload by remember { mutableStateOf<String?>(null) }
+    var pendingTextRestorePayload by remember { mutableStateOf<String?>(null) }
 
     fun openImported(note: EditorSeed) {
         page = AppPage.Detail(note = null, seed = note, folderId = activeFolderId)
@@ -151,6 +153,23 @@ private fun NotesApp(viewModel: NotesViewModel) {
         pendingBackupPayload = null
     }
 
+    val textBackupSaveLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        val payload = pendingTextBackupPayload
+        if (uri != null && payload != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { writer -> writer.write(payload) }
+                    ?: error("无法写入所选位置")
+            }.onSuccess {
+                feedbackMessage = "TXT 明文备份已导出"
+            }.onFailure {
+                feedbackMessage = "TXT 备份导出失败：${it.message ?: "无法写入文件"}"
+            }
+        }
+        pendingTextBackupPayload = null
+    }
+
     val backupOpenLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             runCatching {
@@ -160,6 +179,19 @@ private fun NotesApp(viewModel: NotesViewModel) {
                 pendingRestorePayload = raw
             }.onFailure {
                 feedbackMessage = "备份文件读取失败：${it.message ?: "无法读取文件"}"
+            }
+        }
+    }
+
+    val textBackupOpenLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    ?: error("无法读取所选文件")
+            }.onSuccess { raw ->
+                pendingTextRestorePayload = raw
+            }.onFailure {
+                feedbackMessage = "TXT 备份文件读取失败：${it.message ?: "无法读取文件"}"
             }
         }
     }
@@ -252,7 +284,7 @@ private fun NotesApp(viewModel: NotesViewModel) {
     if (showBackupMenu) {
         BackupMenuDialog(
             onDismiss = { showBackupMenu = false },
-            onExport = {
+            onExportJson = {
                 showBackupMenu = false
                 viewModel.createBackup(
                     onSuccess = { backup ->
@@ -262,9 +294,23 @@ private fun NotesApp(viewModel: NotesViewModel) {
                     onFailure = { message -> feedbackMessage = message }
                 )
             },
-            onImport = {
+            onImportJson = {
                 showBackupMenu = false
                 backupOpenLauncher.launch(arrayOf("application/json", "text/plain"))
+            },
+            onExportText = {
+                showBackupMenu = false
+                viewModel.createTextBackup(
+                    onSuccess = { backup ->
+                        pendingTextBackupPayload = backup
+                        textBackupSaveLauncher.launch("an-jian-backup-${System.currentTimeMillis()}.txt")
+                    },
+                    onFailure = { message -> feedbackMessage = message }
+                )
+            },
+            onImportText = {
+                showBackupMenu = false
+                textBackupOpenLauncher.launch(arrayOf("text/plain"))
             }
         )
     }
@@ -280,6 +326,24 @@ private fun NotesApp(viewModel: NotesViewModel) {
                     },
                     onFailure = { message ->
                         pendingRestorePayload = null
+                        feedbackMessage = message
+                    }
+                )
+            }
+        )
+    }
+    pendingTextRestorePayload?.let { backup ->
+        RestoreTextBackupDialog(
+            onDismiss = { pendingTextRestorePayload = null },
+            onConfirm = {
+                viewModel.restoreTextBackup(
+                    rawBackup = backup,
+                    onSuccess = { message ->
+                        pendingTextRestorePayload = null
+                        feedbackMessage = message
+                    },
+                    onFailure = { message ->
+                        pendingTextRestorePayload = null
                         feedbackMessage = message
                     }
                 )
@@ -442,13 +506,38 @@ private fun FolderPickerDialog(
 }
 
 @Composable
-private fun BackupMenuDialog(onDismiss: () -> Unit, onExport: () -> Unit, onImport: () -> Unit) {
+private fun BackupMenuDialog(
+    onDismiss: () -> Unit,
+    onExportJson: () -> Unit,
+    onImportJson: () -> Unit,
+    onExportText: () -> Unit,
+    onImportText: () -> Unit
+) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("备份与恢复") },
-        text = { Text("导出会生成包含全部收藏夹和笔记的 JSON 文件。导入恢复会替换当前本地数据。") },
-        dismissButton = { TextButton(onClick = onExport) { Text("导出备份") } },
-        confirmButton = { TextButton(onClick = onImport) { Text("导入恢复") } }
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("备份包含全部收藏夹和笔记。恢复会替换当前本地数据。")
+                TextButton(onClick = onExportJson, modifier = Modifier.fillMaxWidth()) { Text("导出 JSON 备份", modifier = Modifier.fillMaxWidth()) }
+                TextButton(onClick = onImportJson, modifier = Modifier.fillMaxWidth()) { Text("导入 JSON 备份", modifier = Modifier.fillMaxWidth()) }
+                HorizontalDivider()
+                TextButton(onClick = onExportText, modifier = Modifier.fillMaxWidth()) { Text("导出 TXT 明文备份", modifier = Modifier.fillMaxWidth()) }
+                TextButton(onClick = onImportText, modifier = Modifier.fillMaxWidth()) { Text("导入 TXT 明文备份", modifier = Modifier.fillMaxWidth()) }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
+    )
+}
+
+@Composable
+private fun RestoreTextBackupDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("恢复 TXT 明文备份？") },
+        text = { Text("恢复会以 TXT 备份中的收藏夹和笔记替换当前本地数据，此操作无法撤销。") },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("确认恢复") } }
     )
 }
 
@@ -543,9 +632,7 @@ private fun NoteDetailPage(
                 title = { Text(if (note == null) "新建笔记" else "笔记详情", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
                 actions = {
-                    if (markdownActive) {
-                        TextButton(onClick = { editing = !editing }) { Text(if (editing) "预览" else "编辑") }
-                    }
+                    TextButton(onClick = { editing = !editing }) { Text(if (editing) "预览" else "编辑") }
                     if (editing) TextButton(onClick = {
                         onSave(note?.id ?: 0, title, content, tags, color, pinned, markdownActive, selectedFolderId, note?.createdAt ?: System.currentTimeMillis())
                     }) { Text("保存", fontWeight = FontWeight.SemiBold) }
@@ -559,7 +646,7 @@ private fun NoteDetailPage(
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             if (editing) {
-                OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("标题") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("标题") }, modifier = Modifier.fillMaxWidth(), singleLine = true, textStyle = MaterialTheme.typography.titleLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     AssistChip(onClick = { formatMode = formatMode.next() }, label = { Text("格式：$formatDetail") })
                     AssistChip(onClick = { showFolderPicker = true }, label = { Text("收藏夹：$folderName") })
@@ -573,7 +660,7 @@ private fun NoteDetailPage(
                     minLines = 6
                 )
                 PlainTextLinkHint(content = content, onLinkLongPress = { pendingLink = it })
-                OutlinedTextField(value = tags, onValueChange = { tags = it }, label = { Text("标签（用逗号分隔）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                OutlinedTextField(value = tags, onValueChange = { tags = it }, label = { Text("标签（输入 #标签 或用逗号分隔）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                 Text("笔记颜色", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     NoteColors.forEach { option ->
@@ -613,7 +700,7 @@ private fun NoteDetailPage(
                 }
                 if (tags.isNotBlank()) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
-                        tags.split(',').filter { it.isNotBlank() }.forEach { tag -> AssistChip(onClick = {}, label = { Text("#$tag") }) }
+                        tags.split(',').filter { it.isNotBlank() }.forEach { tag -> AssistChip(onClick = {}, label = { Text("#${tag.trim().removePrefix("#")}") }) }
                     }
                 }
             }

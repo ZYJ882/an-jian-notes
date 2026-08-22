@@ -8,6 +8,7 @@ import com.example.anjiannotes.data.DEFAULT_FOLDER_ID
 import com.example.anjiannotes.data.FolderEntity
 import com.example.anjiannotes.data.NoteEntity
 import com.example.anjiannotes.data.NotesRepository
+import com.example.anjiannotes.data.PlainTextBackupCodec
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -68,10 +69,38 @@ class NotesViewModel(private val repository: NotesRepository) : ViewModel() {
         }
     }
 
+    fun createTextBackup(onSuccess: (String) -> Unit, onFailure: (String) -> Unit) {
+        viewModelScope.launch {
+            runCatching { PlainTextBackupCodec.encode(repository.exportSnapshot()) }
+                .onSuccess(onSuccess)
+                .onFailure { onFailure(it.message ?: "TXT 备份导出失败") }
+        }
+    }
+
     fun restoreBackup(rawBackup: String, onSuccess: (String) -> Unit, onFailure: (String) -> Unit) {
+        restoreSnapshot(
+            decode = { BackupCodec.decode(rawBackup) },
+            onSuccess = onSuccess,
+            onFailure = onFailure
+        )
+    }
+
+    fun restoreTextBackup(rawBackup: String, onSuccess: (String) -> Unit, onFailure: (String) -> Unit) {
+        restoreSnapshot(
+            decode = { PlainTextBackupCodec.decode(rawBackup) },
+            onSuccess = onSuccess,
+            onFailure = onFailure
+        )
+    }
+
+    private fun restoreSnapshot(
+        decode: () -> com.example.anjiannotes.data.BackupSnapshot,
+        onSuccess: (String) -> Unit,
+        onFailure: (String) -> Unit
+    ) {
         viewModelScope.launch {
             runCatching {
-                val snapshot = BackupCodec.decode(rawBackup)
+                val snapshot = decode()
                 repository.restoreSnapshot(snapshot)
                 selectedFolderId.value = DEFAULT_FOLDER_ID
                 searchQuery.value = ""
@@ -93,7 +122,7 @@ class NotesViewModel(private val repository: NotesRepository) : ViewModel() {
         createdAt: Long = System.currentTimeMillis()
     ) {
         val cleanedTags = rawTags.split(',', '，')
-            .map(String::trim)
+            .map { it.trim().removePrefix("#").trim() }
             .filter(String::isNotEmpty)
             .distinct()
             .joinToString(",")
