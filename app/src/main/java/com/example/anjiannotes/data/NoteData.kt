@@ -16,7 +16,7 @@ const val DEFAULT_FOLDER_ID = 1L
 
 @Entity(tableName = "folders")
 data class FolderEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = DEFAULT_FOLDER_ID,
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
     val createdAt: Long = System.currentTimeMillis(),
     val sortOrder: Long = System.currentTimeMillis()
