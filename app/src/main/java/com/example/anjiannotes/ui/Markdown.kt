@@ -82,13 +82,15 @@ private fun parseMarkdownBlocks(markdown: String): List<MarkdownBlock> {
         if (index + 1 < lines.size && isTableRow(current) && isTableSeparator(lines[index + 1])) {
             val header = parseTableRow(current)
             val rows = mutableListOf<List<String>>()
+            offset += current.length + 1
+            offset += lines[index + 1].length + 1
             index += 2
             while (index < lines.size && isTableRow(lines[index])) {
                 rows += parseTableRow(lines[index])
+                offset += lines[index].length + 1
                 index++
             }
             result += MarkdownBlock.Table(header, rows, blockStart)
-            offset = lines.take(index).sumOf { it.length + 1 }
         } else {
             result += MarkdownBlock.Line(current, blockStart)
             index++

@@ -10,18 +10,6 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -86,6 +74,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
@@ -236,64 +225,50 @@ private fun NotesApp(viewModel: NotesViewModel) {
 
     BackHandler(enabled = page !is AppPage.List) { page = AppPage.List }
 
-    AnimatedContent(
-        targetState = page,
-        transitionSpec = {
-            (fadeIn(tween(220, easing = FastOutSlowInEasing)) + scaleIn(
-                initialScale = 0.985f,
-                animationSpec = tween(220, easing = FastOutSlowInEasing)
-            )) togetherWith (fadeOut(tween(120)) + scaleOut(
-                targetScale = 0.995f,
-                animationSpec = tween(120)
-            ))
-        },
-        label = "page"
-    ) { currentPage ->
-        when (currentPage) {
-            AppPage.List -> NotesListPage(
-                notes = notes,
-                folders = folders,
-                activeFolderId = activeFolderId,
-                query = query,
-                showSearch = showSearch,
-                onSearchToggle = {
-                    showSearch = !showSearch
-                    if (!showSearch) viewModel.setSearchQuery("")
-                },
-                onSearchChange = viewModel::setSearchQuery,
-                onFolderSelected = viewModel::selectFolder,
-                onCreateFolder = { showNewFolderDialog = true },
-                onBackupClick = { showBackupMenu = true },
-                createMenuExpanded = showCreateMenu,
-                onCreateMenuExpanded = { showCreateMenu = it },
-                onNewNote = { page = AppPage.Detail(note = null, folderId = activeFolderId) },
-                onImportFile = { fileLauncher.launch(arrayOf("text/plain", "text/markdown", "text/x-markdown", "text/*")) },
-                onImportClipboard = {
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    val recentText = clipboard.primaryClip?.let { clip ->
-                        (0 until clip.itemCount)
-                            .asSequence()
-                            .mapNotNull { index -> clip.getItemAt(index).coerceToText(context)?.toString() }
-                            .firstOrNull { it.isNotBlank() }
-                    }.orEmpty()
-                    page = AppPage.Detail(note = null, seed = EditorSeed("剪切板笔记", recentText, NoteFormatMode.AUTO), folderId = activeFolderId)
-                },
-                onOpenNote = { note -> page = AppPage.Detail(note = note, folderId = note.folderId) }
-            )
-            is AppPage.Detail -> NoteDetailPage(
-                note = currentPage.note,
-                seed = currentPage.seed,
-                initialFolderId = currentPage.folderId,
-                folders = folders,
-                onBack = { page = AppPage.List },
-                onSave = { id, title, content, color, pinned, markdown, folderId, createdAt ->
-                    viewModel.saveNote(id, title, content, color, pinned, markdown, folderId, createdAt)
-                    if (currentPage.note == null) page = AppPage.List
-                },
-                onDelete = { note -> noteToDelete = note },
-                onMoveFolder = viewModel::moveNoteToFolder
-            )
-        }
+    when (val currentPage = page) {
+        AppPage.List -> NotesListPage(
+            notes = notes,
+            folders = folders,
+            activeFolderId = activeFolderId,
+            query = query,
+            showSearch = showSearch,
+            onSearchToggle = {
+                showSearch = !showSearch
+                if (!showSearch) viewModel.setSearchQuery("")
+            },
+            onSearchChange = viewModel::setSearchQuery,
+            onFolderSelected = viewModel::selectFolder,
+            onCreateFolder = { showNewFolderDialog = true },
+            onBackupClick = { showBackupMenu = true },
+            createMenuExpanded = showCreateMenu,
+            onCreateMenuExpanded = { showCreateMenu = it },
+            onNewNote = { page = AppPage.Detail(note = null, folderId = activeFolderId) },
+            onImportFile = { fileLauncher.launch(arrayOf("text/plain", "text/markdown", "text/x-markdown", "text/*")) },
+            onImportClipboard = {
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val recentText = clipboard.primaryClip?.let { clip ->
+                    (0 until clip.itemCount)
+                        .asSequence()
+                        .mapNotNull { index -> clip.getItemAt(index).coerceToText(context)?.toString() }
+                        .firstOrNull { it.isNotBlank() }
+                }.orEmpty()
+                page = AppPage.Detail(note = null, seed = EditorSeed("剪切板笔记", recentText, NoteFormatMode.AUTO), folderId = activeFolderId)
+            },
+            onOpenNote = { note -> page = AppPage.Detail(note = note, folderId = note.folderId) }
+        )
+        is AppPage.Detail -> NoteDetailPage(
+            note = currentPage.note,
+            seed = currentPage.seed,
+            initialFolderId = currentPage.folderId,
+            folders = folders,
+            onBack = { page = AppPage.List },
+            onSave = { id, title, content, color, pinned, markdown, folderId, createdAt ->
+                viewModel.saveNote(id, title, content, color, pinned, markdown, folderId, createdAt)
+                if (currentPage.note == null) page = AppPage.List
+            },
+            onDelete = { note -> noteToDelete = note },
+            onMoveFolder = viewModel::moveNoteToFolder
+        )
     }
 
     noteToDelete?.let { note ->
@@ -746,6 +721,7 @@ private fun NoteDetailPage(
                     onValueChange = { title = it },
                     modifier = Modifier.fillMaxWidth().focusRequester(titleFocus),
                     textStyle = MaterialTheme.typography.titleLarge.copy(color = MaterialTheme.colorScheme.onBackground),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                     singleLine = true
                 )
             } else {
@@ -786,6 +762,7 @@ private fun NoteDetailPage(
                     onValueChange = { value -> contentValue = value },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp).focusRequester(contentFocus),
                     textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onBackground),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                     minLines = 6
                 )
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
