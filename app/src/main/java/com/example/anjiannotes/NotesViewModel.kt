@@ -3,6 +3,8 @@ package com.example.anjiannotes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.anjiannotes.data.DEFAULT_FOLDER_ID
+import com.example.anjiannotes.data.FolderEntity
 import com.example.anjiannotes.data.NoteEntity
 import com.example.anjiannotes.data.NotesRepository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -11,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
@@ -19,15 +22,38 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class NotesViewModel(private val repository: NotesRepository) : ViewModel() {
     private val searchQuery = MutableStateFlow("")
-    val query: StateFlow<String> = searchQuery.asStateFlow()
+    private val selectedFolderId = MutableStateFlow(DEFAULT_FOLDER_ID)
 
-    val notes: StateFlow<List<NoteEntity>> = searchQuery
-        .debounce(80)
-        .flatMapLatest(repository::observeNotes)
+    val query: StateFlow<String> = searchQuery.asStateFlow()
+    val activeFolderId: StateFlow<Long> = selectedFolderId.asStateFlow()
+    val folders: StateFlow<List<FolderEntity>> = repository.observeFolders()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val notes: StateFlow<List<NoteEntity>> = combine(
+        searchQuery.debounce(80),
+        selectedFolderId
+    ) { query, folderId -> query to folderId }
+        .flatMapLatest { (query, folderId) -> repository.observeNotes(query, folderId) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    init {
+        viewModelScope.launch { repository.ensureDefaultFolder() }
+    }
 
     fun setSearchQuery(value: String) {
         searchQuery.value = value
+    }
+
+    fun selectFolder(folderId: Long) {
+        selectedFolderId.value = folderId
+    }
+
+    fun createFolder(name: String) {
+        if (name.isBlank()) return
+        viewModelScope.launch {
+            val id = repository.createFolder(name)
+            if (id > 0) selectedFolderId.value = id
+        }
     }
 
     fun saveNote(
@@ -38,6 +64,7 @@ class NotesViewModel(private val repository: NotesRepository) : ViewModel() {
         color: Long,
         pinned: Boolean,
         markdown: Boolean,
+        folderId: Long,
         createdAt: Long = System.currentTimeMillis()
     ) {
         val cleanedTags = rawTags.split(',', '，')
@@ -57,16 +84,15 @@ class NotesViewModel(private val repository: NotesRepository) : ViewModel() {
                     createdAt = createdAt,
                     updatedAt = System.currentTimeMillis(),
                     isPinned = pinned,
-                    isMarkdown = markdown
+                    isMarkdown = markdown,
+                    folderId = folderId
                 )
             )
         }
     }
 
-    fun togglePinned(note: NoteEntity) {
-        viewModelScope.launch {
-            repository.save(note.copy(isPinned = !note.isPinned, updatedAt = System.currentTimeMillis()))
-        }
+    fun moveNoteToFolder(noteId: Long, folderId: Long) {
+        viewModelScope.launch { repository.moveToFolder(noteId, folderId) }
     }
 
     fun deleteNote(id: Long) {

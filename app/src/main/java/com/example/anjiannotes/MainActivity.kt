@@ -70,6 +70,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.anjiannotes.data.DEFAULT_FOLDER_ID
+import com.example.anjiannotes.data.FolderEntity
 import com.example.anjiannotes.data.NoteEntity
 import com.example.anjiannotes.data.NotesRepository
 import com.example.anjiannotes.ui.EditorSeed
@@ -90,7 +92,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val app = application as AnJianApplication
-        val factory = NotesViewModelFactory(NotesRepository(app.database.noteDao()))
+        val factory = NotesViewModelFactory(NotesRepository(app.database.noteDao(), app.database.folderDao()))
         setContent {
             AnJianTheme {
                 val notesViewModel: NotesViewModel = viewModel(factory = factory)
@@ -102,7 +104,11 @@ class MainActivity : ComponentActivity() {
 
 private sealed interface AppPage {
     data object List : AppPage
-    data class Detail(val note: NoteEntity?, val seed: EditorSeed = EditorSeed()) : AppPage
+    data class Detail(
+        val note: NoteEntity?,
+        val seed: EditorSeed = EditorSeed(),
+        val folderId: Long = DEFAULT_FOLDER_ID
+    ) : AppPage
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -111,14 +117,17 @@ private fun NotesApp(viewModel: NotesViewModel) {
     val context = LocalContext.current
     val notes by viewModel.notes.collectAsStateWithLifecycle()
     val query by viewModel.query.collectAsStateWithLifecycle()
+    val folders by viewModel.folders.collectAsStateWithLifecycle()
+    val activeFolderId by viewModel.activeFolderId.collectAsStateWithLifecycle()
     var page by remember { mutableStateOf<AppPage>(AppPage.List) }
     var showSearch by remember { mutableStateOf(false) }
     var showCreateMenu by remember { mutableStateOf(false) }
     var noteToDelete by remember { mutableStateOf<NoteEntity?>(null) }
     var importError by remember { mutableStateOf<String?>(null) }
+    var showNewFolderDialog by remember { mutableStateOf(false) }
 
     fun openImported(note: EditorSeed) {
-        page = AppPage.Detail(note = null, seed = note)
+        page = AppPage.Detail(note = null, seed = note, folderId = activeFolderId)
     }
 
     val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -138,6 +147,8 @@ private fun NotesApp(viewModel: NotesViewModel) {
         when (currentPage) {
             AppPage.List -> NotesListPage(
                 notes = notes,
+                folders = folders,
+                activeFolderId = activeFolderId,
                 query = query,
                 showSearch = showSearch,
                 onSearchToggle = {
@@ -145,9 +156,11 @@ private fun NotesApp(viewModel: NotesViewModel) {
                     if (!showSearch) viewModel.setSearchQuery("")
                 },
                 onSearchChange = viewModel::setSearchQuery,
+                onFolderSelected = viewModel::selectFolder,
+                onCreateFolder = { showNewFolderDialog = true },
                 createMenuExpanded = showCreateMenu,
                 onCreateMenuExpanded = { showCreateMenu = it },
-                onNewNote = { page = AppPage.Detail(note = null) },
+                onNewNote = { page = AppPage.Detail(note = null, folderId = activeFolderId) },
                 onImportFile = { fileLauncher.launch(arrayOf("text/plain", "text/markdown", "text/x-markdown", "text/*")) },
                 onImportClipboard = {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -157,19 +170,22 @@ private fun NotesApp(viewModel: NotesViewModel) {
                             .mapNotNull { index -> clip.getItemAt(index).coerceToText(context)?.toString() }
                             .firstOrNull { it.isNotBlank() }
                     }.orEmpty()
-                    page = AppPage.Detail(note = null, seed = EditorSeed("剪切板笔记", recentText, NoteFormatMode.AUTO))
+                    page = AppPage.Detail(note = null, seed = EditorSeed("剪切板笔记", recentText, NoteFormatMode.AUTO), folderId = activeFolderId)
                 },
-                onOpenNote = { note -> page = AppPage.Detail(note = note) }
+                onOpenNote = { note -> page = AppPage.Detail(note = note, folderId = note.folderId) }
             )
             is AppPage.Detail -> NoteDetailPage(
                 note = currentPage.note,
                 seed = currentPage.seed,
+                initialFolderId = currentPage.folderId,
+                folders = folders,
                 onBack = { page = AppPage.List },
-                onSave = { id, title, content, tags, color, pinned, markdown, createdAt ->
-                    viewModel.saveNote(id, title, content, tags, color, pinned, markdown, createdAt)
+                onSave = { id, title, content, tags, color, pinned, markdown, folderId, createdAt ->
+                    viewModel.saveNote(id, title, content, tags, color, pinned, markdown, folderId, createdAt)
                     page = AppPage.List
                 },
-                onDelete = { note -> noteToDelete = note }
+                onDelete = { note -> noteToDelete = note },
+                onMoveFolder = viewModel::moveNoteToFolder
             )
         }
     }
@@ -183,16 +199,26 @@ private fun NotesApp(viewModel: NotesViewModel) {
     importError?.let { message ->
         ImportErrorDialog(message = message, onDismiss = { importError = null })
     }
+    if (showNewFolderDialog) {
+        FolderNameDialog(
+            onDismiss = { showNewFolderDialog = false },
+            onConfirm = { name -> viewModel.createFolder(name); showNewFolderDialog = false }
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun NotesListPage(
     notes: List<NoteEntity>,
+    folders: List<FolderEntity>,
+    activeFolderId: Long,
     query: String,
     showSearch: Boolean,
     onSearchToggle: () -> Unit,
     onSearchChange: (String) -> Unit,
+    onFolderSelected: (Long) -> Unit,
+    onCreateFolder: () -> Unit,
     createMenuExpanded: Boolean,
     onCreateMenuExpanded: (Boolean) -> Unit,
     onNewNote: () -> Unit,
@@ -227,6 +253,12 @@ private fun NotesListPage(
         Column(
             modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)
         ) {
+            FolderTabs(
+                folders = folders,
+                activeFolderId = activeFolderId,
+                onFolderSelected = onFolderSelected,
+                onCreateFolder = onCreateFolder
+            )
             if (showSearch) {
                 OutlinedTextField(
                     value = query,
@@ -252,6 +284,73 @@ private fun NotesListPage(
             }
         }
     }
+}
+
+@Composable
+private fun FolderTabs(
+    folders: List<FolderEntity>,
+    activeFolderId: Long,
+    onFolderSelected: (Long) -> Unit,
+    onCreateFolder: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        folders.forEach { folder ->
+            AssistChip(
+                onClick = { onFolderSelected(folder.id) },
+                label = { Text(if (folder.id == activeFolderId) "${folder.name} ✓" else folder.name) }
+            )
+        }
+        AssistChip(onClick = onCreateFolder, label = { Text("+ 收藏夹") })
+    }
+}
+
+@Composable
+private fun FolderNameDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("新建收藏夹") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("收藏夹名称") },
+                singleLine = true
+            )
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = { TextButton(onClick = { if (name.isNotBlank()) onConfirm(name) }) { Text("创建") } }
+    )
+}
+
+@Composable
+private fun FolderPickerDialog(
+    folders: List<FolderEntity>,
+    selectedFolderId: Long,
+    onDismiss: () -> Unit,
+    onSelected: (Long) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("移动到收藏夹") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                folders.forEach { folder ->
+                    TextButton(
+                        onClick = { onSelected(folder.id) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (folder.id == selectedFolderId) "${folder.name} ✓" else folder.name, modifier = Modifier.fillMaxWidth())
+                    }
+                }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = {}
+    )
 }
 
 @Composable
@@ -294,9 +393,12 @@ private fun CreateMenuItem(title: String, subtitle: String, onClick: () -> Unit)
 private fun NoteDetailPage(
     note: NoteEntity?,
     seed: EditorSeed,
+    initialFolderId: Long,
+    folders: List<FolderEntity>,
     onBack: () -> Unit,
-    onSave: (Long, String, String, String, Long, Boolean, Boolean, Long) -> Unit,
-    onDelete: (NoteEntity) -> Unit
+    onSave: (Long, String, String, String, Long, Boolean, Boolean, Long, Long) -> Unit,
+    onDelete: (NoteEntity) -> Unit,
+    onMoveFolder: (Long, Long) -> Unit
 ) {
     val context = LocalContext.current
     var title by remember(note?.id, seed) { mutableStateOf(note?.title ?: seed.title) }
@@ -304,6 +406,8 @@ private fun NoteDetailPage(
     var tags by remember(note?.id) { mutableStateOf(note?.tags.orEmpty()) }
     var color by remember(note?.id) { mutableStateOf(note?.color ?: NoteColors.first()) }
     var pinned by remember(note?.id) { mutableStateOf(note?.isPinned ?: false) }
+    var selectedFolderId by remember(note?.id, initialFolderId) { mutableStateOf(note?.folderId ?: initialFolderId) }
+    var showFolderPicker by remember { mutableStateOf(false) }
     var formatMode by remember(note?.id, seed) { mutableStateOf(if (note != null) if (note.isMarkdown) NoteFormatMode.MARKDOWN else NoteFormatMode.PLAIN else seed.formatMode) }
     var editing by remember(note?.id, seed) {
         mutableStateOf(note == null)
@@ -311,6 +415,7 @@ private fun NoteDetailPage(
     var pendingLink by remember { mutableStateOf<String?>(null) }
     val markdownActive = formatMode.resolvesToMarkdown(content)
     val formatDetail = if (formatMode == NoteFormatMode.AUTO) if (markdownActive) "自动：Markdown" else "自动：纯文本" else formatMode.label
+    val folderName = folders.firstOrNull { it.id == selectedFolderId }?.name ?: "默认收藏夹"
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -323,7 +428,7 @@ private fun NoteDetailPage(
                         TextButton(onClick = { editing = !editing }) { Text(if (editing) "预览" else "编辑") }
                     }
                     if (editing) TextButton(onClick = {
-                        onSave(note?.id ?: 0, title, content, tags, color, pinned, markdownActive, note?.createdAt ?: System.currentTimeMillis())
+                        onSave(note?.id ?: 0, title, content, tags, color, pinned, markdownActive, selectedFolderId, note?.createdAt ?: System.currentTimeMillis())
                     }) { Text("保存", fontWeight = FontWeight.SemiBold) }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
@@ -336,14 +441,17 @@ private fun NoteDetailPage(
         ) {
             if (editing) {
                 OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("标题") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                AssistChip(onClick = { formatMode = formatMode.next() }, label = { Text("格式：$formatDetail") })
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AssistChip(onClick = { formatMode = formatMode.next() }, label = { Text("格式：$formatDetail") })
+                    AssistChip(onClick = { showFolderPicker = true }, label = { Text("收藏夹：$folderName") })
+                }
                 if (markdownActive) MarkdownSyntaxHint()
                 OutlinedTextField(
                     value = content,
                     onValueChange = { content = it },
                     label = { Text(if (markdownActive) "Markdown 正文" else "正文") },
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 280.dp),
-                    minLines = 10
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp),
+                    minLines = 6
                 )
                 PlainTextLinkHint(content = content, onLinkLongPress = { pendingLink = it })
                 OutlinedTextField(value = tags, onValueChange = { tags = it }, label = { Text("标签（用逗号分隔）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
@@ -361,9 +469,10 @@ private fun NoteDetailPage(
                     TextButton(onClick = { pinned = !pinned }) { Text(if (pinned) "取消置顶" else "置顶") }
                 }
             } else {
-                Text(title.ifBlank { "未命名笔记" }, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text(title.ifBlank { "未命名笔记" }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AssistChip(onClick = {}, label = { Text("Markdown") })
+                    AssistChip(onClick = { showFolderPicker = true }, label = { Text("收藏夹：$folderName") })
+                    AssistChip(onClick = {}, label = { Text(if (markdownActive) "Markdown" else "纯文本") })
                     if (pinned) AssistChip(onClick = {}, label = { Text("已置顶") })
                     Text(formatDate(note?.updatedAt ?: System.currentTimeMillis()), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -399,6 +508,18 @@ private fun NoteDetailPage(
             onOpen = {
                 runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }
                 pendingLink = null
+            }
+        )
+    }
+    if (showFolderPicker) {
+        FolderPickerDialog(
+            folders = folders,
+            selectedFolderId = selectedFolderId,
+            onDismiss = { showFolderPicker = false },
+            onSelected = { folderId ->
+                selectedFolderId = folderId
+                if (note != null) onMoveFolder(note.id, folderId)
+                showFolderPicker = false
             }
         )
     }
