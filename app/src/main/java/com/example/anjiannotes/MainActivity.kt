@@ -1,8 +1,12 @@
 package com.example.anjiannotes
 
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.tween
@@ -32,6 +36,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
@@ -52,17 +58,24 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.anjiannotes.data.NoteEntity
 import com.example.anjiannotes.data.NotesRepository
+import com.example.anjiannotes.ui.EditorSeed
+import com.example.anjiannotes.ui.ImportReadResult
 import com.example.anjiannotes.ui.MarkdownPreview
 import com.example.anjiannotes.ui.MarkdownSyntaxHint
+import com.example.anjiannotes.ui.NoteFormatMode
+import com.example.anjiannotes.ui.looksLikeMarkdown
 import com.example.anjiannotes.ui.markdownToPlainText
+import com.example.anjiannotes.ui.readTextImport
 import com.example.anjiannotes.ui.theme.AnJianTheme
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -85,12 +98,37 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun NotesApp(viewModel: NotesViewModel) {
+    val context = LocalContext.current
     val notes by viewModel.notes.collectAsStateWithLifecycle()
     val query by viewModel.query.collectAsStateWithLifecycle()
     var showSearch by remember { mutableStateOf(false) }
     var showEditor by remember { mutableStateOf(false) }
     var selectedNote by remember { mutableStateOf<NoteEntity?>(null) }
+    var editorSeed by remember { mutableStateOf(EditorSeed()) }
     var noteToDelete by remember { mutableStateOf<NoteEntity?>(null) }
+    var showCreateMenu by remember { mutableStateOf(false) }
+    var importError by remember { mutableStateOf<String?>(null) }
+
+    fun openSeed(seed: EditorSeed) {
+        selectedNote = null
+        editorSeed = seed
+        showEditor = true
+    }
+
+    val markdownFileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        when (val result = readTextImport(context, uri)) {
+            is ImportReadResult.Success -> openSeed(EditorSeed(result.note.title, result.note.content, NoteFormatMode.MARKDOWN))
+            is ImportReadResult.Failure -> importError = result.message
+        }
+    }
+    val textFileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        when (val result = readTextImport(context, uri)) {
+            is ImportReadResult.Success -> openSeed(EditorSeed(result.note.title, result.note.content, NoteFormatMode.PLAIN))
+            is ImportReadResult.Failure -> importError = result.message
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -112,11 +150,22 @@ private fun NotesApp(viewModel: NotesViewModel) {
             )
         },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = { selectedNote = null; showEditor = true },
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-            ) { Text("新建", modifier = Modifier.padding(horizontal = 8.dp), fontWeight = FontWeight.SemiBold) }
+            CreateMenu(
+                expanded = showCreateMenu,
+                onExpandedChange = { showCreateMenu = it },
+                onNewNote = { openSeed(EditorSeed()) },
+                onImportMarkdown = { markdownFileLauncher.launch(arrayOf("text/markdown", "text/x-markdown", "text/plain")) },
+                onImportText = { textFileLauncher.launch(arrayOf("text/plain")) },
+                onImportClipboard = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    val text = clipboard.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()
+                    if (text.isNullOrBlank()) {
+                        importError = "剪切板中没有可导入的文本"
+                    } else {
+                        openSeed(EditorSeed("剪切板笔记", text, NoteFormatMode.AUTO))
+                    }
+                }
+            )
         }
     ) { padding ->
         Column(
@@ -139,7 +188,7 @@ private fun NotesApp(viewModel: NotesViewModel) {
                 )
             }
             if (notes.isEmpty()) {
-                EmptyNotes(query = query, onCreate = { selectedNote = null; showEditor = true })
+                EmptyNotes(query = query, onCreate = { openSeed(EditorSeed()) })
             } else {
                 androidx.compose.foundation.lazy.LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -157,7 +206,7 @@ private fun NotesApp(viewModel: NotesViewModel) {
                         val note = notes[index]
                         NoteCard(
                             note = note,
-                            onOpen = { selectedNote = note; showEditor = true },
+                            onOpen = { selectedNote = note; editorSeed = EditorSeed(); showEditor = true },
                             onTogglePinned = { viewModel.togglePinned(note) }
                         )
                     }
@@ -170,6 +219,7 @@ private fun NotesApp(viewModel: NotesViewModel) {
     if (showEditor) {
         NoteEditorDialog(
             note = selectedNote,
+            seed = editorSeed,
             onDismiss = { showEditor = false },
             onSave = { id, title, content, tags, color, pinned, markdown, createdAt ->
                 viewModel.saveNote(id, title, content, tags, color, pinned, markdown, createdAt)
@@ -184,6 +234,48 @@ private fun NotesApp(viewModel: NotesViewModel) {
             onConfirm = { viewModel.deleteNote(note.id); noteToDelete = null }
         )
     }
+    importError?.let { message ->
+        ImportErrorDialog(message = message, onDismiss = { importError = null })
+    }
+}
+
+@Composable
+private fun CreateMenu(
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onNewNote: () -> Unit,
+    onImportMarkdown: () -> Unit,
+    onImportText: () -> Unit,
+    onImportClipboard: () -> Unit
+) {
+    Box {
+        FloatingActionButton(
+            onClick = { onExpandedChange(!expanded) },
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+        ) {
+            Text("+", fontSize = 30.sp, fontWeight = FontWeight.Light)
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { onExpandedChange(false) }) {
+            CreateMenuItem("新建笔记", "手写内容，自动识别 Markdown", onClick = { onExpandedChange(false); onNewNote() })
+            CreateMenuItem("导入 Markdown", "选择 .md 或 Markdown 文本", onClick = { onExpandedChange(false); onImportMarkdown() })
+            CreateMenuItem("导入文本", "选择标准 .txt 文本文件", onClick = { onExpandedChange(false); onImportText() })
+            CreateMenuItem("从剪切板导入", "读取当前剪切板中的文本", onClick = { onExpandedChange(false); onImportClipboard() })
+        }
+    }
+}
+
+@Composable
+private fun CreateMenuItem(title: String, subtitle: String, onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(title, style = MaterialTheme.typography.bodyLarge)
+                Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        onClick = onClick
+    )
 }
 
 @Composable
@@ -243,17 +335,22 @@ private fun NoteCard(note: NoteEntity, onOpen: () -> Unit, onTogglePinned: () ->
 @Composable
 private fun NoteEditorDialog(
     note: NoteEntity?,
+    seed: EditorSeed,
     onDismiss: () -> Unit,
     onSave: (Long, String, String, String, Long, Boolean, Boolean, Long) -> Unit,
     onDelete: () -> Unit
 ) {
-    var title by remember(note?.id) { mutableStateOf(note?.title.orEmpty()) }
-    var content by remember(note?.id) { mutableStateOf(note?.content.orEmpty()) }
+    var title by remember(note?.id, seed) { mutableStateOf(note?.title ?: seed.title) }
+    var content by remember(note?.id, seed) { mutableStateOf(note?.content ?: seed.content) }
     var tags by remember(note?.id) { mutableStateOf(note?.tags.orEmpty()) }
     var color by remember(note?.id) { mutableStateOf(note?.color ?: NoteColors.first()) }
     var pinned by remember(note?.id) { mutableStateOf(note?.isPinned ?: false) }
-    var markdownEnabled by remember(note?.id) { mutableStateOf(note?.isMarkdown ?: false) }
-    var previewMode by remember(note?.id) { mutableStateOf(false) }
+    var formatMode by remember(note?.id, seed) {
+        mutableStateOf(if (note != null) if (note.isMarkdown) NoteFormatMode.MARKDOWN else NoteFormatMode.PLAIN else seed.formatMode)
+    }
+    var previewMode by remember(note?.id, seed) { mutableStateOf(false) }
+    val markdownActive = formatMode.resolvesToMarkdown(content)
+    val formatDetail = if (formatMode == NoteFormatMode.AUTO) if (markdownActive) "识别为 Markdown" else "识别为纯文本" else formatMode.label
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(shape = MaterialTheme.shapes.extraLarge, color = MaterialTheme.colorScheme.surface, tonalElevation = 1.dp) {
@@ -268,17 +365,17 @@ private fun NoteEditorDialog(
                 OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("标题") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                 Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     AssistChip(
-                        onClick = { markdownEnabled = !markdownEnabled; previewMode = false },
-                        label = { Text(if (markdownEnabled) "Markdown：开" else "Markdown：关") }
+                        onClick = { formatMode = formatMode.next(); previewMode = false },
+                        label = { Text("格式：$formatDetail") }
                     )
-                    if (markdownEnabled) {
+                    if (markdownActive) {
                         Spacer(Modifier.width(8.dp))
                         TextButton(onClick = { previewMode = false }) { Text("编辑", fontWeight = if (!previewMode) FontWeight.Bold else FontWeight.Normal) }
                         TextButton(onClick = { previewMode = true }) { Text("预览", fontWeight = if (previewMode) FontWeight.Bold else FontWeight.Normal) }
                     }
                 }
-                if (markdownEnabled) MarkdownSyntaxHint()
-                if (markdownEnabled && previewMode) {
+                if (markdownActive && !previewMode) MarkdownSyntaxHint()
+                if (markdownActive && previewMode) {
                     Surface(
                         modifier = Modifier.fillMaxWidth().heightIn(min = 176.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.44f),
@@ -290,7 +387,7 @@ private fun NoteEditorDialog(
                     OutlinedTextField(
                         value = content,
                         onValueChange = { content = it },
-                        label = { Text(if (markdownEnabled) "Markdown 正文" else "正文") },
+                        label = { Text(if (markdownActive) "Markdown 正文" else "正文") },
                         modifier = Modifier.fillMaxWidth().height(176.dp),
                         minLines = 6
                     )
@@ -314,7 +411,7 @@ private fun NoteEditorDialog(
                     Row {
                         TextButton(onClick = onDismiss) { Text("取消") }
                         ElevatedButton(onClick = {
-                            onSave(note?.id ?: 0, title, content, tags, color, pinned, markdownEnabled, note?.createdAt ?: System.currentTimeMillis())
+                            onSave(note?.id ?: 0, title, content, tags, color, pinned, markdownActive, note?.createdAt ?: System.currentTimeMillis())
                         }) { Text("保存") }
                     }
                 }
@@ -333,6 +430,21 @@ private fun ConfirmDeleteDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = onDismiss) { Text("取消") }
                     TextButton(onClick = onConfirm) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImportErrorDialog(message: String, onDismiss: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = MaterialTheme.shapes.extraLarge, color = MaterialTheme.colorScheme.surface, tonalElevation = 1.dp) {
+            Column(modifier = Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("导入未完成", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onDismiss) { Text("知道了") }
                 }
             }
         }

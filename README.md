@@ -13,7 +13,9 @@
 | 置顶 | 置顶笔记始终显示在列表顶部，并按更新时间排序。 |
 | 删除确认 | 删除已有笔记前显示确认提示，避免误操作。 |
 | 深色模式 | 自动跟随 Android 系统的深浅色设置，并使用低刺激暖灰配色。 |
-| Markdown 编辑与预览 | 编辑器内可单独开启 Markdown，支持标题、粗体、斜体、删除线、行内代码、列表、引用与分隔线的轻量预览。 |
+| Markdown 编辑与预览 | 编辑器内提供自动识别、Markdown、纯文本三种格式模式；支持标题、粗体、斜体、删除线、行内代码、列表、引用与分隔线的轻量预览。 |
+| 加号创建菜单 | 点击右下角加号，可手写新笔记、导入 Markdown 文件、导入标准文本文件或从剪切板导入。 |
+| 自动格式识别 | 手写和剪切板导入内容会根据标题、列表、引用、强调、代码等常见语法自动判定 Markdown 或纯文本；可在编辑器中手动覆盖。 |
 | 快速响应 | 搜索采用 80ms 极短防抖；界面展开和内容尺寸动效控制在 80–140ms；数据库容器由应用级懒初始化管理。 |
 
 ## 项目结构
@@ -22,6 +24,7 @@
 |---|---|
 | `app/src/main/java/com/example/anjiannotes/MainActivity.kt` | Compose 页面、Markdown 编辑弹窗及交互入口。 |
 | `app/src/main/java/com/example/anjiannotes/ui/Markdown.kt` | 轻量级 Markdown 预览、摘要与语法提示组件。 |
+| `app/src/main/java/com/example/anjiannotes/ui/ImportSupport.kt` | 导入文件读取、格式自动识别和编辑器种子数据。 |
 | `app/src/main/java/com/example/anjiannotes/AnJianApplication.kt` | 应用级数据库容器与 Room 迁移配置。 |
 | `app/src/main/java/com/example/anjiannotes/NotesViewModel.kt` | 搜索、保存、置顶、删除等界面状态与业务逻辑。 |
 | `app/src/main/java/com/example/anjiannotes/data/NoteData.kt` | Room 实体、DAO、数据库与仓库。 |
