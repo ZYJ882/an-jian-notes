@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -412,11 +413,11 @@ private fun NotesListPage(
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
         },
-        floatingActionButton = {
-            CreateMenu(
+        bottomBar = {
+            QuickCaptureBar(
                 expanded = createMenuExpanded,
                 onExpandedChange = onCreateMenuExpanded,
-                onNewNote = onNewNote,
+                onStartWriting = onNewNote,
                 onImportFile = onImportFile,
                 onImportClipboard = onImportClipboard
             )
@@ -451,7 +452,7 @@ private fun NotesListPage(
                     items(notes.size, key = { notes[it].id }) { index ->
                         NoteCard(note = notes[index], onOpen = { onOpenNote(notes[index]) })
                     }
-                    item { Spacer(Modifier.height(84.dp)) }
+                    item { Spacer(Modifier.height(20.dp)) }
                 }
             }
         }
@@ -582,23 +583,47 @@ private fun FeedbackDialog(message: String, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun CreateMenu(
+private fun QuickCaptureBar(
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
-    onNewNote: () -> Unit,
+    onStartWriting: () -> Unit,
     onImportFile: () -> Unit,
     onImportClipboard: () -> Unit
 ) {
-    Box {
-        FloatingActionButton(
-            onClick = { onExpandedChange(!expanded) },
-            containerColor = MaterialTheme.colorScheme.primaryContainer,
-            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-        ) { Text("+", fontSize = 30.sp, fontWeight = FontWeight.Light) }
-        DropdownMenu(expanded = expanded, onDismissRequest = { onExpandedChange(false) }) {
-            CreateMenuItem("新建笔记", "输入内容，自动识别 Markdown 与文本", onClick = { onExpandedChange(false); onNewNote() })
-            CreateMenuItem("导入文件", "支持 .md、.markdown、.txt 与 UTF-8 文本", onClick = { onExpandedChange(false); onImportFile() })
-            CreateMenuItem("从剪切板导入", "读取当前最近一条剪切板文本", onClick = { onExpandedChange(false); onImportClipboard() })
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 10.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .imePadding()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                modifier = Modifier.weight(1f).clickable(onClick = onStartWriting),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+                shape = MaterialTheme.shapes.extraLarge
+            ) {
+                Text(
+                    "写点什么…",
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Box {
+                TextButton(onClick = { onExpandedChange(!expanded) }) {
+                    Text("导入")
+                }
+                DropdownMenu(expanded = expanded, onDismissRequest = { onExpandedChange(false) }) {
+                    CreateMenuItem("导入文件", "支持 .md、.markdown、.txt 与 UTF-8 文本", onClick = { onExpandedChange(false); onImportFile() })
+                    CreateMenuItem("从剪切板导入", "读取当前最近一条剪切板文本", onClick = { onExpandedChange(false); onImportClipboard() })
+                }
+            }
         }
     }
 }
