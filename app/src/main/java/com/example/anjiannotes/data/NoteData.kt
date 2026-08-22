@@ -8,6 +8,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
+import androidx.room.withTransaction
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
@@ -59,6 +60,15 @@ interface NoteDao {
 
     @Query("UPDATE notes SET folderId = :folderId, updatedAt = :updatedAt WHERE id = :noteId")
     suspend fun moveToFolder(noteId: Long, folderId: Long, updatedAt: Long = System.currentTimeMillis())
+
+    @Query("SELECT * FROM notes ORDER BY id ASC")
+    suspend fun getAll(): List<NoteEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(notes: List<NoteEntity>)
+
+    @Query("DELETE FROM notes")
+    suspend fun clearAll()
 }
 
 @Dao
@@ -71,6 +81,15 @@ interface FolderDao {
 
     @Query("SELECT * FROM folders WHERE id = :id LIMIT 1")
     suspend fun getById(id: Long): FolderEntity?
+
+    @Query("SELECT * FROM folders ORDER BY id ASC")
+    suspend fun getAll(): List<FolderEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(folders: List<FolderEntity>)
+
+    @Query("DELETE FROM folders")
+    suspend fun clearAll()
 }
 
 @Database(entities = [NoteEntity::class, FolderEntity::class], version = 3, exportSchema = false)
@@ -96,6 +115,7 @@ abstract class NotesDatabase : RoomDatabase() {
 }
 
 class NotesRepository(
+    private val database: NotesDatabase,
     private val noteDao: NoteDao,
     private val folderDao: FolderDao
 ) {
@@ -106,7 +126,38 @@ class NotesRepository(
         folderDao.insert(FolderEntity(id = DEFAULT_FOLDER_ID, name = "默认收藏夹", createdAt = 0, sortOrder = 0))
     }
 
-    suspend fun createFolder(name: String): Long = folderDao.insert(FolderEntity(name = name.trim()))
+    suspend fun createFolder(name: String): Long {
+        val cleanedName = name.trim()
+        require(cleanedName.isNotBlank()) { "请输入收藏夹名称" }
+        val id = folderDao.insert(FolderEntity(name = cleanedName))
+        check(id > 0) { "收藏夹保存失败，请重试" }
+        return id
+    }
+
+    suspend fun exportSnapshot(): BackupSnapshot = BackupSnapshot(
+        folders = folderDao.getAll(),
+        notes = noteDao.getAll()
+    )
+
+    suspend fun restoreSnapshot(snapshot: BackupSnapshot) {
+        database.withTransaction {
+            val folders = snapshot.folders.ifEmpty {
+                listOf(FolderEntity(id = DEFAULT_FOLDER_ID, name = "默认收藏夹", createdAt = 0, sortOrder = 0))
+            }.let { imported ->
+                if (imported.any { it.id == DEFAULT_FOLDER_ID }) imported
+                else listOf(FolderEntity(id = DEFAULT_FOLDER_ID, name = "默认收藏夹", createdAt = 0, sortOrder = 0)) + imported
+            }
+            val validFolderIds = folders.map { it.id }.toSet()
+            val notes = snapshot.notes.map { note ->
+                if (note.folderId in validFolderIds) note else note.copy(folderId = DEFAULT_FOLDER_ID)
+            }
+            noteDao.clearAll()
+            folderDao.clearAll()
+            folderDao.insertAll(folders)
+            noteDao.insertAll(notes)
+        }
+    }
+
     suspend fun save(note: NoteEntity): Long = noteDao.upsert(note)
     suspend fun moveToFolder(noteId: Long, folderId: Long) = noteDao.moveToFolder(noteId, folderId)
     suspend fun delete(id: Long) = noteDao.deleteById(id)

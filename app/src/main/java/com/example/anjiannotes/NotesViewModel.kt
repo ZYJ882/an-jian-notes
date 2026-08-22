@@ -3,6 +3,7 @@ package com.example.anjiannotes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.anjiannotes.data.BackupCodec
 import com.example.anjiannotes.data.DEFAULT_FOLDER_ID
 import com.example.anjiannotes.data.FolderEntity
 import com.example.anjiannotes.data.NoteEntity
@@ -48,11 +49,35 @@ class NotesViewModel(private val repository: NotesRepository) : ViewModel() {
         selectedFolderId.value = folderId
     }
 
-    fun createFolder(name: String) {
-        if (name.isBlank()) return
+    fun createFolder(name: String, onSuccess: (String) -> Unit, onFailure: (String) -> Unit) {
         viewModelScope.launch {
-            val id = repository.createFolder(name)
-            if (id > 0) selectedFolderId.value = id
+            runCatching {
+                val id = repository.createFolder(name)
+                selectedFolderId.value = id
+                name.trim()
+            }.onSuccess(onSuccess)
+                .onFailure { onFailure(it.message ?: "收藏夹创建失败，请重试") }
+        }
+    }
+
+    fun createBackup(onSuccess: (String) -> Unit, onFailure: (String) -> Unit) {
+        viewModelScope.launch {
+            runCatching { BackupCodec.encode(repository.exportSnapshot()) }
+                .onSuccess(onSuccess)
+                .onFailure { onFailure(it.message ?: "备份导出失败") }
+        }
+    }
+
+    fun restoreBackup(rawBackup: String, onSuccess: (String) -> Unit, onFailure: (String) -> Unit) {
+        viewModelScope.launch {
+            runCatching {
+                val snapshot = BackupCodec.decode(rawBackup)
+                repository.restoreSnapshot(snapshot)
+                selectedFolderId.value = DEFAULT_FOLDER_ID
+                searchQuery.value = ""
+                "已恢复 ${snapshot.folders.size} 个收藏夹和 ${snapshot.notes.size} 条笔记"
+            }.onSuccess(onSuccess)
+                .onFailure { onFailure(it.message ?: "备份导入失败，请确认文件完整") }
         }
     }
 

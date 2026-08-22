@@ -92,7 +92,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val app = application as AnJianApplication
-        val factory = NotesViewModelFactory(NotesRepository(app.database.noteDao(), app.database.folderDao()))
+        val factory = NotesViewModelFactory(NotesRepository(app.database, app.database.noteDao(), app.database.folderDao()))
         setContent {
             AnJianTheme {
                 val notesViewModel: NotesViewModel = viewModel(factory = factory)
@@ -125,9 +125,43 @@ private fun NotesApp(viewModel: NotesViewModel) {
     var noteToDelete by remember { mutableStateOf<NoteEntity?>(null) }
     var importError by remember { mutableStateOf<String?>(null) }
     var showNewFolderDialog by remember { mutableStateOf(false) }
+    var showBackupMenu by remember { mutableStateOf(false) }
+    var feedbackMessage by remember { mutableStateOf<String?>(null) }
+    var pendingBackupPayload by remember { mutableStateOf<String?>(null) }
+    var pendingRestorePayload by remember { mutableStateOf<String?>(null) }
 
     fun openImported(note: EditorSeed) {
         page = AppPage.Detail(note = null, seed = note, folderId = activeFolderId)
+    }
+
+    val backupSaveLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        val payload = pendingBackupPayload
+        if (uri != null && payload != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { writer -> writer.write(payload) }
+                    ?: error("无法写入所选位置")
+            }.onSuccess {
+                feedbackMessage = "备份已导出"
+            }.onFailure {
+                feedbackMessage = "备份导出失败：${it.message ?: "无法写入文件"}"
+            }
+        }
+        pendingBackupPayload = null
+    }
+
+    val backupOpenLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    ?: error("无法读取所选文件")
+            }.onSuccess { raw ->
+                pendingRestorePayload = raw
+            }.onFailure {
+                feedbackMessage = "备份文件读取失败：${it.message ?: "无法读取文件"}"
+            }
+        }
     }
 
     val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -158,6 +192,7 @@ private fun NotesApp(viewModel: NotesViewModel) {
                 onSearchChange = viewModel::setSearchQuery,
                 onFolderSelected = viewModel::selectFolder,
                 onCreateFolder = { showNewFolderDialog = true },
+                onBackupClick = { showBackupMenu = true },
                 createMenuExpanded = showCreateMenu,
                 onCreateMenuExpanded = { showCreateMenu = it },
                 onNewNote = { page = AppPage.Detail(note = null, folderId = activeFolderId) },
@@ -202,8 +237,57 @@ private fun NotesApp(viewModel: NotesViewModel) {
     if (showNewFolderDialog) {
         FolderNameDialog(
             onDismiss = { showNewFolderDialog = false },
-            onConfirm = { name -> viewModel.createFolder(name); showNewFolderDialog = false }
+            onConfirm = { name ->
+                viewModel.createFolder(
+                    name = name,
+                    onSuccess = { createdName ->
+                        showNewFolderDialog = false
+                        feedbackMessage = "已创建并切换到收藏夹：$createdName"
+                    },
+                    onFailure = { message -> feedbackMessage = message }
+                )
+            }
         )
+    }
+    if (showBackupMenu) {
+        BackupMenuDialog(
+            onDismiss = { showBackupMenu = false },
+            onExport = {
+                showBackupMenu = false
+                viewModel.createBackup(
+                    onSuccess = { backup ->
+                        pendingBackupPayload = backup
+                        backupSaveLauncher.launch("an-jian-backup-${System.currentTimeMillis()}.json")
+                    },
+                    onFailure = { message -> feedbackMessage = message }
+                )
+            },
+            onImport = {
+                showBackupMenu = false
+                backupOpenLauncher.launch(arrayOf("application/json", "text/plain"))
+            }
+        )
+    }
+    pendingRestorePayload?.let { backup ->
+        RestoreBackupDialog(
+            onDismiss = { pendingRestorePayload = null },
+            onConfirm = {
+                viewModel.restoreBackup(
+                    rawBackup = backup,
+                    onSuccess = { message ->
+                        pendingRestorePayload = null
+                        feedbackMessage = message
+                    },
+                    onFailure = { message ->
+                        pendingRestorePayload = null
+                        feedbackMessage = message
+                    }
+                )
+            }
+        )
+    }
+    feedbackMessage?.let { message ->
+        FeedbackDialog(message = message, onDismiss = { feedbackMessage = null })
     }
 }
 
@@ -219,6 +303,7 @@ private fun NotesListPage(
     onSearchChange: (String) -> Unit,
     onFolderSelected: (Long) -> Unit,
     onCreateFolder: () -> Unit,
+    onBackupClick: () -> Unit,
     createMenuExpanded: Boolean,
     onCreateMenuExpanded: (Boolean) -> Unit,
     onNewNote: () -> Unit,
@@ -236,7 +321,10 @@ private fun NotesListPage(
                         Text("轻写，轻放", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 },
-                actions = { TextButton(onClick = onSearchToggle) { Text(if (showSearch) "收起" else "搜索") } },
+                actions = {
+                    TextButton(onClick = onBackupClick) { Text("备份") }
+                    TextButton(onClick = onSearchToggle) { Text(if (showSearch) "收起" else "搜索") }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
         },
@@ -350,6 +438,37 @@ private fun FolderPickerDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
         confirmButton = {}
+    )
+}
+
+@Composable
+private fun BackupMenuDialog(onDismiss: () -> Unit, onExport: () -> Unit, onImport: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("备份与恢复") },
+        text = { Text("导出会生成包含全部收藏夹和笔记的 JSON 文件。导入恢复会替换当前本地数据。") },
+        dismissButton = { TextButton(onClick = onExport) { Text("导出备份") } },
+        confirmButton = { TextButton(onClick = onImport) { Text("导入恢复") } }
+    )
+}
+
+@Composable
+private fun RestoreBackupDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("恢复备份？") },
+        text = { Text("恢复会以备份文件中的收藏夹和笔记替换当前本地数据，此操作无法撤销。") },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("确认恢复") } }
+    )
+}
+
+@Composable
+private fun FeedbackDialog(message: String, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        text = { Text(message) },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("知道了") } }
     )
 }
 
