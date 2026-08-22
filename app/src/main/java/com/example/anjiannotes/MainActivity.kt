@@ -69,6 +69,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -78,6 +79,7 @@ import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
@@ -668,6 +670,8 @@ private fun NoteDetailPage(
     val currentLink = remember(content) { extractFirstLink(content) }
     val formatDetail = if (formatMode == NoteFormatMode.AUTO) if (markdownActive) "自动：Markdown" else "自动：纯文本" else formatMode.label
     val folderName = folders.firstOrNull { it.id == selectedFolderId }?.name ?: "默认收藏夹"
+    val detailScrollState = rememberScrollState()
+    var pendingScrollRestore by remember(note?.id, seed) { mutableStateOf<Int?>(null) }
 
     LaunchedEffect(detailMode, focusTarget) {
         if (detailMode == DetailMode.EDIT) {
@@ -681,12 +685,19 @@ private fun NoteDetailPage(
                     contentFocus.requestFocus()
                 }
             }
+            pendingScrollRestore?.let { scrollPosition ->
+                // 焦点建立会触发文本控件的可见区域校正；下一帧再恢复预览态的阅读位置。
+                withFrameNanos { }
+                detailScrollState.scrollTo(scrollPosition)
+                pendingScrollRestore = null
+            }
         } else {
             keyboard?.hide()
         }
     }
 
     fun enterEdit(target: InlineEditTarget, cursorPosition: Int? = null) {
+        if (detailMode == DetailMode.PREVIEW) pendingScrollRestore = detailScrollState.value
         if (target == InlineEditTarget.CONTENT) requestedContentCursor = cursorPosition
         focusTarget = target
         detailMode = DetailMode.EDIT
@@ -718,7 +729,7 @@ private fun NoteDetailPage(
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
             Column(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp).verticalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp).verticalScroll(detailScrollState),
                 verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
             if (detailMode == DetailMode.EDIT) {
@@ -841,9 +852,13 @@ private fun EmptyNotes(query: String, onCreate: () -> Unit) {
 @Composable
 private fun NoteCard(note: NoteEntity, onOpen: () -> Unit) {
     val summary = remember(note.id, note.content, note.isMarkdown) { if (note.isMarkdown) markdownToPlainText(note.content) else note.content }
+    val darkTheme = isSystemInDarkTheme()
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
-        colors = CardDefaults.cardColors(containerColor = Color(note.color)),
+        colors = CardDefaults.cardColors(
+            containerColor = noteCardContainerColor(note.color, darkTheme),
+            contentColor = MaterialTheme.colorScheme.onSurface
+        ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -880,4 +895,16 @@ private fun ImportErrorDialog(message: String, onDismiss: () -> Unit) {
 }
 
 private val NoteColors = listOf(0xFFF5F0E8, 0xFFF5ECEB, 0xFFEDF3F5, 0xFFEEF5F0, 0xFFF5F1E3)
+
+private fun noteCardContainerColor(noteColor: Long, darkTheme: Boolean): Color {
+    if (!darkTheme) return Color(noteColor)
+    return when (noteColor) {
+        0xFFF5ECEB -> Color(0xFF2D2726)
+        0xFFEDF3F5 -> Color(0xFF252B2D)
+        0xFFEEF5F0 -> Color(0xFF252C27)
+        0xFFF5F1E3 -> Color(0xFF2C2A23)
+        else -> Color(0xFF2A2823)
+    }
+}
+
 private fun formatDate(time: Long): String = SimpleDateFormat("yyyy年M月d日 HH:mm", Locale.CHINA).format(Date(time))
