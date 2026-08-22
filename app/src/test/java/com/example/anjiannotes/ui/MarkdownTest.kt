@@ -1,6 +1,7 @@
 package com.example.anjiannotes.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -27,5 +28,19 @@ class MarkdownTest {
         assertEquals("https://example.com/a", extractFirstLink("请访问 https://example.com/a 查看"))
         assertEquals("https://example.com/b", extractFirstLink("[帮助页面](https://example.com/b)"))
         assertNull(extractFirstLink("没有链接的笔记"))
+    }
+
+    @Test
+    fun extractLinkAt_onlyReturnsLinkWhenTheTappedOffsetIsInsideIt() {
+        val text = "先读 https://example.com/a 再继续"
+        assertEquals("https://example.com/a", extractLinkAt(text, text.indexOf("example")))
+        assertNull(extractLinkAt(text, 1))
+    }
+
+    @Test
+    fun linkifyPlainText_marksUrlsWithAnExplicitStyle() {
+        val result = linkifyPlainText("访问 https://example.com", previewLinkColor(darkTheme = false))
+        assertEquals("访问 https://example.com", result.text)
+        assertNotNull(result.spanStyles.firstOrNull())
     }
 }

@@ -96,8 +96,11 @@ import com.example.anjiannotes.ui.MarkdownPreview
 import com.example.anjiannotes.ui.MarkdownSyntaxHint
 import com.example.anjiannotes.ui.NoteFormatMode
 import com.example.anjiannotes.ui.extractFirstLink
+import com.example.anjiannotes.ui.extractLinkAt
 import com.example.anjiannotes.ui.formatForFileName
+import com.example.anjiannotes.ui.linkifyPlainText
 import com.example.anjiannotes.ui.markdownToPlainText
+import com.example.anjiannotes.ui.previewLinkColor
 import com.example.anjiannotes.ui.readTextImport
 import com.example.anjiannotes.ui.theme.AnJianTheme
 import java.text.SimpleDateFormat
@@ -645,7 +648,6 @@ private fun NoteDetailPage(
     val contentFocus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     val markdownActive = formatMode.resolvesToMarkdown(content)
-    val currentLink = remember(content) { extractFirstLink(content) }
     val formatDetail = if (formatMode == NoteFormatMode.AUTO) if (markdownActive) "自动：Markdown" else "自动：纯文本" else formatMode.label
     val folderName = folders.firstOrNull { it.id == selectedFolderId }?.name ?: "默认收藏夹"
     val detailScrollState = rememberScrollState()
@@ -788,17 +790,29 @@ private fun NoteDetailPage(
                 )
             } else {
                 var plainTextLayout by remember(content) { mutableStateOf<TextLayoutResult?>(null) }
+                val linkColor = previewLinkColor(isSystemInDarkTheme())
+                val previewText = remember(content, linkColor) {
+                    linkifyPlainText(content.ifBlank { "空白笔记" }, linkColor)
+                }
                 Text(
-                    text = content.ifBlank { "空白笔记" },
+                    text = previewText,
                     style = MaterialTheme.typography.bodyLarge,
                     onTextLayout = { plainTextLayout = it },
                     modifier = Modifier.fillMaxWidth().pointerInput(content) {
-                        detectTapGestures(onDoubleTap = { offset ->
-                            plainTextLayout?.let { layout -> enterEdit(InlineEditTarget.CONTENT, layout.getOffsetForPosition(offset)) }
-                        })
+                        detectTapGestures(
+                            onTap = { offset ->
+                                plainTextLayout?.let { layout ->
+                                    extractLinkAt(content, layout.getOffsetForPosition(offset))?.let(::openPreviewLink)
+                                }
+                            },
+                            onDoubleTap = { offset ->
+                                plainTextLayout?.let { layout ->
+                                    enterEdit(InlineEditTarget.CONTENT, layout.getOffsetForPosition(offset))
+                                }
+                            }
+                        )
                     }
                 )
-                PlainTextLinkHint(content = content, onLinkClick = ::openPreviewLink)
             }
             Spacer(Modifier.height(48.dp))
             }
@@ -816,20 +830,6 @@ private fun NoteDetailPage(
                 showFolderPicker = false
             }
         )
-    }
-}
-
-@Composable
-private fun PlainTextLinkHint(content: String, onLinkClick: (String) -> Unit) {
-    val link = remember(content) { extractFirstLink(content) }
-    if (link != null) {
-        Surface(
-            modifier = Modifier.fillMaxWidth().clickable { onLinkClick(link) },
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.52f),
-            shape = MaterialTheme.shapes.medium
-        ) {
-            Text("打开链接\n$link", modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-        }
     }
 }
 
