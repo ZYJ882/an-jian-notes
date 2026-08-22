@@ -1,6 +1,8 @@
 package com.example.anjiannotes.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -20,12 +22,17 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 
 @Composable
-fun MarkdownPreview(markdown: String, modifier: Modifier = Modifier) {
+fun MarkdownPreview(
+    markdown: String,
+    modifier: Modifier = Modifier,
+    onLinkLongPress: (String) -> Unit = {}
+) {
     val lines = remember(markdown) { markdown.lineSequence().toList() }
     if (lines.isEmpty() || markdown.isBlank()) {
         Text(
@@ -37,33 +44,49 @@ fun MarkdownPreview(markdown: String, modifier: Modifier = Modifier) {
         return
     }
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        lines.forEach { line -> MarkdownLine(line) }
+        lines.forEach { line -> MarkdownLine(line, onLinkLongPress) }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MarkdownLine(line: String, onLinkLongPress: (String) -> Unit) {
+    val link = remember(line) { extractFirstLink(line) }
+    val lineModifier = if (link == null) Modifier else Modifier.combinedClickable(
+        onClick = {},
+        onLongClick = { onLinkLongPress(link) }
+    )
+    when {
+        line.startsWith("### ") -> MarkdownLineText(markdownInline(line.removePrefix("### ")), MaterialTheme.typography.titleMedium, lineModifier, FontWeight.Bold)
+        line.startsWith("## ") -> MarkdownLineText(markdownInline(line.removePrefix("## ")), MaterialTheme.typography.titleLarge, lineModifier, FontWeight.Bold)
+        line.startsWith("# ") -> MarkdownLineText(markdownInline(line.removePrefix("# ")), MaterialTheme.typography.headlineSmall, lineModifier, FontWeight.Bold)
+        line.trim() == "---" || line.trim() == "***" -> Spacer(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
+        line.startsWith("> ") -> Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium) {
+            MarkdownLineText(markdownInline(line.removePrefix("> ")), MaterialTheme.typography.bodyMedium, lineModifier.padding(horizontal = 12.dp, vertical = 9.dp))
+        }
+        line.matches(Regex("^[-+*]\\s+.*")) -> Row(verticalAlignment = Alignment.Top) {
+            Text("•", modifier = Modifier.padding(end = 8.dp), color = MaterialTheme.colorScheme.primary)
+            MarkdownLineText(markdownInline(line.replaceFirst(Regex("^[-+*]\\s+"), "")), MaterialTheme.typography.bodyMedium, lineModifier)
+        }
+        line.matches(Regex("^\\d+\\.\\s+.*")) -> {
+            val prefix = line.substringBefore(' ')
+            Row(verticalAlignment = Alignment.Top) {
+                Text(prefix, modifier = Modifier.padding(end = 8.dp), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                MarkdownLineText(markdownInline(line.removePrefix("$prefix ")), MaterialTheme.typography.bodyMedium, lineModifier)
+            }
+        }
+        else -> MarkdownLineText(markdownInline(line), MaterialTheme.typography.bodyMedium, lineModifier)
     }
 }
 
 @Composable
-private fun MarkdownLine(line: String) {
-    when {
-        line.startsWith("### ") -> Text(markdownInline(line.removePrefix("### ")), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        line.startsWith("## ") -> Text(markdownInline(line.removePrefix("## ")), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        line.startsWith("# ") -> Text(markdownInline(line.removePrefix("# ")), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        line.trim() == "---" || line.trim() == "***" -> Spacer(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-        line.startsWith("> ") -> Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium) {
-            Text(markdownInline(line.removePrefix("> ")), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp))
-        }
-        line.matches(Regex("^[-+*]\\s+.*")) -> Row(verticalAlignment = Alignment.Top) {
-            Text("•", modifier = Modifier.padding(end = 8.dp), color = MaterialTheme.colorScheme.primary)
-            Text(markdownInline(line.replaceFirst(Regex("^[-+*]\\s+"), "")), style = MaterialTheme.typography.bodyMedium)
-        }
-        line.matches(Regex("^\\d+\\.\\s+.*")) -> {
-            val prefix = line.substringBefore(' ') 
-            Row(verticalAlignment = Alignment.Top) {
-                Text(prefix, modifier = Modifier.padding(end = 8.dp), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-                Text(markdownInline(line.removePrefix("$prefix ")), style = MaterialTheme.typography.bodyMedium)
-            }
-        }
-        else -> Text(markdownInline(line), style = MaterialTheme.typography.bodyMedium)
-    }
+private fun MarkdownLineText(
+    text: AnnotatedString,
+    style: androidx.compose.ui.text.TextStyle,
+    modifier: Modifier,
+    weight: FontWeight? = null
+) {
+    Text(text = text, style = style, fontWeight = weight, modifier = modifier)
 }
 
 private fun markdownInline(text: String): AnnotatedString = buildAnnotatedString {
@@ -84,7 +107,7 @@ private fun markdownInline(text: String): AnnotatedString = buildAnnotatedString
         val content = text.substring(cursor + marker.length, closing)
         val style = when (marker) {
             "**" -> SpanStyle(fontWeight = FontWeight.Bold)
-            "*" -> SpanStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+            "*" -> SpanStyle(fontStyle = FontStyle.Italic)
             "~~" -> SpanStyle(textDecoration = TextDecoration.LineThrough)
             else -> SpanStyle(fontFamily = FontFamily.Monospace, background = Color(0x18000000))
         }
@@ -95,10 +118,17 @@ private fun markdownInline(text: String): AnnotatedString = buildAnnotatedString
     }
 }
 
+fun extractFirstLink(text: String): String? {
+    val markdownLink = Regex("\\[[^\\]]+\\]\\((https?://[^\\s)]+)\\)").find(text)?.groupValues?.getOrNull(1)
+    if (!markdownLink.isNullOrBlank()) return markdownLink
+    return Regex("https?://[^\\s)]+", RegexOption.IGNORE_CASE).find(text)?.value
+}
+
 fun markdownToPlainText(markdown: String): String = markdown
     .lineSequence()
     .joinToString(" ") { line ->
         line.replace(Regex("^\\s{0,3}(#{1,6}|>|[-+*]|\\d+\\.)\\s+"), "")
+            .replace(Regex("\\[([^\\]]+)]\\((https?://[^\\s)]+)\\)"), "${'$'}1")
             .replace(Regex("\\*\\*(.*?)\\*\\*"), "${'$'}1")
             .replace(Regex("~~(.*?)~~"), "${'$'}1")
             .replace(Regex("`(.*?)`"), "${'$'}1")

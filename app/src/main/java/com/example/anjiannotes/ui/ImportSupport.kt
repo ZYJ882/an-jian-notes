@@ -30,6 +30,11 @@ data class EditorSeed(
 
 data class ImportedNoteText(val title: String, val content: String)
 
+fun formatForFileName(fileName: String): NoteFormatMode = when {
+    fileName.endsWith(".md", ignoreCase = true) || fileName.endsWith(".markdown", ignoreCase = true) -> NoteFormatMode.MARKDOWN
+    else -> NoteFormatMode.PLAIN
+}
+
 sealed interface ImportReadResult {
     data class Success(val note: ImportedNoteText) : ImportReadResult
     data class Failure(val message: String) : ImportReadResult
@@ -61,9 +66,10 @@ fun readTextImport(context: Context, uri: Uri): ImportReadResult {
             builder.toString().removePrefix("\uFEFF")
         }
         if (content.isNullOrBlank()) return ImportReadResult.Failure("文件内容为空")
+        val name = displayName(context, uri)
         ImportReadResult.Success(
             ImportedNoteText(
-                title = displayName(context, uri).substringBeforeLast('.', displayName(context, uri)),
+                title = name.substringBeforeLast('.', name),
                 content = content
             )
         )
