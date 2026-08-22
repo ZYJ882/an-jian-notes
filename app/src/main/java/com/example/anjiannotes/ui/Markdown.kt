@@ -1,7 +1,6 @@
 package com.example.anjiannotes.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -154,7 +153,7 @@ private fun MarkdownTable(
 
 @Composable
 private fun MarkdownTableRow(cells: List<String>, header: Boolean) {
-    val linkColor = previewLinkColor(isSystemInDarkTheme())
+    val linkColor = previewLinkColor(darkTheme = true)
     Row(verticalAlignment = Alignment.Top) {
         cells.forEach { cell ->
             Text(
@@ -179,7 +178,7 @@ private fun MarkdownLine(
     onClick: () -> Unit
 ) {
     val link = remember(line) { extractFirstLink(line) }
-    val linkColor = previewLinkColor(isSystemInDarkTheme())
+    val linkColor = previewLinkColor(darkTheme = true)
     var textLayout by remember(line) { mutableStateOf<TextLayoutResult?>(null) }
     val lineModifier = Modifier.pointerInput(line) {
         detectTapGestures(

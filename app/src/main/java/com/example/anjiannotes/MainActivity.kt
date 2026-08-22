@@ -39,6 +39,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.material3.AlertDialog
@@ -77,12 +78,13 @@ import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
@@ -415,29 +417,45 @@ private fun NotesListPage(
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
-            ModalDrawerSheet(modifier = Modifier.fillMaxWidth(0.82f)) {
-                Column(modifier = Modifier.fillMaxSize().padding(vertical = 16.dp)) {
-                    Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) {
-                        Text("安笺", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                        Text("我的收藏夹", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    HorizontalDivider()
-                    androidx.compose.foundation.lazy.LazyColumn(
-                        modifier = Modifier.weight(1f).padding(horizontal = 12.dp, vertical = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+            ModalDrawerSheet(modifier = Modifier.fillMaxWidth(0.76f)) {
+                Column(modifier = Modifier.fillMaxSize().padding(vertical = 20.dp)) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        item {
-                            NavigationDrawerItem(
-                                label = { Text("＋ 新建收藏夹") },
-                                selected = false,
-                                onClick = {
-                                    onCreateFolder()
-                                    scope.launch { drawerState.close() }
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            )
+                        Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = CircleShape, modifier = Modifier.size(42.dp)) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text("安", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                            }
                         }
-                        item { HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp)) }
+                        Column {
+                            Text("我的收藏夹", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                            Text("安笺 · 离线笔记", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).clickable {
+                            onCreateFolder()
+                            scope.launch { drawerState.close() }
+                        },
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        Text(
+                            "＋  新建收藏夹",
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f))
+                    androidx.compose.foundation.lazy.LazyColumn(
+                        modifier = Modifier.weight(1f).padding(horizontal = 12.dp, vertical = 14.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         items(folders.size, key = { folders[it].id }) { index ->
                             val folder = folders[index]
                             NavigationDrawerItem(
@@ -451,9 +469,9 @@ private fun NotesListPage(
                             )
                         }
                     }
-                    HorizontalDivider()
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f))
                     NavigationDrawerItem(
-                        label = { Text("⚙  设置") },
+                        label = { Text("⚙  设置", style = MaterialTheme.typography.labelLarge) },
                         selected = false,
                         onClick = {
                             scope.launch { drawerState.close() }
@@ -481,11 +499,13 @@ private fun NotesListPage(
                                 if (drawerState.currentValue == DrawerValue.Closed) drawerState.open() else drawerState.close()
                             }
                         }) {
-                            Text("☰", fontSize = 24.sp)
+                            Text("☰", fontSize = 24.sp, color = MaterialTheme.colorScheme.onSurface)
                         }
                     },
                     actions = {
-                        TextButton(onClick = onSearchToggle) { Text(if (showSearch) "收起" else "搜索") }
+                        TextButton(onClick = onSearchToggle) {
+                            Text(if (showSearch) "×" else "⌕", fontSize = 26.sp, color = MaterialTheme.colorScheme.onSurface)
+                        }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
                 )
@@ -501,7 +521,7 @@ private fun NotesListPage(
             }
         ) { padding ->
             Column(
-                modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)
+                modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp)
             ) {
                 if (showSearch) {
                     OutlinedTextField(
@@ -598,32 +618,77 @@ private fun SettingsPage(
                 .fillMaxSize()
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+                .padding(horizontal = 20.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(22.dp)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("数据", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Surface(
-                    modifier = Modifier.fillMaxWidth().clickable(onClick = onBackupClick),
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.surfaceVariant
-                ) {
-                    Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("备份与恢复", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Text("导出或恢复全部收藏夹与笔记，支持 JSON 和 TXT 明文备份。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            SettingsGroup(
+                title = "数据",
+                items = listOf(
+                    SettingsEntry("↥", "备份与恢复", "导出或恢复 JSON、TXT 本地备份", onBackupClick)
+                )
+            )
+            SettingsGroup(
+                title = "关于",
+                items = listOf(
+                    SettingsEntry("i", "安笺", "离线笔记 · 轻写轻放", onClick = {})
+                )
+            )
+        }
+    }
+}
+
+private data class SettingsEntry(
+    val symbol: String,
+    val title: String,
+    val subtitle: String,
+    val onClick: () -> Unit
+)
+
+@Composable
+private fun SettingsGroup(title: String, items: List<SettingsEntry>) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            title.uppercase(),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp)
+        )
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            shape = MaterialTheme.shapes.large,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f))
+        ) {
+            Column {
+                items.forEachIndexed { index, item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(64.dp)
+                            .clickable(onClick = item.onClick)
+                            .padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = CircleShape,
+                            modifier = Modifier.size(38.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(item.symbol, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(item.title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface)
+                            Text(item.subtitle, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Text("›", fontSize = 28.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                }
-            }
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("使用说明", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.surfaceVariant
-                ) {
-                    Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("安笺", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Text("离线保存，轻写轻放。笔记内容仅保存在本机，建议定期使用备份与恢复功能保存副本。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (index != items.lastIndex) {
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f),
+                            modifier = Modifier.padding(start = 68.dp)
+                        )
                     }
                 }
             }
@@ -695,35 +760,62 @@ private fun QuickCaptureBar(
     onImportFile: () -> Unit,
     onImportClipboard: () -> Unit
 ) {
-    Surface(
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.72f)),
-        shadowElevation = 0.dp
+    val pillShape = RoundedCornerShape(30.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .imePadding()
+            .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp)
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .imePadding()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Surface(
-                modifier = Modifier.weight(1f).clickable(onClick = onStartWriting),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = MaterialTheme.shapes.extraLarge
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(56.dp)
+                    .shadow(
+                        elevation = 12.dp,
+                        shape = pillShape,
+                        ambientColor = Color.Black.copy(alpha = 0.42f),
+                        spotColor = Color.Black.copy(alpha = 0.52f)
+                    )
+                    .clip(pillShape)
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color(0xFF1B1E25), Color(0xFF16181D))
+                        )
+                    )
+                    .clickable(onClick = onStartWriting)
+                    .padding(horizontal = 20.dp),
+                contentAlignment = Alignment.CenterStart
             ) {
                 Text(
                     "写点什么…",
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             Box {
-                TextButton(onClick = { onExpandedChange(!expanded) }) {
-                    Text("⋮", fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
+                Surface(
+                    modifier = Modifier
+                        .size(56.dp)
+                        .shadow(
+                            elevation = 10.dp,
+                            shape = CircleShape,
+                            ambientColor = Color.Black.copy(alpha = 0.38f),
+                            spotColor = Color.Black.copy(alpha = 0.48f)
+                        )
+                        .clickable { onExpandedChange(!expanded) },
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = CircleShape
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text("⋮", fontSize = 26.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
+                    }
                 }
                 DropdownMenu(expanded = expanded, onDismissRequest = { onExpandedChange(false) }) {
                     CreateMenuItem("新建笔记", "打开完整编辑页开始书写", onClick = { onExpandedChange(false); onStartWriting() })
@@ -922,7 +1014,7 @@ private fun NoteDetailPage(
                 )
             } else {
                 var plainTextLayout by remember(content) { mutableStateOf<TextLayoutResult?>(null) }
-                val linkColor = previewLinkColor(isSystemInDarkTheme())
+                val linkColor = previewLinkColor(darkTheme = true)
                 val previewText = remember(content, linkColor) {
                     linkifyPlainText(content.ifBlank { "空白笔记" }, linkColor)
                 }
@@ -988,12 +1080,12 @@ private fun NoteCard(note: NoteEntity, onOpen: () -> Unit) {
             containerColor = MaterialTheme.colorScheme.surface,
             contentColor = MaterialTheme.colorScheme.onSurface
         ),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.52f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f)),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(9.dp)
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
                 note.title.ifBlank { "未命名笔记" },
@@ -1019,7 +1111,7 @@ private fun NoteCard(note: NoteEntity, onOpen: () -> Unit) {
                     modifier = Modifier.weight(1f)
                 )
                 if (note.isMarkdown) {
-                    Text("MD", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 12.dp))
+                    Text("MD", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 12.dp))
                 }
                 Text(
                     if (note.isPinned) "★" else "☆",
