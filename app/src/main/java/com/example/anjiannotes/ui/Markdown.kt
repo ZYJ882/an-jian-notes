@@ -18,7 +18,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -27,13 +30,16 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
 
 private sealed interface MarkdownBlock {
-    data class Line(val content: String) : MarkdownBlock
-    data class Table(val header: List<String>, val rows: List<List<String>>) : MarkdownBlock
+    data class Line(val content: String, val startOffset: Int) : MarkdownBlock
+    data class Table(val header: List<String>, val rows: List<List<String>>, val startOffset: Int) : MarkdownBlock
 }
 
 @Composable
@@ -42,7 +48,7 @@ fun MarkdownPreview(
     modifier: Modifier = Modifier,
     onLinkLongPress: (String) -> Unit = {},
     onLinkClick: (String) -> Unit = {},
-    onDoubleClick: () -> Unit = {},
+    onDoubleClickAt: (Int) -> Unit = {},
     onClick: () -> Unit = {}
 ) {
     val blocks = remember(markdown) { parseMarkdownBlocks(markdown) }
@@ -58,8 +64,8 @@ fun MarkdownPreview(
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(7.dp)) {
         blocks.forEach { block ->
             when (block) {
-                is MarkdownBlock.Line -> MarkdownLine(block.content, onLinkLongPress, onLinkClick, onDoubleClick, onClick)
-                is MarkdownBlock.Table -> MarkdownTable(block, onLinkLongPress, onLinkClick, onDoubleClick, onClick)
+                is MarkdownBlock.Line -> MarkdownLine(block.content, block.startOffset, onLinkLongPress, onLinkClick, onDoubleClickAt, onClick)
+                is MarkdownBlock.Table -> MarkdownTable(block, onLinkLongPress, onLinkClick, onDoubleClickAt, onClick)
             }
         }
     }
@@ -69,8 +75,10 @@ private fun parseMarkdownBlocks(markdown: String): List<MarkdownBlock> {
     val lines = markdown.lineSequence().toList()
     val result = mutableListOf<MarkdownBlock>()
     var index = 0
+    var offset = 0
     while (index < lines.size) {
         val current = lines[index]
+        val blockStart = offset
         if (index + 1 < lines.size && isTableRow(current) && isTableSeparator(lines[index + 1])) {
             val header = parseTableRow(current)
             val rows = mutableListOf<List<String>>()
@@ -79,10 +87,12 @@ private fun parseMarkdownBlocks(markdown: String): List<MarkdownBlock> {
                 rows += parseTableRow(lines[index])
                 index++
             }
-            result += MarkdownBlock.Table(header, rows)
+            result += MarkdownBlock.Table(header, rows, blockStart)
+            offset = lines.take(index).sumOf { it.length + 1 }
         } else {
-            result += MarkdownBlock.Line(current)
+            result += MarkdownBlock.Line(current, blockStart)
             index++
+            offset += current.length + 1
         }
     }
     return result
@@ -108,7 +118,7 @@ private fun MarkdownTable(
     table: MarkdownBlock.Table,
     onLinkLongPress: (String) -> Unit,
     onLinkClick: (String) -> Unit,
-    onDoubleClick: () -> Unit,
+    onDoubleClickAt: (Int) -> Unit,
     onClick: () -> Unit
 ) {
     val blockText = buildString {
@@ -121,7 +131,7 @@ private fun MarkdownTable(
         .horizontalScroll(rememberScrollState())
         .combinedClickable(
             onClick = { link?.let(onLinkClick) ?: onClick() },
-            onDoubleClick = onDoubleClick,
+            onDoubleClick = { onDoubleClickAt(table.startOffset) },
             onLongClick = { link?.let(onLinkLongPress) }
         )
     Surface(
@@ -158,37 +168,44 @@ private fun MarkdownTableRow(cells: List<String>, header: Boolean) {
 @Composable
 private fun MarkdownLine(
     line: String,
+    startOffset: Int,
     onLinkLongPress: (String) -> Unit,
     onLinkClick: (String) -> Unit,
-    onDoubleClick: () -> Unit,
+    onDoubleClickAt: (Int) -> Unit,
     onClick: () -> Unit
 ) {
     val link = remember(line) { extractFirstLink(line) }
-    val lineModifier = Modifier.combinedClickable(
-        onClick = onClick,
-        onDoubleClick = onDoubleClick,
-        onLongClick = { link?.let(onLinkLongPress) }
-    )
+    var textLayout by remember(line) { mutableStateOf<TextLayoutResult?>(null) }
+    val lineModifier = Modifier.pointerInput(line) {
+        detectTapGestures(
+            onTap = { if (link != null) onLinkClick(link) else onClick() },
+            onDoubleTap = { position ->
+                val localOffset = textLayout?.getOffsetForPosition(position) ?: 0
+                onDoubleClickAt((startOffset + localOffset).coerceIn(startOffset, startOffset + line.length))
+            },
+            onLongPress = { link?.let(onLinkLongPress) }
+        )
+    }
     when {
-        line.startsWith("### ") -> MarkdownLineText(markdownInline(line.removePrefix("### ")), MaterialTheme.typography.titleMedium, lineModifier, FontWeight.Bold)
-        line.startsWith("## ") -> MarkdownLineText(markdownInline(line.removePrefix("## ")), MaterialTheme.typography.titleLarge, lineModifier, FontWeight.Bold)
-        line.startsWith("# ") -> MarkdownLineText(markdownInline(line.removePrefix("# ")), MaterialTheme.typography.headlineSmall, lineModifier, FontWeight.Bold)
+        line.startsWith("### ") -> MarkdownLineText(markdownInline(line.removePrefix("### ")), MaterialTheme.typography.titleMedium, lineModifier, FontWeight.Bold, onTextLayout = { textLayout = it })
+        line.startsWith("## ") -> MarkdownLineText(markdownInline(line.removePrefix("## ")), MaterialTheme.typography.titleLarge, lineModifier, FontWeight.Bold, onTextLayout = { textLayout = it })
+        line.startsWith("# ") -> MarkdownLineText(markdownInline(line.removePrefix("# ")), MaterialTheme.typography.headlineSmall, lineModifier, FontWeight.Bold, onTextLayout = { textLayout = it })
         line.trim() == "---" || line.trim() == "***" -> Spacer(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
         line.startsWith("> ") -> Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium) {
-            MarkdownLineText(markdownInline(line.removePrefix("> ")), MaterialTheme.typography.bodyMedium, lineModifier.padding(horizontal = 12.dp, vertical = 9.dp))
+            MarkdownLineText(markdownInline(line.removePrefix("> ")), MaterialTheme.typography.bodyMedium, lineModifier.padding(horizontal = 12.dp, vertical = 9.dp), onTextLayout = { textLayout = it })
         }
         line.matches(Regex("^[-+*]\\s+.*")) -> Row(verticalAlignment = Alignment.Top) {
             Text("•", modifier = Modifier.padding(end = 8.dp), color = MaterialTheme.colorScheme.primary)
-            MarkdownLineText(markdownInline(line.replaceFirst(Regex("^[-+*]\\s+"), "")), MaterialTheme.typography.bodyMedium, lineModifier)
+            MarkdownLineText(markdownInline(line.replaceFirst(Regex("^[-+*]\\s+"), "")), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = { textLayout = it })
         }
         line.matches(Regex("^\\d+\\.\\s+.*")) -> {
             val prefix = line.substringBefore(' ')
             Row(verticalAlignment = Alignment.Top) {
                 Text(prefix, modifier = Modifier.padding(end = 8.dp), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-                MarkdownLineText(markdownInline(line.removePrefix("$prefix ")), MaterialTheme.typography.bodyMedium, lineModifier)
+                MarkdownLineText(markdownInline(line.removePrefix("$prefix ")), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = { textLayout = it })
             }
         }
-        else -> MarkdownLineText(markdownInline(line), MaterialTheme.typography.bodyMedium, lineModifier)
+        else -> MarkdownLineText(markdownInline(line), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = { textLayout = it })
     }
 }
 
@@ -197,9 +214,10 @@ private fun MarkdownLineText(
     text: AnnotatedString,
     style: androidx.compose.ui.text.TextStyle,
     modifier: Modifier,
-    weight: FontWeight? = null
+    weight: FontWeight? = null,
+    onTextLayout: (TextLayoutResult) -> Unit = {}
 ) {
-    Text(text = text, style = style, fontWeight = weight, modifier = modifier)
+    Text(text = text, style = style, fontWeight = weight, onTextLayout = onTextLayout, modifier = modifier)
 }
 
 private fun markdownInline(text: String): AnnotatedString = buildAnnotatedString {

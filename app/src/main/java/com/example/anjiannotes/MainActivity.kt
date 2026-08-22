@@ -32,6 +32,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -46,6 +48,7 @@ import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
@@ -71,10 +74,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -628,7 +633,7 @@ private fun CreateMenuItem(title: String, subtitle: String, onClick: () -> Unit)
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 private fun NoteDetailPage(
     note: NoteEntity?,
@@ -655,6 +660,7 @@ private fun NoteDetailPage(
     var focusTarget by remember(note?.id, seed) {
         mutableStateOf(if (note == null) InlineEditTarget.CONTENT else InlineEditTarget.CONTENT)
     }
+    var requestedContentCursor by remember(note?.id, seed) { mutableStateOf<Int?>(null) }
     val titleFocus = remember { FocusRequester() }
     val contentFocus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -667,14 +673,21 @@ private fun NoteDetailPage(
         if (detailMode == DetailMode.EDIT) {
             when (focusTarget) {
                 InlineEditTarget.TITLE -> titleFocus.requestFocus()
-                InlineEditTarget.CONTENT -> contentFocus.requestFocus()
+                InlineEditTarget.CONTENT -> {
+                    requestedContentCursor?.let { position ->
+                        contentValue = contentValue.copy(selection = TextRange(position.coerceIn(0, contentValue.text.length)))
+                        requestedContentCursor = null
+                    }
+                    contentFocus.requestFocus()
+                }
             }
         } else {
             keyboard?.hide()
         }
     }
 
-    fun enterEdit(target: InlineEditTarget) {
+    fun enterEdit(target: InlineEditTarget, cursorPosition: Int? = null) {
+        if (target == InlineEditTarget.CONTENT) requestedContentCursor = cursorPosition
         focusTarget = target
         detailMode = DetailMode.EDIT
     }
@@ -731,10 +744,11 @@ private fun NoteDetailPage(
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),
                 shape = MaterialTheme.shapes.large
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    maxItemsInEachRow = 3
                 ) {
                     AssistChip(
                         onClick = { if (detailMode == DetailMode.EDIT) formatMode = formatMode.next() },
@@ -742,7 +756,7 @@ private fun NoteDetailPage(
                     )
                     AssistChip(onClick = { showFolderPicker = true }, label = { Text("收藏夹：$folderName") })
                     if (pinned) AssistChip(onClick = {}, label = { Text("已置顶") })
-                    Text(formatDate(note?.updatedAt ?: System.currentTimeMillis()), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(formatDate(note?.updatedAt ?: System.currentTimeMillis()), maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
@@ -764,17 +778,20 @@ private fun NoteDetailPage(
                     content,
                     modifier = Modifier.fillMaxWidth(),
                     onLinkClick = ::openPreviewLink,
-                    onDoubleClick = { enterEdit(InlineEditTarget.CONTENT) },
+                    onDoubleClickAt = { position -> enterEdit(InlineEditTarget.CONTENT, position) },
                     onClick = {}
                 )
             } else {
+                var plainTextLayout by remember(content) { mutableStateOf<TextLayoutResult?>(null) }
                 Text(
                     text = content.ifBlank { "空白笔记" },
                     style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.fillMaxWidth().combinedClickable(
-                        onClick = {},
-                        onDoubleClick = { enterEdit(InlineEditTarget.CONTENT) }
-                    )
+                    onTextLayout = { plainTextLayout = it },
+                    modifier = Modifier.fillMaxWidth().pointerInput(content) {
+                        detectTapGestures(onDoubleTap = { offset ->
+                            plainTextLayout?.let { layout -> enterEdit(InlineEditTarget.CONTENT, layout.getOffsetForPosition(offset)) }
+                        })
+                    }
                 )
                 PlainTextLinkHint(content = content, onLinkClick = ::openPreviewLink)
             }
