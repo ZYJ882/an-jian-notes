@@ -244,7 +244,9 @@ private fun NotesListPage(
                     modifier = Modifier.fillMaxSize()
                 ) {
                     item { Text("共 ${notes.size} 条笔记", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 2.dp)) }
-                    items(notes.size, key = { notes[it].id }) { index -> NoteCard(note = notes[index], onOpen = { onOpenNote(notes[index]) }) }
+                    items(notes.size, key = { notes[it].id }) { index ->
+                        NoteCard(note = notes[index], onOpen = { onOpenNote(notes[index]) })
+                    }
                     item { Spacer(Modifier.height(84.dp)) }
                 }
             }
@@ -267,7 +269,7 @@ private fun CreateMenu(
             contentColor = MaterialTheme.colorScheme.onPrimaryContainer
         ) { Text("+", fontSize = 30.sp, fontWeight = FontWeight.Light) }
         DropdownMenu(expanded = expanded, onDismissRequest = { onExpandedChange(false) }) {
-            CreateMenuItem("新建笔记", "手写内容，自动识别 Markdown 与文本", onClick = { onExpandedChange(false); onNewNote() })
+            CreateMenuItem("新建笔记", "输入内容，自动识别 Markdown 与文本", onClick = { onExpandedChange(false); onNewNote() })
             CreateMenuItem("导入文件", "支持 .md、.markdown、.txt 与 UTF-8 文本", onClick = { onExpandedChange(false); onImportFile() })
             CreateMenuItem("从剪切板导入", "读取当前最近一条剪切板文本", onClick = { onExpandedChange(false); onImportClipboard() })
         }
@@ -287,7 +289,7 @@ private fun CreateMenuItem(title: String, subtitle: String, onClick: () -> Unit)
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun NoteDetailPage(
     note: NoteEntity?,
@@ -303,10 +305,11 @@ private fun NoteDetailPage(
     var color by remember(note?.id) { mutableStateOf(note?.color ?: NoteColors.first()) }
     var pinned by remember(note?.id) { mutableStateOf(note?.isPinned ?: false) }
     var formatMode by remember(note?.id, seed) { mutableStateOf(if (note != null) if (note.isMarkdown) NoteFormatMode.MARKDOWN else NoteFormatMode.PLAIN else seed.formatMode) }
-    var previewMode by remember(note?.id, seed) { mutableStateOf(note?.isMarkdown == true || seed.formatMode == NoteFormatMode.MARKDOWN) }
+    var editing by remember(note?.id, seed) {
+        mutableStateOf(note == null)
+    }
     var pendingLink by remember { mutableStateOf<String?>(null) }
     val markdownActive = formatMode.resolvesToMarkdown(content)
-    val editing = !markdownActive || !previewMode
     val formatDetail = if (formatMode == NoteFormatMode.AUTO) if (markdownActive) "自动：Markdown" else "自动：纯文本" else formatMode.label
 
     Scaffold(
@@ -317,7 +320,7 @@ private fun NoteDetailPage(
                 navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
                 actions = {
                     if (markdownActive) {
-                        TextButton(onClick = { previewMode = !previewMode }) { Text(if (previewMode) "编辑" else "预览") }
+                        TextButton(onClick = { editing = !editing }) { Text(if (editing) "预览" else "编辑") }
                     }
                     if (editing) TextButton(onClick = {
                         onSave(note?.id ?: 0, title, content, tags, color, pinned, markdownActive, note?.createdAt ?: System.currentTimeMillis())
@@ -333,7 +336,7 @@ private fun NoteDetailPage(
         ) {
             if (editing) {
                 OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("标题") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                AssistChip(onClick = { formatMode = formatMode.next(); if (!formatMode.resolvesToMarkdown(content)) previewMode = false }, label = { Text("格式：$formatDetail") })
+                AssistChip(onClick = { formatMode = formatMode.next() }, label = { Text("格式：$formatDetail") })
                 if (markdownActive) MarkdownSyntaxHint()
                 OutlinedTextField(
                     value = content,
@@ -365,7 +368,21 @@ private fun NoteDetailPage(
                     Text(formatDate(note?.updatedAt ?: System.currentTimeMillis()), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
-                MarkdownPreview(content, modifier = Modifier.fillMaxWidth(), onLinkLongPress = { pendingLink = it })
+                if (markdownActive) {
+                    MarkdownPreview(
+                        content,
+                        modifier = Modifier.fillMaxWidth(),
+                        onLinkLongPress = { pendingLink = it },
+                        onDoubleClick = { editing = true }
+                    )
+                } else {
+                    Text(
+                        text = content.ifBlank { "空白笔记" },
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.fillMaxWidth().combinedClickable(onClick = {}, onDoubleClick = { editing = true })
+                    )
+                    PlainTextLinkHint(content = content, onLinkLongPress = { pendingLink = it })
+                }
                 if (tags.isNotBlank()) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                         tags.split(',').filter { it.isNotBlank() }.forEach { tag -> AssistChip(onClick = {}, label = { Text("#$tag") }) }

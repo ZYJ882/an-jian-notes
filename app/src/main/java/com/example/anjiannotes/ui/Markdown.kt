@@ -31,7 +31,8 @@ import androidx.compose.ui.unit.dp
 fun MarkdownPreview(
     markdown: String,
     modifier: Modifier = Modifier,
-    onLinkLongPress: (String) -> Unit = {}
+    onLinkLongPress: (String) -> Unit = {},
+    onDoubleClick: () -> Unit = {}
 ) {
     val lines = remember(markdown) { markdown.lineSequence().toList() }
     if (lines.isEmpty() || markdown.isBlank()) {
@@ -44,17 +45,22 @@ fun MarkdownPreview(
         return
     }
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        lines.forEach { line -> MarkdownLine(line, onLinkLongPress) }
+        lines.forEach { line -> MarkdownLine(line, onLinkLongPress, onDoubleClick) }
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MarkdownLine(line: String, onLinkLongPress: (String) -> Unit) {
+private fun MarkdownLine(
+    line: String,
+    onLinkLongPress: (String) -> Unit,
+    onDoubleClick: () -> Unit
+) {
     val link = remember(line) { extractFirstLink(line) }
-    val lineModifier = if (link == null) Modifier else Modifier.combinedClickable(
+    val lineModifier = Modifier.combinedClickable(
         onClick = {},
-        onLongClick = { onLinkLongPress(link) }
+        onDoubleClick = onDoubleClick,
+        onLongClick = { link?.let(onLinkLongPress) }
     )
     when {
         line.startsWith("### ") -> MarkdownLineText(markdownInline(line.removePrefix("### ")), MaterialTheme.typography.titleMedium, lineModifier, FontWeight.Bold)
