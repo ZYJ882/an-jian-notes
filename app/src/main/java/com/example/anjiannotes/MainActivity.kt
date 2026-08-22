@@ -20,6 +20,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -55,6 +56,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -62,8 +64,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -101,6 +106,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+private enum class InlineEditTarget { TITLE, CONTENT }
 
 private sealed interface AppPage {
     data object List : AppPage
@@ -249,7 +256,7 @@ private fun NotesApp(viewModel: NotesViewModel) {
                 onBack = { page = AppPage.List },
                 onSave = { id, title, content, tags, color, pinned, markdown, folderId, createdAt ->
                     viewModel.saveNote(id, title, content, tags, color, pinned, markdown, folderId, createdAt)
-                    page = AppPage.List
+                    if (currentPage.note == null) page = AppPage.List
                 },
                 onDelete = { note -> noteToDelete = note },
                 onMoveFolder = viewModel::moveNoteToFolder
@@ -617,13 +624,24 @@ private fun NoteDetailPage(
     var selectedFolderId by remember(note?.id, initialFolderId) { mutableStateOf(note?.folderId ?: initialFolderId) }
     var showFolderPicker by remember { mutableStateOf(false) }
     var formatMode by remember(note?.id, seed) { mutableStateOf(if (note != null) if (note.isMarkdown) NoteFormatMode.MARKDOWN else NoteFormatMode.PLAIN else seed.formatMode) }
-    var editing by remember(note?.id, seed) {
-        mutableStateOf(note == null)
+    var activeEditor by remember(note?.id, seed) {
+        mutableStateOf<InlineEditTarget?>(if (note == null) InlineEditTarget.CONTENT else null)
     }
     var pendingLink by remember { mutableStateOf<String?>(null) }
+    val titleFocus = remember { FocusRequester() }
+    val contentFocus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
     val markdownActive = formatMode.resolvesToMarkdown(content)
     val formatDetail = if (formatMode == NoteFormatMode.AUTO) if (markdownActive) "自动：Markdown" else "自动：纯文本" else formatMode.label
     val folderName = folders.firstOrNull { it.id == selectedFolderId }?.name ?: "默认收藏夹"
+
+    LaunchedEffect(activeEditor) {
+        when (activeEditor) {
+            InlineEditTarget.TITLE -> titleFocus.requestFocus()
+            InlineEditTarget.CONTENT -> contentFocus.requestFocus()
+            null -> keyboard?.hide()
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -632,10 +650,12 @@ private fun NoteDetailPage(
                 title = { Text(if (note == null) "新建笔记" else "笔记详情", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
                 actions = {
-                    TextButton(onClick = { editing = !editing }) { Text(if (editing) "预览" else "编辑") }
-                    if (editing) TextButton(onClick = {
-                        onSave(note?.id ?: 0, title, content, tags, color, pinned, markdownActive, selectedFolderId, note?.createdAt ?: System.currentTimeMillis())
-                    }) { Text("保存", fontWeight = FontWeight.SemiBold) }
+                    if (activeEditor != null) {
+                        TextButton(onClick = { activeEditor = null }) { Text("完成") }
+                        TextButton(onClick = {
+                            onSave(note?.id ?: 0, title, content, tags, color, pinned, markdownActive, selectedFolderId, note?.createdAt ?: System.currentTimeMillis())
+                        }) { Text("保存", fontWeight = FontWeight.SemiBold) }
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
@@ -645,64 +665,63 @@ private fun NoteDetailPage(
             modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            if (editing) {
-                OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("标题") }, modifier = Modifier.fillMaxWidth(), singleLine = true, textStyle = MaterialTheme.typography.titleLarge)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AssistChip(onClick = { formatMode = formatMode.next() }, label = { Text("格式：$formatDetail") })
-                    AssistChip(onClick = { showFolderPicker = true }, label = { Text("收藏夹：$folderName") })
-                }
+            if (activeEditor == InlineEditTarget.TITLE) {
+                BasicTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    modifier = Modifier.fillMaxWidth().focusRequester(titleFocus),
+                    textStyle = MaterialTheme.typography.titleLarge.copy(color = MaterialTheme.colorScheme.onBackground),
+                    singleLine = true
+                )
+            } else {
+                Text(
+                    title.ifBlank { "未命名笔记" },
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.fillMaxWidth().clickable { activeEditor = InlineEditTarget.TITLE }
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AssistChip(onClick = { formatMode = formatMode.next() }, label = { Text("格式：$formatDetail") })
+                AssistChip(onClick = { showFolderPicker = true }, label = { Text("收藏夹：$folderName") })
+                if (pinned) AssistChip(onClick = {}, label = { Text("已置顶") })
+                Text(formatDate(note?.updatedAt ?: System.currentTimeMillis()), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+            if (activeEditor == InlineEditTarget.CONTENT) {
                 if (markdownActive) MarkdownSyntaxHint()
-                OutlinedTextField(
+                BasicTextField(
                     value = content,
                     onValueChange = { content = it },
-                    label = { Text(if (markdownActive) "Markdown 正文" else "正文") },
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp).focusRequester(contentFocus),
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onBackground),
                     minLines = 6
                 )
                 PlainTextLinkHint(content = content, onLinkLongPress = { pendingLink = it })
-                OutlinedTextField(value = tags, onValueChange = { tags = it }, label = { Text("标签（输入 #标签 或用逗号分隔）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                Text("笔记颜色", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    NoteColors.forEach { option ->
-                        Box(
-                            modifier = Modifier.size(if (color == option) 32.dp else 26.dp).clip(CircleShape).background(Color(option)).clickable { color = option },
-                            contentAlignment = Alignment.Center
-                        ) { if (color == option) Text("✓", color = Color(0xFF514A42), fontWeight = FontWeight.Bold) }
-                    }
-                }
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    if (note != null) TextButton(onClick = { onDelete(note) }) { Text("删除", color = MaterialTheme.colorScheme.error) } else Spacer(Modifier.width(1.dp))
-                    TextButton(onClick = { pinned = !pinned }) { Text(if (pinned) "取消置顶" else "置顶") }
-                }
+            } else if (markdownActive) {
+                MarkdownPreview(
+                    content,
+                    modifier = Modifier.fillMaxWidth(),
+                    onLinkLongPress = { pendingLink = it },
+                    onDoubleClick = { activeEditor = InlineEditTarget.CONTENT },
+                    onClick = { activeEditor = InlineEditTarget.CONTENT }
+                )
             } else {
-                Text(title.ifBlank { "未命名笔记" }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AssistChip(onClick = { showFolderPicker = true }, label = { Text("收藏夹：$folderName") })
-                    AssistChip(onClick = {}, label = { Text(if (markdownActive) "Markdown" else "纯文本") })
-                    if (pinned) AssistChip(onClick = {}, label = { Text("已置顶") })
-                    Text(formatDate(note?.updatedAt ?: System.currentTimeMillis()), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    text = content.ifBlank { "空白笔记" },
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.fillMaxWidth().clickable { activeEditor = InlineEditTarget.CONTENT }
+                )
+                PlainTextLinkHint(content = content, onLinkLongPress = { pendingLink = it })
+            }
+            if (tags.isNotBlank()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                    tags.split(',').filter { it.isNotBlank() }.forEach { tag -> AssistChip(onClick = {}, label = { Text("#${tag.trim().removePrefix("#")}") }) }
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
-                if (markdownActive) {
-                    MarkdownPreview(
-                        content,
-                        modifier = Modifier.fillMaxWidth(),
-                        onLinkLongPress = { pendingLink = it },
-                        onDoubleClick = { editing = true }
-                    )
-                } else {
-                    Text(
-                        text = content.ifBlank { "空白笔记" },
-                        style = MaterialTheme.typography.bodyLarge,
-                        modifier = Modifier.fillMaxWidth().combinedClickable(onClick = {}, onDoubleClick = { editing = true })
-                    )
-                    PlainTextLinkHint(content = content, onLinkLongPress = { pendingLink = it })
-                }
-                if (tags.isNotBlank()) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
-                        tags.split(',').filter { it.isNotBlank() }.forEach { tag -> AssistChip(onClick = {}, label = { Text("#${tag.trim().removePrefix("#")}") }) }
-                    }
-                }
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                if (note != null) TextButton(onClick = { onDelete(note) }) { Text("删除", color = MaterialTheme.colorScheme.error) } else Spacer(Modifier.width(1.dp))
+                TextButton(onClick = { pinned = !pinned }) { Text(if (pinned) "取消置顶" else "置顶") }
             }
             Spacer(Modifier.height(36.dp))
         }

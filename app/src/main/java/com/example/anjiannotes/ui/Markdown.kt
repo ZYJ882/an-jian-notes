@@ -41,7 +41,8 @@ fun MarkdownPreview(
     markdown: String,
     modifier: Modifier = Modifier,
     onLinkLongPress: (String) -> Unit = {},
-    onDoubleClick: () -> Unit = {}
+    onDoubleClick: () -> Unit = {},
+    onClick: () -> Unit = {}
 ) {
     val blocks = remember(markdown) { parseMarkdownBlocks(markdown) }
     if (blocks.isEmpty() || markdown.isBlank()) {
@@ -56,8 +57,8 @@ fun MarkdownPreview(
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(7.dp)) {
         blocks.forEach { block ->
             when (block) {
-                is MarkdownBlock.Line -> MarkdownLine(block.content, onLinkLongPress, onDoubleClick)
-                is MarkdownBlock.Table -> MarkdownTable(block, onLinkLongPress, onDoubleClick)
+                is MarkdownBlock.Line -> MarkdownLine(block.content, onLinkLongPress, onDoubleClick, onClick)
+                is MarkdownBlock.Table -> MarkdownTable(block, onLinkLongPress, onDoubleClick, onClick)
             }
         }
     }
@@ -105,7 +106,8 @@ private fun parseTableRow(line: String): List<String> = line
 private fun MarkdownTable(
     table: MarkdownBlock.Table,
     onLinkLongPress: (String) -> Unit,
-    onDoubleClick: () -> Unit
+    onDoubleClick: () -> Unit,
+    onClick: () -> Unit
 ) {
     val blockText = buildString {
         append(table.header.joinToString(" | "))
@@ -116,7 +118,7 @@ private fun MarkdownTable(
         .fillMaxWidth()
         .horizontalScroll(rememberScrollState())
         .combinedClickable(
-            onClick = {},
+            onClick = onClick,
             onDoubleClick = onDoubleClick,
             onLongClick = { link?.let(onLinkLongPress) }
         )
@@ -155,11 +157,12 @@ private fun MarkdownTableRow(cells: List<String>, header: Boolean) {
 private fun MarkdownLine(
     line: String,
     onLinkLongPress: (String) -> Unit,
-    onDoubleClick: () -> Unit
+    onDoubleClick: () -> Unit,
+    onClick: () -> Unit
 ) {
     val link = remember(line) { extractFirstLink(line) }
     val lineModifier = Modifier.combinedClickable(
-        onClick = {},
+        onClick = onClick,
         onDoubleClick = onDoubleClick,
         onLongClick = { link?.let(onLinkLongPress) }
     )
