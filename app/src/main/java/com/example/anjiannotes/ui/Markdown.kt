@@ -41,6 +41,7 @@ fun MarkdownPreview(
     markdown: String,
     modifier: Modifier = Modifier,
     onLinkLongPress: (String) -> Unit = {},
+    onLinkClick: (String) -> Unit = {},
     onDoubleClick: () -> Unit = {},
     onClick: () -> Unit = {}
 ) {
@@ -57,8 +58,8 @@ fun MarkdownPreview(
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(7.dp)) {
         blocks.forEach { block ->
             when (block) {
-                is MarkdownBlock.Line -> MarkdownLine(block.content, onLinkLongPress, onDoubleClick, onClick)
-                is MarkdownBlock.Table -> MarkdownTable(block, onLinkLongPress, onDoubleClick, onClick)
+                is MarkdownBlock.Line -> MarkdownLine(block.content, onLinkLongPress, onLinkClick, onDoubleClick, onClick)
+                is MarkdownBlock.Table -> MarkdownTable(block, onLinkLongPress, onLinkClick, onDoubleClick, onClick)
             }
         }
     }
@@ -106,6 +107,7 @@ private fun parseTableRow(line: String): List<String> = line
 private fun MarkdownTable(
     table: MarkdownBlock.Table,
     onLinkLongPress: (String) -> Unit,
+    onLinkClick: (String) -> Unit,
     onDoubleClick: () -> Unit,
     onClick: () -> Unit
 ) {
@@ -118,7 +120,7 @@ private fun MarkdownTable(
         .fillMaxWidth()
         .horizontalScroll(rememberScrollState())
         .combinedClickable(
-            onClick = onClick,
+            onClick = { link?.let(onLinkClick) ?: onClick() },
             onDoubleClick = onDoubleClick,
             onLongClick = { link?.let(onLinkLongPress) }
         )
@@ -157,6 +159,7 @@ private fun MarkdownTableRow(cells: List<String>, header: Boolean) {
 private fun MarkdownLine(
     line: String,
     onLinkLongPress: (String) -> Unit,
+    onLinkClick: (String) -> Unit,
     onDoubleClick: () -> Unit,
     onClick: () -> Unit
 ) {

@@ -120,6 +120,7 @@ class MainActivity : ComponentActivity() {
 }
 
 private enum class InlineEditTarget { TITLE, CONTENT }
+private enum class DetailMode { PREVIEW, EDIT }
 
 private sealed interface AppPage {
     data object List : AppPage
@@ -648,11 +649,12 @@ private fun NoteDetailPage(
     var selectedFolderId by remember(note?.id, initialFolderId) { mutableStateOf(note?.folderId ?: initialFolderId) }
     var showFolderPicker by remember { mutableStateOf(false) }
     var formatMode by remember(note?.id, seed) { mutableStateOf(if (note != null) if (note.isMarkdown) NoteFormatMode.MARKDOWN else NoteFormatMode.PLAIN else seed.formatMode) }
-    var activeEditor by remember(note?.id, seed) {
-        mutableStateOf<InlineEditTarget?>(if (note == null) InlineEditTarget.CONTENT else null)
+    var detailMode by remember(note?.id, seed) {
+        mutableStateOf(if (note == null) DetailMode.EDIT else DetailMode.PREVIEW)
     }
-    var pendingLink by remember { mutableStateOf<String?>(null) }
-    var selectedLink by remember(note?.id, seed) { mutableStateOf<String?>(null) }
+    var focusTarget by remember(note?.id, seed) {
+        mutableStateOf(if (note == null) InlineEditTarget.CONTENT else InlineEditTarget.CONTENT)
+    }
     val titleFocus = remember { FocusRequester() }
     val contentFocus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -661,12 +663,24 @@ private fun NoteDetailPage(
     val formatDetail = if (formatMode == NoteFormatMode.AUTO) if (markdownActive) "自动：Markdown" else "自动：纯文本" else formatMode.label
     val folderName = folders.firstOrNull { it.id == selectedFolderId }?.name ?: "默认收藏夹"
 
-    LaunchedEffect(activeEditor) {
-        when (activeEditor) {
-            InlineEditTarget.TITLE -> titleFocus.requestFocus()
-            InlineEditTarget.CONTENT -> contentFocus.requestFocus()
-            null -> keyboard?.hide()
+    LaunchedEffect(detailMode, focusTarget) {
+        if (detailMode == DetailMode.EDIT) {
+            when (focusTarget) {
+                InlineEditTarget.TITLE -> titleFocus.requestFocus()
+                InlineEditTarget.CONTENT -> contentFocus.requestFocus()
+            }
+        } else {
+            keyboard?.hide()
         }
+    }
+
+    fun enterEdit(target: InlineEditTarget) {
+        focusTarget = target
+        detailMode = DetailMode.EDIT
+    }
+
+    fun openPreviewLink(link: String) {
+        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }
     }
 
     Scaffold(
@@ -676,8 +690,10 @@ private fun NoteDetailPage(
                 title = { Text(if (note == null) "新建笔记" else "笔记详情", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
                 actions = {
-                    if (activeEditor != null) {
-                        TextButton(onClick = { activeEditor = null }) { Text("完成") }
+                    TextButton(onClick = {
+                        detailMode = if (detailMode == DetailMode.PREVIEW) DetailMode.EDIT else DetailMode.PREVIEW
+                    }) { Text(if (detailMode == DetailMode.PREVIEW) "编辑" else "预览") }
+                    if (detailMode == DetailMode.EDIT) {
                         TextButton(onClick = {
                             onSave(note?.id ?: 0, title, content, color, pinned, markdownActive, selectedFolderId, note?.createdAt ?: System.currentTimeMillis())
                         }) { Text("保存", fontWeight = FontWeight.SemiBold) }
@@ -692,7 +708,7 @@ private fun NoteDetailPage(
                 modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
-            if (activeEditor == InlineEditTarget.TITLE) {
+            if (detailMode == DetailMode.EDIT) {
                 BasicTextField(
                     value = title,
                     onValueChange = { title = it },
@@ -705,7 +721,10 @@ private fun NoteDetailPage(
                     title.ifBlank { "未命名笔记" },
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.fillMaxWidth().clickable { activeEditor = InlineEditTarget.TITLE }
+                    modifier = Modifier.fillMaxWidth().combinedClickable(
+                        onClick = {},
+                        onDoubleClick = { enterEdit(InlineEditTarget.TITLE) }
+                    )
                 )
             }
             Surface(
@@ -717,68 +736,51 @@ private fun NoteDetailPage(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    AssistChip(onClick = { formatMode = formatMode.next() }, label = { Text("格式：$formatDetail") })
+                    AssistChip(
+                        onClick = { if (detailMode == DetailMode.EDIT) formatMode = formatMode.next() },
+                        label = { Text("格式：$formatDetail") }
+                    )
                     AssistChip(onClick = { showFolderPicker = true }, label = { Text("收藏夹：$folderName") })
                     if (pinned) AssistChip(onClick = {}, label = { Text("已置顶") })
                     Text(formatDate(note?.updatedAt ?: System.currentTimeMillis()), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
-            if (activeEditor == InlineEditTarget.CONTENT) {
+            if (detailMode == DetailMode.EDIT) {
                 if (markdownActive) MarkdownSyntaxHint()
                 BasicTextField(
                     value = contentValue,
-                    onValueChange = { value ->
-                        contentValue = value
-                        selectedLink = selectedLinkFrom(value)
-                    },
+                    onValueChange = { value -> contentValue = value },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp).focusRequester(contentFocus),
                     textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onBackground),
                     minLines = 6
                 )
-                PlainTextLinkHint(content = content, onLinkLongPress = { pendingLink = it })
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    if (note != null) TextButton(onClick = { onDelete(note) }) { Text("删除", color = MaterialTheme.colorScheme.error) } else Spacer(Modifier.width(1.dp))
+                    TextButton(onClick = { pinned = !pinned }) { Text(if (pinned) "取消置顶" else "置顶") }
+                }
             } else if (markdownActive) {
                 MarkdownPreview(
                     content,
                     modifier = Modifier.fillMaxWidth(),
-                    onLinkLongPress = { pendingLink = it },
-                    onDoubleClick = { activeEditor = InlineEditTarget.CONTENT },
-                    onClick = { activeEditor = InlineEditTarget.CONTENT }
+                    onLinkClick = ::openPreviewLink,
+                    onDoubleClick = { enterEdit(InlineEditTarget.CONTENT) },
+                    onClick = {}
                 )
             } else {
                 Text(
                     text = content.ifBlank { "空白笔记" },
                     style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.fillMaxWidth().clickable { activeEditor = InlineEditTarget.CONTENT }
+                    modifier = Modifier.fillMaxWidth().combinedClickable(
+                        onClick = {},
+                        onDoubleClick = { enterEdit(InlineEditTarget.CONTENT) }
+                    )
                 )
-                PlainTextLinkHint(content = content, onLinkLongPress = { pendingLink = it })
-            }
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                if (note != null) TextButton(onClick = { onDelete(note) }) { Text("删除", color = MaterialTheme.colorScheme.error) } else Spacer(Modifier.width(1.dp))
-                TextButton(onClick = { pinned = !pinned }) { Text(if (pinned) "取消置顶" else "置顶") }
+                PlainTextLinkHint(content = content, onLinkClick = ::openPreviewLink)
             }
             Spacer(Modifier.height(48.dp))
             }
-            LinkSelectionActionBar(
-                link = selectedLink,
-                onOpen = { link ->
-                    selectedLink = null
-                    pendingLink = link
-                },
-                onDismiss = { selectedLink = null },
-                modifier = Modifier.align(Alignment.BottomCenter).imePadding().padding(horizontal = 20.dp, vertical = 14.dp)
-            )
         }
-    }
-    pendingLink?.let { link ->
-        LinkActionDialog(
-            link = link,
-            onDismiss = { pendingLink = null },
-            onOpen = {
-                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }
-                pendingLink = null
-            }
-        )
     }
     if (showFolderPicker) {
         FolderPickerDialog(
@@ -795,75 +797,17 @@ private fun NoteDetailPage(
 }
 
 @Composable
-private fun LinkSelectionActionBar(
-    link: String?,
-    onOpen: (String) -> Unit,
-    onDismiss: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    AnimatedVisibility(
-        visible = link != null,
-        modifier = modifier,
-        enter = fadeIn(tween(150, easing = FastOutSlowInEasing)) + slideInVertically(
-            animationSpec = spring(stiffness = 550f),
-            initialOffsetY = { it / 2 }
-        ),
-        exit = fadeOut(tween(100)) + slideOutVertically(
-            animationSpec = tween(120),
-            targetOffsetY = { it / 2 }
-        )
-    ) {
-        Surface(
-            color = MaterialTheme.colorScheme.inverseSurface,
-            contentColor = MaterialTheme.colorScheme.inverseOnSurface,
-            shape = MaterialTheme.shapes.large,
-            shadowElevation = 10.dp
-        ) {
-            Row(
-                modifier = Modifier.padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text("已选中链接", style = MaterialTheme.typography.labelLarge)
-                TextButton(onClick = { link?.let(onOpen) }) { Text("跳转链接") }
-                TextButton(onClick = onDismiss) { Text("取消") }
-            }
-        }
-    }
-}
-
-private fun selectedLinkFrom(value: TextFieldValue): String? {
-    val selection = value.selection
-    if (selection.collapsed) return null
-    val start = selection.min.coerceIn(0, value.text.length)
-    val end = selection.max.coerceIn(start, value.text.length)
-    return extractFirstLink(value.text.substring(start, end))
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun PlainTextLinkHint(content: String, onLinkLongPress: (String) -> Unit) {
+private fun PlainTextLinkHint(content: String, onLinkClick: (String) -> Unit) {
     val link = remember(content) { extractFirstLink(content) }
     if (link != null) {
         Surface(
-            modifier = Modifier.fillMaxWidth().combinedClickable(onClick = {}, onLongClick = { onLinkLongPress(link) }),
+            modifier = Modifier.fillMaxWidth().clickable { onLinkClick(link) },
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.52f),
             shape = MaterialTheme.shapes.medium
         ) {
-            Text("检测到链接：长按此处后可选择跳转\n$link", modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("打开链接\n$link", modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
         }
     }
-}
-
-@Composable
-private fun LinkActionDialog(link: String, onDismiss: () -> Unit, onOpen: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("跳转链接？") },
-        text = { Text("链接不会因点击而自动跳转。确认后将使用系统浏览器打开：\n$link") },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-        confirmButton = { TextButton(onClick = onOpen) { Text("跳转链接") } }
-    )
 }
 
 @Composable
