@@ -11,9 +11,16 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -23,11 +30,13 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -61,7 +70,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
@@ -216,7 +228,19 @@ private fun NotesApp(viewModel: NotesViewModel) {
 
     BackHandler(enabled = page !is AppPage.List) { page = AppPage.List }
 
-    AnimatedContent(targetState = page, transitionSpec = { fadeIn(tween(100)) togetherWith fadeOut(tween(80)) }, label = "page") { currentPage ->
+    AnimatedContent(
+        targetState = page,
+        transitionSpec = {
+            (fadeIn(tween(220, easing = FastOutSlowInEasing)) + scaleIn(
+                initialScale = 0.985f,
+                animationSpec = tween(220, easing = FastOutSlowInEasing)
+            )) togetherWith (fadeOut(tween(120)) + scaleOut(
+                targetScale = 0.995f,
+                animationSpec = tween(120)
+            ))
+        },
+        label = "page"
+    ) { currentPage ->
         when (currentPage) {
             AppPage.List -> NotesListPage(
                 notes = notes,
@@ -617,7 +641,8 @@ private fun NoteDetailPage(
 ) {
     val context = LocalContext.current
     var title by remember(note?.id, seed) { mutableStateOf(note?.title ?: seed.title) }
-    var content by remember(note?.id, seed) { mutableStateOf(note?.content ?: seed.content) }
+    var contentValue by remember(note?.id, seed) { mutableStateOf(TextFieldValue(note?.content ?: seed.content)) }
+    val content = contentValue.text
     var color by remember(note?.id) { mutableStateOf(note?.color ?: NoteColors.first()) }
     var pinned by remember(note?.id) { mutableStateOf(note?.isPinned ?: false) }
     var selectedFolderId by remember(note?.id, initialFolderId) { mutableStateOf(note?.folderId ?: initialFolderId) }
@@ -627,6 +652,7 @@ private fun NoteDetailPage(
         mutableStateOf<InlineEditTarget?>(if (note == null) InlineEditTarget.CONTENT else null)
     }
     var pendingLink by remember { mutableStateOf<String?>(null) }
+    var selectedLink by remember(note?.id, seed) { mutableStateOf<String?>(null) }
     val titleFocus = remember { FocusRequester() }
     val contentFocus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -650,9 +676,6 @@ private fun NoteDetailPage(
                 title = { Text(if (note == null) "新建笔记" else "笔记详情", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
                 actions = {
-                    currentLink?.let { link ->
-                        TextButton(onClick = { pendingLink = link }) { Text("跳转链接") }
-                    }
                     if (activeEditor != null) {
                         TextButton(onClick = { activeEditor = null }) { Text("完成") }
                         TextButton(onClick = {
@@ -664,10 +687,11 @@ private fun NoteDetailPage(
             )
         }
     ) { padding ->
-        Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp).verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
+        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(18.dp)
+            ) {
             if (activeEditor == InlineEditTarget.TITLE) {
                 BasicTextField(
                     value = title,
@@ -684,18 +708,30 @@ private fun NoteDetailPage(
                     modifier = Modifier.fillMaxWidth().clickable { activeEditor = InlineEditTarget.TITLE }
                 )
             }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AssistChip(onClick = { formatMode = formatMode.next() }, label = { Text("格式：$formatDetail") })
-                AssistChip(onClick = { showFolderPicker = true }, label = { Text("收藏夹：$folderName") })
-                if (pinned) AssistChip(onClick = {}, label = { Text("已置顶") })
-                Text(formatDate(note?.updatedAt ?: System.currentTimeMillis()), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),
+                shape = MaterialTheme.shapes.large
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    AssistChip(onClick = { formatMode = formatMode.next() }, label = { Text("格式：$formatDetail") })
+                    AssistChip(onClick = { showFolderPicker = true }, label = { Text("收藏夹：$folderName") })
+                    if (pinned) AssistChip(onClick = {}, label = { Text("已置顶") })
+                    Text(formatDate(note?.updatedAt ?: System.currentTimeMillis()), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
             if (activeEditor == InlineEditTarget.CONTENT) {
                 if (markdownActive) MarkdownSyntaxHint()
                 BasicTextField(
-                    value = content,
-                    onValueChange = { content = it },
+                    value = contentValue,
+                    onValueChange = { value ->
+                        contentValue = value
+                        selectedLink = selectedLinkFrom(value)
+                    },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp).focusRequester(contentFocus),
                     textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onBackground),
                     minLines = 6
@@ -721,7 +757,17 @@ private fun NoteDetailPage(
                 if (note != null) TextButton(onClick = { onDelete(note) }) { Text("删除", color = MaterialTheme.colorScheme.error) } else Spacer(Modifier.width(1.dp))
                 TextButton(onClick = { pinned = !pinned }) { Text(if (pinned) "取消置顶" else "置顶") }
             }
-            Spacer(Modifier.height(36.dp))
+            Spacer(Modifier.height(48.dp))
+            }
+            LinkSelectionActionBar(
+                link = selectedLink,
+                onOpen = { link ->
+                    selectedLink = null
+                    pendingLink = link
+                },
+                onDismiss = { selectedLink = null },
+                modifier = Modifier.align(Alignment.BottomCenter).imePadding().padding(horizontal = 20.dp, vertical = 14.dp)
+            )
         }
     }
     pendingLink?.let { link ->
@@ -746,6 +792,52 @@ private fun NoteDetailPage(
             }
         )
     }
+}
+
+@Composable
+private fun LinkSelectionActionBar(
+    link: String?,
+    onOpen: (String) -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    AnimatedVisibility(
+        visible = link != null,
+        modifier = modifier,
+        enter = fadeIn(tween(150, easing = FastOutSlowInEasing)) + slideInVertically(
+            animationSpec = spring(stiffness = 550f),
+            initialOffsetY = { it / 2 }
+        ),
+        exit = fadeOut(tween(100)) + slideOutVertically(
+            animationSpec = tween(120),
+            targetOffsetY = { it / 2 }
+        )
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.inverseSurface,
+            contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+            shape = MaterialTheme.shapes.large,
+            shadowElevation = 10.dp
+        ) {
+            Row(
+                modifier = Modifier.padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("已选中链接", style = MaterialTheme.typography.labelLarge)
+                TextButton(onClick = { link?.let(onOpen) }) { Text("跳转链接") }
+                TextButton(onClick = onDismiss) { Text("取消") }
+            }
+        }
+    }
+}
+
+private fun selectedLinkFrom(value: TextFieldValue): String? {
+    val selection = value.selection
+    if (selection.collapsed) return null
+    val start = selection.min.coerceIn(0, value.text.length)
+    val end = selection.max.coerceIn(start, value.text.length)
+    return extractFirstLink(value.text.substring(start, end))
 }
 
 @OptIn(ExperimentalFoundationApi::class)
