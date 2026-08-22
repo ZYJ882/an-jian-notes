@@ -31,7 +31,6 @@ object BackupCodec {
                         put("id", note.id)
                         put("title", note.title)
                         put("content", note.content)
-                        put("tags", note.tags)
                         put("color", note.color)
                         put("createdAt", note.createdAt)
                         put("updatedAt", note.updatedAt)
@@ -75,7 +74,6 @@ object BackupCodec {
                         id = item.getLong("id"),
                         title = item.optString("title"),
                         content = item.optString("content"),
-                        tags = item.optString("tags"),
                         color = item.optLong("color", 0xFFF5F0E8),
                         createdAt = item.optLong("createdAt", System.currentTimeMillis()),
                         updatedAt = item.optLong("updatedAt", System.currentTimeMillis()),
@@ -111,7 +109,6 @@ object PlainTextBackupCodec {
             appendLine("id=${note.id}")
             appendLine("folderId=${note.folderId}")
             appendLine("title=${note.title}")
-            appendLine("tags=${note.tags}")
             appendLine("color=${note.color}")
             appendLine("createdAt=${note.createdAt}")
             appendLine("updatedAt=${note.updatedAt}")
@@ -170,7 +167,6 @@ object PlainTextBackupCodec {
                         id = values.requiredLong("id"),
                         title = values["title"].orEmpty(),
                         content = contentLines.joinToString("\n").removeSuffix("\n"),
-                        tags = values["tags"].orEmpty(),
                         color = values.longOr("color", 0xFFF5F0E8),
                         createdAt = values.longOr("createdAt", System.currentTimeMillis()),
                         updatedAt = values.longOr("updatedAt", System.currentTimeMillis()),

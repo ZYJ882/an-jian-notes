@@ -114,18 +114,12 @@ class NotesViewModel(private val repository: NotesRepository) : ViewModel() {
         id: Long,
         title: String,
         content: String,
-        rawTags: String,
         color: Long,
         pinned: Boolean,
         markdown: Boolean,
         folderId: Long,
         createdAt: Long = System.currentTimeMillis()
     ) {
-        val cleanedTags = rawTags.split(',', '，')
-            .map { it.trim().removePrefix("#").trim() }
-            .filter(String::isNotEmpty)
-            .distinct()
-            .joinToString(",")
         if (title.isBlank() && content.isBlank()) return
         viewModelScope.launch {
             repository.save(
@@ -133,7 +127,6 @@ class NotesViewModel(private val repository: NotesRepository) : ViewModel() {
                     id = id,
                     title = title.trim(),
                     content = content.trim(),
-                    tags = cleanedTags,
                     color = color,
                     createdAt = createdAt,
                     updatedAt = System.currentTimeMillis(),

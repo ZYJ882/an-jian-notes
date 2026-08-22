@@ -16,7 +16,6 @@ class PlainTextBackupCodecTest {
                     id = 7,
                     title = "会议记录",
                     content = "第一行\n第二行",
-                    tags = "项目,周会",
                     isMarkdown = true,
                     folderId = 2
                 )
@@ -28,7 +27,6 @@ class PlainTextBackupCodecTest {
         assertEquals(snapshot.folders.map { it.name }, restored.folders.map { it.name })
         assertEquals(snapshot.notes.single().title, restored.notes.single().title)
         assertEquals(snapshot.notes.single().content, restored.notes.single().content)
-        assertEquals(snapshot.notes.single().tags, restored.notes.single().tags)
         assertEquals(snapshot.notes.single().folderId, restored.notes.single().folderId)
     }
 }

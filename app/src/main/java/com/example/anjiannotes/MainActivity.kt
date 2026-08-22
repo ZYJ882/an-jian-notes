@@ -254,8 +254,8 @@ private fun NotesApp(viewModel: NotesViewModel) {
                 initialFolderId = currentPage.folderId,
                 folders = folders,
                 onBack = { page = AppPage.List },
-                onSave = { id, title, content, tags, color, pinned, markdown, folderId, createdAt ->
-                    viewModel.saveNote(id, title, content, tags, color, pinned, markdown, folderId, createdAt)
+                onSave = { id, title, content, color, pinned, markdown, folderId, createdAt ->
+                    viewModel.saveNote(id, title, content, color, pinned, markdown, folderId, createdAt)
                     if (currentPage.note == null) page = AppPage.List
                 },
                 onDelete = { note -> noteToDelete = note },
@@ -423,7 +423,7 @@ private fun NotesListPage(
                     value = query,
                     onValueChange = onSearchChange,
                     modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                    label = { Text("搜索标题、正文或标签") },
+                    label = { Text("搜索标题或正文") },
                     singleLine = true
                 )
             }
@@ -611,14 +611,13 @@ private fun NoteDetailPage(
     initialFolderId: Long,
     folders: List<FolderEntity>,
     onBack: () -> Unit,
-    onSave: (Long, String, String, String, Long, Boolean, Boolean, Long, Long) -> Unit,
+    onSave: (Long, String, String, Long, Boolean, Boolean, Long, Long) -> Unit,
     onDelete: (NoteEntity) -> Unit,
     onMoveFolder: (Long, Long) -> Unit
 ) {
     val context = LocalContext.current
     var title by remember(note?.id, seed) { mutableStateOf(note?.title ?: seed.title) }
     var content by remember(note?.id, seed) { mutableStateOf(note?.content ?: seed.content) }
-    var tags by remember(note?.id) { mutableStateOf(note?.tags.orEmpty()) }
     var color by remember(note?.id) { mutableStateOf(note?.color ?: NoteColors.first()) }
     var pinned by remember(note?.id) { mutableStateOf(note?.isPinned ?: false) }
     var selectedFolderId by remember(note?.id, initialFolderId) { mutableStateOf(note?.folderId ?: initialFolderId) }
@@ -632,6 +631,7 @@ private fun NoteDetailPage(
     val contentFocus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     val markdownActive = formatMode.resolvesToMarkdown(content)
+    val currentLink = remember(content) { extractFirstLink(content) }
     val formatDetail = if (formatMode == NoteFormatMode.AUTO) if (markdownActive) "自动：Markdown" else "自动：纯文本" else formatMode.label
     val folderName = folders.firstOrNull { it.id == selectedFolderId }?.name ?: "默认收藏夹"
 
@@ -650,10 +650,13 @@ private fun NoteDetailPage(
                 title = { Text(if (note == null) "新建笔记" else "笔记详情", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
                 actions = {
+                    currentLink?.let { link ->
+                        TextButton(onClick = { pendingLink = link }) { Text("跳转链接") }
+                    }
                     if (activeEditor != null) {
                         TextButton(onClick = { activeEditor = null }) { Text("完成") }
                         TextButton(onClick = {
-                            onSave(note?.id ?: 0, title, content, tags, color, pinned, markdownActive, selectedFolderId, note?.createdAt ?: System.currentTimeMillis())
+                            onSave(note?.id ?: 0, title, content, color, pinned, markdownActive, selectedFolderId, note?.createdAt ?: System.currentTimeMillis())
                         }) { Text("保存", fontWeight = FontWeight.SemiBold) }
                     }
                 },
@@ -714,11 +717,6 @@ private fun NoteDetailPage(
                 )
                 PlainTextLinkHint(content = content, onLinkLongPress = { pendingLink = it })
             }
-            if (tags.isNotBlank()) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
-                    tags.split(',').filter { it.isNotBlank() }.forEach { tag -> AssistChip(onClick = {}, label = { Text("#${tag.trim().removePrefix("#")}") }) }
-                }
-            }
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 if (note != null) TextButton(onClick = { onDelete(note) }) { Text("删除", color = MaterialTheme.colorScheme.error) } else Spacer(Modifier.width(1.dp))
                 TextButton(onClick = { pinned = !pinned }) { Text(if (pinned) "取消置顶" else "置顶") }
@@ -769,10 +767,10 @@ private fun PlainTextLinkHint(content: String, onLinkLongPress: (String) -> Unit
 private fun LinkActionDialog(link: String, onDismiss: () -> Unit, onOpen: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("打开链接？") },
+        title = { Text("跳转链接？") },
         text = { Text("链接不会因点击而自动跳转。确认后将使用系统浏览器打开：\n$link") },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-        confirmButton = { TextButton(onClick = onOpen) { Text("跳转") } }
+        confirmButton = { TextButton(onClick = onOpen) { Text("跳转链接") } }
     )
 }
 

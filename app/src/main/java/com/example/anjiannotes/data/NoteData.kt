@@ -28,7 +28,6 @@ data class NoteEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val title: String = "",
     val content: String = "",
-    val tags: String = "",
     val color: Long = 0xFFF5F0E8,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
@@ -45,8 +44,7 @@ interface NoteDao {
         WHERE folderId = :folderId
           AND (:query = ''
             OR title LIKE '%' || :query || '%'
-            OR content LIKE '%' || :query || '%'
-            OR tags LIKE '%' || :query || '%')
+            OR content LIKE '%' || :query || '%')
         ORDER BY isPinned DESC, updatedAt DESC
         """
     )
@@ -92,7 +90,7 @@ interface FolderDao {
     suspend fun clearAll()
 }
 
-@Database(entities = [NoteEntity::class, FolderEntity::class], version = 3, exportSchema = false)
+@Database(entities = [NoteEntity::class, FolderEntity::class], version = 4, exportSchema = false)
 abstract class NotesDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao
     abstract fun folderDao(): FolderDao
@@ -109,6 +107,15 @@ abstract class NotesDatabase : RoomDatabase() {
                 db.execSQL("CREATE TABLE IF NOT EXISTS folders (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, name TEXT NOT NULL, createdAt INTEGER NOT NULL, sortOrder INTEGER NOT NULL)")
                 db.execSQL("INSERT OR IGNORE INTO folders (id, name, createdAt, sortOrder) VALUES (1, '默认收藏夹', 0, 0)")
                 db.execSQL("ALTER TABLE notes ADD COLUMN folderId INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE notes_clean (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL, color INTEGER NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, isPinned INTEGER NOT NULL, isMarkdown INTEGER NOT NULL, folderId INTEGER NOT NULL)")
+                db.execSQL("INSERT INTO notes_clean (id, title, content, color, createdAt, updatedAt, isPinned, isMarkdown, folderId) SELECT id, title, content, color, createdAt, updatedAt, isPinned, isMarkdown, folderId FROM notes")
+                db.execSQL("DROP TABLE notes")
+                db.execSQL("ALTER TABLE notes_clean RENAME TO notes")
             }
         }
     }
