@@ -191,3 +191,164 @@ object PlainTextBackupCodec {
         ?: throw IllegalArgumentException("备份中的 $key 格式错误")
     private fun Map<String, String>.longOr(key: String, fallback: Long): Long = this[key]?.toLongOrNull() ?: fallback
 }
+
+
+/**
+ * 面向跨平台使用的 Markdown ZIP 备份格式。
+ *
+ * ZIP 内包含：metadata.json、folders.json 以及 notes/{id}.md。每个 Markdown
+ * 文件均带 YAML Front Matter，因此无需安装安笺也能直接阅读与迁移文本内容。
+ */
+object MarkdownZipBackupCodec {
+    private const val FORMAT = "an-jian-markdown-zip"
+    private const val SCHEMA_VERSION = 1
+    private const val METADATA_FILE = "metadata.json"
+    private const val FOLDERS_FILE = "folders.json"
+    private const val NOTES_PREFIX = "notes/"
+
+    fun encode(snapshot: BackupSnapshot, appVersion: String): ByteArray {
+        val output = java.io.ByteArrayOutputStream()
+        java.util.zip.ZipOutputStream(output).use { zip ->
+            writeEntry(zip, METADATA_FILE, metadataJson(snapshot, appVersion).toByteArray(Charsets.UTF_8))
+            writeEntry(zip, FOLDERS_FILE, foldersJson(snapshot.folders).toByteArray(Charsets.UTF_8))
+            snapshot.notes.forEach { note ->
+                writeEntry(zip, noteFileName(note), encodeNote(note).toByteArray(Charsets.UTF_8))
+            }
+        }
+        return output.toByteArray()
+    }
+
+    fun decode(payload: ByteArray): BackupSnapshot {
+        var metadata: JSONObject? = null
+        var foldersRaw: String? = null
+        val noteFiles = mutableListOf<String>()
+        java.util.zip.ZipInputStream(payload.inputStream()).use { zip ->
+            var entry = zip.nextEntry
+            while (entry != null) {
+                val name = entry.name
+                require(!entry.isDirectory && !name.contains("..") && !name.startsWith("/")) { "备份 ZIP 包含无效路径" }
+                val content = zip.readBytes().toString(Charsets.UTF_8)
+                when {
+                    name == METADATA_FILE -> metadata = JSONObject(content)
+                    name == FOLDERS_FILE -> foldersRaw = content
+                    name.startsWith(NOTES_PREFIX) && name.endsWith(".md") -> noteFiles += content
+                }
+                zip.closeEntry()
+                entry = zip.nextEntry
+            }
+        }
+        val backupMetadata = metadata ?: throw IllegalArgumentException("备份中缺少 metadata.json")
+        require(backupMetadata.optString("format") == FORMAT) { "不是安笺 Markdown ZIP 备份" }
+        require(backupMetadata.optInt("schemaVersion") == SCHEMA_VERSION) { "不支持的 Markdown ZIP 备份版本" }
+        val folders = decodeFolders(foldersRaw ?: throw IllegalArgumentException("备份中缺少 folders.json"))
+        val validFolderIds = folders.mapTo(mutableSetOf()) { it.id }.apply { add(DEFAULT_FOLDER_ID) }
+        val notes = noteFiles.map { decodeNote(it) }.map { note ->
+            if (note.folderId in validFolderIds) note else note.copy(folderId = DEFAULT_FOLDER_ID)
+        }
+        return BackupSnapshot(folders = folders, notes = notes)
+    }
+
+    fun metadataJson(snapshot: BackupSnapshot, appVersion: String): String = JSONObject().apply {
+        put("format", FORMAT)
+        put("schemaVersion", SCHEMA_VERSION)
+        put("appVersion", appVersion)
+        put("exportedAt", System.currentTimeMillis())
+        put("noteCount", snapshot.notes.size)
+        put("folderCount", snapshot.folders.size)
+    }.toString(2)
+
+    fun foldersJson(folders: List<FolderEntity>): String = JSONObject().apply {
+        put("schemaVersion", SCHEMA_VERSION)
+        put("folders", JSONArray().apply {
+            folders.forEach { folder ->
+                put(JSONObject().apply {
+                    put("id", folder.id)
+                    put("name", folder.name)
+                    put("createdAt", folder.createdAt)
+                    put("sortOrder", folder.sortOrder)
+                })
+            }
+        })
+    }.toString(2)
+
+    fun noteFileName(note: NoteEntity): String = "$NOTES_PREFIX${note.id}.md"
+
+    fun encodeNote(note: NoteEntity): String = buildString {
+        appendLine("---")
+        appendLine("id: ${note.id}")
+        appendLine("title: ${yamlQuote(note.title)}")
+        appendLine("createdAt: ${note.createdAt}")
+        appendLine("updatedAt: ${note.updatedAt}")
+        appendLine("pinned: ${note.isPinned}")
+        appendLine("markdown: ${note.isMarkdown}")
+        appendLine("folderId: ${note.folderId}")
+        appendLine("color: ${note.color}")
+        appendLine("---")
+        append(note.content)
+    }
+
+    private fun decodeFolders(raw: String): List<FolderEntity> {
+        val root = JSONObject(raw)
+        val values = root.optJSONArray("folders") ?: throw IllegalArgumentException("folders.json 缺少收藏夹列表")
+        return buildList {
+            for (index in 0 until values.length()) {
+                val item = values.getJSONObject(index)
+                add(
+                    FolderEntity(
+                        id = item.getLong("id"),
+                        name = item.getString("name"),
+                        createdAt = item.optLong("createdAt", 0L),
+                        sortOrder = item.optLong("sortOrder", index.toLong())
+                    )
+                )
+            }
+        }
+    }
+
+    private fun decodeNote(raw: String): NoteEntity {
+        val normalized = raw.replace("\r\n", "\n")
+        require(normalized.startsWith("---\n")) { "笔记缺少 YAML Front Matter" }
+        val end = normalized.indexOf("\n---\n", startIndex = 4)
+        require(end >= 0) { "笔记 YAML Front Matter 不完整" }
+        val values = normalized.substring(4, end)
+            .lineSequence()
+            .mapNotNull { line ->
+                val delimiter = line.indexOf(": ")
+                if (delimiter > 0) line.substring(0, delimiter) to line.substring(delimiter + 2) else null
+            }
+            .toMap()
+        val content = normalized.substring(end + 5)
+        return NoteEntity(
+            id = values.requiredLong("id"),
+            title = yamlUnquote(values["title"].orEmpty()),
+            content = content,
+            color = values.longOr("color", 0xFFF5F0E8),
+            createdAt = values.longOr("createdAt", System.currentTimeMillis()),
+            updatedAt = values.longOr("updatedAt", System.currentTimeMillis()),
+            isPinned = values["pinned"].toBoolean(),
+            isMarkdown = values["markdown"].toBoolean(),
+            folderId = values.longOr("folderId", DEFAULT_FOLDER_ID)
+        )
+    }
+
+    private fun writeEntry(zip: java.util.zip.ZipOutputStream, name: String, content: ByteArray) {
+        zip.putNextEntry(java.util.zip.ZipEntry(name))
+        zip.write(content)
+        zip.closeEntry()
+    }
+
+    private fun yamlQuote(value: String): String = "\"" + value
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\n", "\\n") + "\""
+
+    private fun yamlUnquote(value: String): String {
+        val unwrapped = value.removePrefix("\"").removeSuffix("\"")
+        return unwrapped.replace("\\n", "\n").replace("\\\"", "\"").replace("\\\\", "\\")
+    }
+
+    private fun Map<String, String>.requiredLong(key: String): Long = this[key]?.toLongOrNull()
+        ?: throw IllegalArgumentException("笔记元数据缺少或包含无效 $key")
+
+    private fun Map<String, String>.longOr(key: String, fallback: Long): Long = this[key]?.toLongOrNull() ?: fallback
+}

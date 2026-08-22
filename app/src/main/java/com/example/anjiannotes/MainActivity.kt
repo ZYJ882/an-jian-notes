@@ -65,6 +65,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.withFrameNanos
@@ -75,6 +76,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.graphicsLayer
@@ -93,12 +95,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.anjiannotes.data.DEFAULT_FOLDER_ID
 import com.example.anjiannotes.data.FolderEntity
 import com.example.anjiannotes.data.NoteEntity
 import com.example.anjiannotes.data.NotesRepository
+import com.example.anjiannotes.data.WebDavConfig
 import com.example.anjiannotes.ui.EditorSeed
 import com.example.anjiannotes.ui.ImportReadResult
 import com.example.anjiannotes.ui.MarkdownPreview
@@ -115,13 +121,18 @@ import com.example.anjiannotes.ui.theme.AnJianTheme
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val app = application as AnJianApplication
-        val factory = NotesViewModelFactory(NotesRepository(app.database, app.database.noteDao(), app.database.folderDao()))
+        val factory = NotesViewModelFactory(
+            NotesRepository(app.database, app.database.noteDao(), app.database.folderDao()),
+            app.webDavConfigStore,
+            app.webDavBackupClient
+        )
         setContent {
             AnJianTheme {
                 val notesViewModel: NotesViewModel = viewModel(factory = factory)
@@ -133,6 +144,7 @@ class MainActivity : ComponentActivity() {
 
 private enum class InlineEditTarget { TITLE, CONTENT }
 private enum class DetailMode { PREVIEW, EDIT }
+private enum class AutoSaveState { IDLE, SAVING, SAVED }
 
 private sealed interface AppPage {
     data object List : AppPage
@@ -152,6 +164,7 @@ private fun NotesApp(viewModel: NotesViewModel) {
     val query by viewModel.query.collectAsStateWithLifecycle()
     val folders by viewModel.folders.collectAsStateWithLifecycle()
     val activeFolderId by viewModel.activeFolderId.collectAsStateWithLifecycle()
+    val webDavConfig by viewModel.webDavConfig.collectAsStateWithLifecycle()
     var page by remember { mutableStateOf<AppPage>(AppPage.List) }
     var showSearch by remember { mutableStateOf(false) }
     var showCreateMenu by remember { mutableStateOf(false) }
@@ -164,6 +177,9 @@ private fun NotesApp(viewModel: NotesViewModel) {
     var pendingRestorePayload by remember { mutableStateOf<String?>(null) }
     var pendingTextBackupPayload by remember { mutableStateOf<String?>(null) }
     var pendingTextRestorePayload by remember { mutableStateOf<String?>(null) }
+    var pendingMarkdownZipPayload by remember { mutableStateOf<ByteArray?>(null) }
+    var pendingMarkdownZipRestorePayload by remember { mutableStateOf<ByteArray?>(null) }
+    var showWebDavDialog by remember { mutableStateOf(false) }
 
     fun openImported(note: EditorSeed) {
         page = AppPage.Detail(note = null, seed = note, folderId = activeFolderId)
@@ -229,6 +245,36 @@ private fun NotesApp(viewModel: NotesViewModel) {
         }
     }
 
+    val markdownZipSaveLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        val payload = pendingMarkdownZipPayload
+        if (uri != null && payload != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { stream -> stream.write(payload) }
+                    ?: error("无法写入所选位置")
+            }.onSuccess {
+                feedbackMessage = "Markdown ZIP 备份已导出"
+            }.onFailure {
+                feedbackMessage = "ZIP 备份导出失败：${it.message ?: "无法写入文件"}"
+            }
+        }
+        pendingMarkdownZipPayload = null
+    }
+
+    val markdownZipOpenLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: error("无法读取所选文件")
+            }.onSuccess { payload ->
+                pendingMarkdownZipRestorePayload = payload
+            }.onFailure {
+                feedbackMessage = "ZIP 备份读取失败：${it.message ?: "无法读取文件"}"
+            }
+        }
+    }
+
     val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
         when (val result = readTextImport(context, uri)) {
@@ -275,7 +321,9 @@ private fun NotesApp(viewModel: NotesViewModel) {
         )
         AppPage.Settings -> SettingsPage(
             onBack = { page = AppPage.List },
-            onBackupClick = { showBackupMenu = true }
+            onBackupClick = { showBackupMenu = true },
+            onWebDavClick = { showWebDavDialog = true },
+            webDavConfigured = webDavConfig != null
         )
         is AppPage.Detail -> NoteDetailPage(
             note = currentPage.note,
@@ -283,10 +331,10 @@ private fun NotesApp(viewModel: NotesViewModel) {
             initialFolderId = currentPage.folderId,
             folders = folders,
             onBack = { page = AppPage.List },
-            onSave = { id, title, content, color, pinned, markdown, folderId, createdAt ->
-                viewModel.saveNote(id, title, content, color, pinned, markdown, folderId, createdAt)
-                if (currentPage.note == null) page = AppPage.List
+            onSave = { id, title, content, color, pinned, markdown, folderId, createdAt, onSaved ->
+                viewModel.saveNote(id, title, content, color, pinned, markdown, folderId, createdAt, onSaved)
             },
+            onDiscard = viewModel::deleteNote,
             onDelete = { note -> noteToDelete = note },
             onMoveFolder = viewModel::moveNoteToFolder
         )
@@ -319,26 +367,28 @@ private fun NotesApp(viewModel: NotesViewModel) {
     if (showBackupMenu) {
         BackupMenuDialog(
             onDismiss = { showBackupMenu = false },
-            onExportJson = {
+            onExportZip = {
                 showBackupMenu = false
-                viewModel.createBackup(
+                viewModel.createMarkdownZipBackup(
                     onSuccess = { backup ->
-                        pendingBackupPayload = backup
-                        backupSaveLauncher.launch("an-jian-backup-${System.currentTimeMillis()}.json")
+                        pendingMarkdownZipPayload = backup
+                        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+                        markdownZipSaveLauncher.launch("AnJian_Backup_$timestamp.zip")
                     },
                     onFailure = { message -> feedbackMessage = message }
                 )
             },
-            onImportJson = {
+            onImportZip = {
                 showBackupMenu = false
-                backupOpenLauncher.launch(arrayOf("application/json", "text/plain"))
+                markdownZipOpenLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed"))
             },
             onExportText = {
                 showBackupMenu = false
                 viewModel.createTextBackup(
                     onSuccess = { backup ->
                         pendingTextBackupPayload = backup
-                        textBackupSaveLauncher.launch("an-jian-backup-${System.currentTimeMillis()}.txt")
+                        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+                        textBackupSaveLauncher.launch("AnJian_Text_Backup_$timestamp.txt")
                     },
                     onFailure = { message -> feedbackMessage = message }
                 )
@@ -346,6 +396,24 @@ private fun NotesApp(viewModel: NotesViewModel) {
             onImportText = {
                 showBackupMenu = false
                 textBackupOpenLauncher.launch(arrayOf("text/plain"))
+            }
+        )
+    }
+    pendingMarkdownZipRestorePayload?.let { backup ->
+        RestoreBackupDialog(
+            onDismiss = { pendingMarkdownZipRestorePayload = null },
+            onConfirm = {
+                viewModel.restoreMarkdownZipBackup(
+                    payload = backup,
+                    onSuccess = { message ->
+                        pendingMarkdownZipRestorePayload = null
+                        feedbackMessage = message
+                    },
+                    onFailure = { message ->
+                        pendingMarkdownZipRestorePayload = null
+                        feedbackMessage = message
+                    }
+                )
             }
         )
     }
@@ -381,6 +449,32 @@ private fun NotesApp(viewModel: NotesViewModel) {
                         pendingTextRestorePayload = null
                         feedbackMessage = message
                     }
+                )
+            }
+        )
+    }
+    if (showWebDavDialog) {
+        WebDavBackupDialog(
+            initialConfig = webDavConfig,
+            onDismiss = { showWebDavDialog = false },
+            onSave = { config ->
+                viewModel.saveWebDavConfig(
+                    config = config,
+                    onSuccess = {
+                        showWebDavDialog = false
+                        feedbackMessage = "WebDAV 配置已安全保存"
+                    },
+                    onFailure = { message -> feedbackMessage = message }
+                )
+            },
+            onSync = { config ->
+                viewModel.syncWebDav(
+                    config = config,
+                    onSuccess = { message ->
+                        showWebDavDialog = false
+                        feedbackMessage = message
+                    },
+                    onFailure = { message -> feedbackMessage = message }
                 )
             }
         )
@@ -601,7 +695,9 @@ private fun FolderPickerDialog(
 @Composable
 private fun SettingsPage(
     onBack: () -> Unit,
-    onBackupClick: () -> Unit
+    onBackupClick: () -> Unit,
+    onWebDavClick: () -> Unit,
+    webDavConfigured: Boolean
 ) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -622,9 +718,15 @@ private fun SettingsPage(
             verticalArrangement = Arrangement.spacedBy(22.dp)
         ) {
             SettingsGroup(
-                title = "数据",
+                title = "数据与备份",
                 items = listOf(
-                    SettingsEntry("↥", "备份与恢复", "导出或恢复 JSON、TXT 本地备份", onBackupClick)
+                    SettingsEntry("↥", "本地备份与恢复", "Markdown ZIP，可在其他应用中直接阅读", onBackupClick),
+                    SettingsEntry(
+                        "⌁",
+                        "WebDAV 增量备份",
+                        if (webDavConfigured) "已配置 · 仅上传发生变化的笔记" else "配置服务器后上传 Markdown 与元数据",
+                        onWebDavClick
+                    )
                 )
             )
             SettingsGroup(
@@ -697,10 +799,71 @@ private fun SettingsGroup(title: String, items: List<SettingsEntry>) {
 }
 
 @Composable
+private fun WebDavBackupDialog(
+    initialConfig: WebDavConfig?,
+    onDismiss: () -> Unit,
+    onSave: (WebDavConfig) -> Unit,
+    onSync: (WebDavConfig) -> Unit
+) {
+    var endpoint by remember(initialConfig) { mutableStateOf(initialConfig?.endpoint.orEmpty()) }
+    var username by remember(initialConfig) { mutableStateOf(initialConfig?.username.orEmpty()) }
+    var password by remember(initialConfig) { mutableStateOf(initialConfig?.password.orEmpty()) }
+    var remoteDirectory by remember(initialConfig) { mutableStateOf(initialConfig?.remoteDirectory ?: "an-jian-backup") }
+    fun currentConfig() = WebDavConfig(endpoint, username, password, remoteDirectory)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("WebDAV 增量备份") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("服务器上会保存 notes/*.md、folders.json 与 metadata.json。密码使用设备加密密钥保存在本机。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedTextField(
+                    value = endpoint,
+                    onValueChange = { endpoint = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("服务器地址") },
+                    placeholder = { Text("https://dav.example.com/remote.php/dav/files/name") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = { username = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("用户名") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("密码或应用专用密码") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = remoteDirectory,
+                    onValueChange = { remoteDirectory = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("远程备份目录") },
+                    singleLine = true
+                )
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = { onSave(currentConfig()) }) { Text("仅保存") }
+                TextButton(onClick = { onSync(currentConfig()) }) { Text("保存并备份", fontWeight = FontWeight.SemiBold) }
+            }
+        }
+    )
+}
+
+@Composable
 private fun BackupMenuDialog(
     onDismiss: () -> Unit,
-    onExportJson: () -> Unit,
-    onImportJson: () -> Unit,
+    onExportZip: () -> Unit,
+    onImportZip: () -> Unit,
     onExportText: () -> Unit,
     onImportText: () -> Unit
 ) {
@@ -708,13 +871,14 @@ private fun BackupMenuDialog(
         onDismissRequest = onDismiss,
         title = { Text("备份与恢复") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("备份包含全部收藏夹和笔记。恢复会替换当前本地数据。")
-                TextButton(onClick = onExportJson, modifier = Modifier.fillMaxWidth()) { Text("导出 JSON 备份", modifier = Modifier.fillMaxWidth()) }
-                TextButton(onClick = onImportJson, modifier = Modifier.fillMaxWidth()) { Text("导入 JSON 备份", modifier = Modifier.fillMaxWidth()) }
-                HorizontalDivider()
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("备份会创建可跨平台阅读的 ZIP：每篇笔记均为独立 Markdown 文件，同时包含收藏夹与备份元数据。恢复会替换当前本地数据。")
+                TextButton(onClick = onExportZip, modifier = Modifier.fillMaxWidth()) { Text("导出 Markdown ZIP 备份", modifier = Modifier.fillMaxWidth()) }
+                TextButton(onClick = onImportZip, modifier = Modifier.fillMaxWidth()) { Text("导入 Markdown ZIP 并完整恢复", modifier = Modifier.fillMaxWidth()) }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f))
+                Text("TXT 明文备份保留为轻量、直接可读的本地备份格式。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 TextButton(onClick = onExportText, modifier = Modifier.fillMaxWidth()) { Text("导出 TXT 明文备份", modifier = Modifier.fillMaxWidth()) }
-                TextButton(onClick = onImportText, modifier = Modifier.fillMaxWidth()) { Text("导入 TXT 明文备份", modifier = Modifier.fillMaxWidth()) }
+                TextButton(onClick = onImportText, modifier = Modifier.fillMaxWidth()) { Text("导入 TXT 明文并完整恢复", modifier = Modifier.fillMaxWidth()) }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
@@ -848,7 +1012,8 @@ private fun NoteDetailPage(
     initialFolderId: Long,
     folders: List<FolderEntity>,
     onBack: () -> Unit,
-    onSave: (Long, String, String, Long, Boolean, Boolean, Long, Long) -> Unit,
+    onSave: (Long, String, String, Long, Boolean, Boolean, Long, Long, (Long) -> Unit) -> Unit,
+    onDiscard: (Long) -> Unit,
     onDelete: (NoteEntity) -> Unit,
     onMoveFolder: (Long, Long) -> Unit
 ) {
@@ -868,6 +1033,13 @@ private fun NoteDetailPage(
         mutableStateOf(if (note == null) InlineEditTarget.CONTENT else InlineEditTarget.CONTENT)
     }
     var requestedContentCursor by remember(note?.id, seed) { mutableStateOf<Int?>(null) }
+    var savedNoteId by remember(note?.id, seed) { mutableStateOf(note?.id ?: 0L) }
+    val draftCreatedAt = remember(note?.id, seed) { note?.createdAt ?: System.currentTimeMillis() }
+    var editRevision by remember(note?.id, seed) { mutableStateOf(0) }
+    var autoSaveState by remember(note?.id, seed) { mutableStateOf(AutoSaveState.IDLE) }
+    var saveInFlight by remember(note?.id, seed) { mutableStateOf(false) }
+    var persistPending by remember(note?.id, seed) { mutableStateOf(false) }
+    var discardAfterSave by remember(note?.id, seed) { mutableStateOf(false) }
     val titleFocus = remember { FocusRequester() }
     val contentFocus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -907,10 +1079,75 @@ private fun NoteDetailPage(
         detailMode = DetailMode.EDIT
     }
 
+    fun persistNow() {
+        if (title.isBlank() && content.isBlank()) return
+        if (saveInFlight) {
+            persistPending = true
+            return
+        }
+        saveInFlight = true
+        persistPending = false
+        val savedRevision = editRevision
+        autoSaveState = AutoSaveState.SAVING
+        onSave(
+            savedNoteId,
+            title,
+            content,
+            color,
+            pinned,
+            markdownActive,
+            selectedFolderId,
+            draftCreatedAt
+        ) { id ->
+            savedNoteId = id
+            saveInFlight = false
+            if (discardAfterSave) {
+                onDiscard(id)
+            } else {
+                autoSaveState = AutoSaveState.SAVED
+                if (persistPending || editRevision > savedRevision) persistNow()
+            }
+        }
+    }
+
+    fun finishEditing() {
+        if (title.isBlank() && content.isBlank()) {
+            if (savedNoteId != 0L) onDiscard(savedNoteId)
+            else if (saveInFlight) discardAfterSave = true
+        } else {
+            persistNow()
+        }
+        onBack()
+    }
+
+    LaunchedEffect(editRevision) {
+        if (editRevision == 0) return@LaunchedEffect
+        if (title.isBlank() && content.isBlank()) {
+            autoSaveState = AutoSaveState.IDLE
+            return@LaunchedEffect
+        }
+        if (savedNoteId == 0L) {
+            // 首个字符立即落库，确保新草稿即使意外退出也不会丢失。
+            persistNow()
+        } else {
+            autoSaveState = AutoSaveState.SAVING
+            delay(700)
+            persistNow()
+        }
+    }
+
+    LaunchedEffect(autoSaveState) {
+        if (autoSaveState == AutoSaveState.SAVED) {
+            delay(1_400)
+            if (autoSaveState == AutoSaveState.SAVED) autoSaveState = AutoSaveState.IDLE
+        }
+    }
+
     fun toggleDetailMode() {
         if (detailMode == DetailMode.PREVIEW) {
             enterEdit(InlineEditTarget.CONTENT)
         } else {
+            persistNow()
             detailMode = DetailMode.PREVIEW
         }
     }
@@ -918,6 +1155,17 @@ private fun NoteDetailPage(
     fun openPreviewLink(link: String) {
         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }
     }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) persistNow()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    BackHandler(onBack = ::finishEditing)
 
     CompositionLocalProvider(
         LocalTextSelectionColors provides TextSelectionColors(
@@ -929,16 +1177,20 @@ private fun NoteDetailPage(
             containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text(if (note == null) "新建笔记" else "笔记详情", fontWeight = FontWeight.SemiBold) },
-                navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(if (note == null) "新建笔记" else "笔记详情", fontWeight = FontWeight.SemiBold)
+                        when (autoSaveState) {
+                            AutoSaveState.SAVING -> Text("保存中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            AutoSaveState.SAVED -> Text("已保存 ✓", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                            AutoSaveState.IDLE -> Unit
+                        }
+                    }
+                },
+                navigationIcon = { TextButton(onClick = ::finishEditing) { Text("返回") } },
                 actions = {
                     TextButton(onClick = ::toggleDetailMode) {
                         Text(if (detailMode == DetailMode.PREVIEW) "编辑" else "预览")
-                    }
-                    if (detailMode == DetailMode.EDIT) {
-                        TextButton(onClick = {
-                            onSave(note?.id ?: 0, title, content, color, pinned, markdownActive, selectedFolderId, note?.createdAt ?: System.currentTimeMillis())
-                        }) { Text("保存", fontWeight = FontWeight.SemiBold) }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
@@ -953,7 +1205,10 @@ private fun NoteDetailPage(
             if (detailMode == DetailMode.EDIT) {
                 BasicTextField(
                     value = title,
-                    onValueChange = { title = it },
+                    onValueChange = {
+                        title = it
+                        editRevision++
+                    },
                     modifier = Modifier.fillMaxWidth().focusRequester(titleFocus),
                     textStyle = MaterialTheme.typography.titleLarge.copy(color = MaterialTheme.colorScheme.onBackground),
                     cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
@@ -981,7 +1236,12 @@ private fun NoteDetailPage(
                     maxItemsInEachRow = 3
                 ) {
                     AssistChip(
-                        onClick = { if (detailMode == DetailMode.EDIT) formatMode = formatMode.next() },
+                        onClick = {
+                            if (detailMode == DetailMode.EDIT) {
+                                formatMode = formatMode.next()
+                                editRevision++
+                            }
+                        },
                         label = { Text("格式：$formatDetail") }
                     )
                     AssistChip(onClick = { showFolderPicker = true }, label = { Text("收藏夹：$folderName") })
@@ -994,7 +1254,10 @@ private fun NoteDetailPage(
                 if (markdownActive) MarkdownSyntaxHint()
                 BasicTextField(
                     value = contentValue,
-                    onValueChange = { value -> contentValue = value },
+                    onValueChange = { value ->
+                        contentValue = value
+                        editRevision++
+                    },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp).focusRequester(contentFocus),
                     textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onBackground),
                     cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
@@ -1002,7 +1265,7 @@ private fun NoteDetailPage(
                 )
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     if (note != null) TextButton(onClick = { onDelete(note) }) { Text("删除", color = MaterialTheme.colorScheme.error) } else Spacer(Modifier.width(1.dp))
-                    TextButton(onClick = { pinned = !pinned }) { Text(if (pinned) "取消置顶" else "置顶") }
+                    TextButton(onClick = { pinned = !pinned; editRevision++ }) { Text(if (pinned) "取消置顶" else "置顶") }
                 }
             } else if (markdownActive) {
                 MarkdownPreview(
@@ -1050,7 +1313,7 @@ private fun NoteDetailPage(
             onDismiss = { showFolderPicker = false },
             onSelected = { folderId ->
                 selectedFolderId = folderId
-                if (note != null) onMoveFolder(note.id, folderId)
+                if (note != null) onMoveFolder(note.id, folderId) else editRevision++
                 showFolderPicker = false
             }
         )
