@@ -10,6 +10,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -46,11 +47,14 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ElevatedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -58,6 +62,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -65,6 +70,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextLayoutResult
@@ -107,6 +113,7 @@ import com.example.anjiannotes.ui.theme.AnJianTheme
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -132,6 +139,7 @@ private sealed interface AppPage {
         val seed: EditorSeed = EditorSeed(),
         val folderId: Long = DEFAULT_FOLDER_ID
     ) : AppPage
+    data object Settings : AppPage
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -246,7 +254,7 @@ private fun NotesApp(viewModel: NotesViewModel) {
             onSearchChange = viewModel::setSearchQuery,
             onFolderSelected = viewModel::selectFolder,
             onCreateFolder = { showNewFolderDialog = true },
-            onBackupClick = { showBackupMenu = true },
+            onOpenSettings = { page = AppPage.Settings },
             createMenuExpanded = showCreateMenu,
             onCreateMenuExpanded = { showCreateMenu = it },
             onNewNote = { page = AppPage.Detail(note = null, folderId = activeFolderId) },
@@ -262,6 +270,10 @@ private fun NotesApp(viewModel: NotesViewModel) {
                 page = AppPage.Detail(note = null, seed = EditorSeed("剪切板笔记", recentText, NoteFormatMode.AUTO), folderId = activeFolderId)
             },
             onOpenNote = { note -> page = AppPage.Detail(note = note, folderId = note.folderId) }
+        )
+        AppPage.Settings -> SettingsPage(
+            onBack = { page = AppPage.List },
+            onBackupClick = { showBackupMenu = true }
         )
         is AppPage.Detail -> NoteDetailPage(
             note = currentPage.note,
@@ -388,7 +400,7 @@ private fun NotesListPage(
     onSearchChange: (String) -> Unit,
     onFolderSelected: (Long) -> Unit,
     onCreateFolder: () -> Unit,
-    onBackupClick: () -> Unit,
+    onOpenSettings: () -> Unit,
     createMenuExpanded: Boolean,
     onCreateMenuExpanded: (Boolean) -> Unit,
     onNewNote: () -> Unit,
@@ -396,87 +408,126 @@ private fun NotesListPage(
     onImportClipboard: () -> Unit,
     onOpenNote: (NoteEntity) -> Unit
 ) {
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("安笺", fontWeight = FontWeight.Bold)
-                        Text("轻写，轻放", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    val activeFolderName = folders.firstOrNull { it.id == activeFolderId }?.name ?: "全部笔记"
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet(modifier = Modifier.fillMaxWidth(0.82f)) {
+                Column(modifier = Modifier.fillMaxSize().padding(vertical = 16.dp)) {
+                    Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) {
+                        Text("安笺", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                        Text("我的收藏夹", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                },
-                actions = {
-                    TextButton(onClick = onBackupClick) { Text("备份") }
-                    TextButton(onClick = onSearchToggle) { Text(if (showSearch) "收起" else "搜索") }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
-            )
-        },
-        bottomBar = {
-            QuickCaptureBar(
-                expanded = createMenuExpanded,
-                onExpandedChange = onCreateMenuExpanded,
-                onStartWriting = onNewNote,
-                onImportFile = onImportFile,
-                onImportClipboard = onImportClipboard
-            )
-        }
-    ) { padding ->
-        Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)
-        ) {
-            FolderTabs(
-                folders = folders,
-                activeFolderId = activeFolderId,
-                onFolderSelected = onFolderSelected,
-                onCreateFolder = onCreateFolder
-            )
-            if (showSearch) {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = onSearchChange,
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                    label = { Text("搜索标题或正文") },
-                    singleLine = true
-                )
-            }
-            if (notes.isEmpty()) {
-                EmptyNotes(query = query, onCreate = onNewNote)
-            } else {
-                androidx.compose.foundation.lazy.LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    item { Text("共 ${notes.size} 条笔记", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 2.dp)) }
-                    items(notes.size, key = { notes[it].id }) { index ->
-                        NoteCard(note = notes[index], onOpen = { onOpenNote(notes[index]) })
+                    HorizontalDivider()
+                    androidx.compose.foundation.lazy.LazyColumn(
+                        modifier = Modifier.weight(1f).padding(horizontal = 12.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        item {
+                            NavigationDrawerItem(
+                                label = { Text("＋ 新建收藏夹") },
+                                selected = false,
+                                onClick = {
+                                    onCreateFolder()
+                                    scope.launch { drawerState.close() }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                        item { HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp)) }
+                        items(folders.size, key = { folders[it].id }) { index ->
+                            val folder = folders[index]
+                            NavigationDrawerItem(
+                                label = { Text(folder.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                selected = folder.id == activeFolderId,
+                                onClick = {
+                                    onFolderSelected(folder.id)
+                                    scope.launch { drawerState.close() }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
-                    item { Spacer(Modifier.height(20.dp)) }
+                    HorizontalDivider()
+                    NavigationDrawerItem(
+                        label = { Text("⚙  设置") },
+                        selected = false,
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            onOpenSettings()
+                        },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun FolderTabs(
-    folders: List<FolderEntity>,
-    activeFolderId: Long,
-    onFolderSelected: (Long) -> Unit,
-    onCreateFolder: () -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 10.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        folders.forEach { folder ->
-            AssistChip(
-                onClick = { onFolderSelected(folder.id) },
-                label = { Text(if (folder.id == activeFolderId) "${folder.name} ✓" else folder.name) }
-            )
+        Scaffold(
+            containerColor = MaterialTheme.colorScheme.background,
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text(activeFolderName, fontWeight = FontWeight.Bold)
+                            Text("轻写，轻放", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    },
+                    navigationIcon = {
+                        TextButton(onClick = {
+                            scope.launch {
+                                if (drawerState.currentValue == DrawerValue.Closed) drawerState.open() else drawerState.close()
+                            }
+                        }) {
+                            Text("☰", fontSize = 24.sp)
+                        }
+                    },
+                    actions = {
+                        TextButton(onClick = onSearchToggle) { Text(if (showSearch) "收起" else "搜索") }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
+                )
+            },
+            bottomBar = {
+                QuickCaptureBar(
+                    expanded = createMenuExpanded,
+                    onExpandedChange = onCreateMenuExpanded,
+                    onStartWriting = onNewNote,
+                    onImportFile = onImportFile,
+                    onImportClipboard = onImportClipboard
+                )
+            }
+        ) { padding ->
+            Column(
+                modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)
+            ) {
+                if (showSearch) {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = onSearchChange,
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                        label = { Text("搜索标题或正文") },
+                        singleLine = true
+                    )
+                }
+                if (notes.isEmpty()) {
+                    EmptyNotes(query = query, onCreate = onNewNote)
+                } else {
+                    androidx.compose.foundation.lazy.LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        item { Text("共 ${notes.size} 条笔记", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 2.dp)) }
+                        items(notes.size, key = { notes[it].id }) { index ->
+                            NoteCard(note = notes[index], onOpen = { onOpenNote(notes[index]) })
+                        }
+                        item { Spacer(Modifier.height(20.dp)) }
+                    }
+                }
+            }
         }
-        AssistChip(onClick = onCreateFolder, label = { Text("+ 收藏夹") })
     }
 }
 
@@ -524,6 +575,60 @@ private fun FolderPickerDialog(
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
         confirmButton = {}
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SettingsPage(
+    onBack: () -> Unit,
+    onBackupClick: () -> Unit
+) {
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            TopAppBar(
+                title = { Text("设置", fontWeight = FontWeight.SemiBold) },
+                navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("数据", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Surface(
+                    modifier = Modifier.fillMaxWidth().clickable(onClick = onBackupClick),
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("备份与恢复", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text("导出或恢复全部收藏夹与笔记，支持 JSON 和 TXT 明文备份。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("使用说明", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("安笺", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text("离线保存，轻写轻放。笔记内容仅保存在本机，建议定期使用备份与恢复功能保存副本。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -592,7 +697,8 @@ private fun QuickCaptureBar(
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 10.dp
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.72f)),
+        shadowElevation = 0.dp
     ) {
         Row(
             modifier = Modifier
@@ -605,7 +711,7 @@ private fun QuickCaptureBar(
         ) {
             Surface(
                 modifier = Modifier.weight(1f).clickable(onClick = onStartWriting),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+                color = MaterialTheme.colorScheme.surfaceVariant,
                 shape = MaterialTheme.shapes.extraLarge
             ) {
                 Text(
@@ -617,9 +723,10 @@ private fun QuickCaptureBar(
             }
             Box {
                 TextButton(onClick = { onExpandedChange(!expanded) }) {
-                    Text("导入")
+                    Text("⋮", fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
                 }
                 DropdownMenu(expanded = expanded, onDismissRequest = { onExpandedChange(false) }) {
+                    CreateMenuItem("新建笔记", "打开完整编辑页开始书写", onClick = { onExpandedChange(false); onStartWriting() })
                     CreateMenuItem("导入文件", "支持 .md、.markdown、.txt 与 UTF-8 文本", onClick = { onExpandedChange(false); onImportFile() })
                     CreateMenuItem("从剪切板导入", "读取当前最近一条剪切板文本", onClick = { onExpandedChange(false); onImportClipboard() })
                 }
@@ -772,7 +879,7 @@ private fun NoteDetailPage(
                 )
             }
             Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),
+                color = MaterialTheme.colorScheme.surfaceVariant,
                 shape = MaterialTheme.shapes.large
             ) {
                 FlowRow(
@@ -871,24 +978,55 @@ private fun EmptyNotes(query: String, onCreate: () -> Unit) {
 
 @Composable
 private fun NoteCard(note: NoteEntity, onOpen: () -> Unit) {
-    val summary = remember(note.id, note.content, note.isMarkdown) { if (note.isMarkdown) markdownToPlainText(note.content) else note.content }
-    val darkTheme = isSystemInDarkTheme()
+    val summary = remember(note.id, note.content, note.isMarkdown) {
+        if (note.isMarkdown) markdownToPlainText(note.content) else note.content
+    }
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
+        shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(
-            containerColor = noteCardContainerColor(note.color, darkTheme),
+            containerColor = MaterialTheme.colorScheme.surface,
             contentColor = MaterialTheme.colorScheme.onSurface
         ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.52f)),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Text(note.title.ifBlank { "未命名笔记" }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (note.isMarkdown) Text("MD", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 8.dp))
-                if (note.isPinned) Text("置顶", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(9.dp)
+        ) {
+            Text(
+                note.title.ifBlank { "未命名笔记" },
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (summary.isNotBlank()) {
+                Text(
+                    summary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
-            if (summary.isNotBlank()) Text(summary, maxLines = 3, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(formatDate(note.updatedAt), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    formatDate(note.updatedAt),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                if (note.isMarkdown) {
+                    Text("MD", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 12.dp))
+                }
+                Text(
+                    if (note.isPinned) "★" else "☆",
+                    fontSize = 22.sp,
+                    color = if (note.isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                )
+            }
         }
     }
 }
@@ -916,15 +1054,5 @@ private fun ImportErrorDialog(message: String, onDismiss: () -> Unit) {
 
 private val NoteColors = listOf(0xFFF5F0E8, 0xFFF5ECEB, 0xFFEDF3F5, 0xFFEEF5F0, 0xFFF5F1E3)
 
-private fun noteCardContainerColor(noteColor: Long, darkTheme: Boolean): Color {
-    if (!darkTheme) return Color(noteColor)
-    return when (noteColor) {
-        0xFFF5ECEB -> Color(0xFF2D2726)
-        0xFFEDF3F5 -> Color(0xFF252B2D)
-        0xFFEEF5F0 -> Color(0xFF252C27)
-        0xFFF5F1E3 -> Color(0xFF2C2A23)
-        else -> Color(0xFF2A2823)
-    }
-}
 
 private fun formatDate(time: Long): String = SimpleDateFormat("yyyy年M月d日 HH:mm", Locale.CHINA).format(Date(time))
