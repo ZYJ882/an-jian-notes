@@ -703,6 +703,14 @@ private fun NoteDetailPage(
         detailMode = DetailMode.EDIT
     }
 
+    fun toggleDetailMode() {
+        if (detailMode == DetailMode.PREVIEW) {
+            enterEdit(InlineEditTarget.CONTENT)
+        } else {
+            detailMode = DetailMode.PREVIEW
+        }
+    }
+
     fun openPreviewLink(link: String) {
         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }
     }
@@ -714,9 +722,9 @@ private fun NoteDetailPage(
                 title = { Text(if (note == null) "新建笔记" else "笔记详情", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
                 actions = {
-                    TextButton(onClick = {
-                        detailMode = if (detailMode == DetailMode.PREVIEW) DetailMode.EDIT else DetailMode.PREVIEW
-                    }) { Text(if (detailMode == DetailMode.PREVIEW) "编辑" else "预览") }
+                    TextButton(onClick = ::toggleDetailMode) {
+                        Text(if (detailMode == DetailMode.PREVIEW) "编辑" else "预览")
+                    }
                     if (detailMode == DetailMode.EDIT) {
                         TextButton(onClick = {
                             onSave(note?.id ?: 0, title, content, color, pinned, markdownActive, selectedFolderId, note?.createdAt ?: System.currentTimeMillis())
