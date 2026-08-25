@@ -1227,7 +1227,9 @@ private fun NoteDetailPage(
             while (hasUserEdited && savedRevision < editRevision) {
                 val revisionToSave = editRevision
                 val titleToSave = title
-                val contentToSave = content
+                // 不能读取组合开始时计算出的 content 局部值：输入事件刚更新
+                // TextFieldValue 后尚未重新组合时，该局部值仍可能是旧的空字符串。
+                val contentToSave = contentValue.text
                 val colorToSave = color
                 val pinnedToSave = pinned
                 val markdownToSave = formatMode.resolvesToMarkdown(contentToSave)
@@ -1235,7 +1237,7 @@ private fun NoteDetailPage(
                 autoSaveState = AutoSaveState.SAVING
                 saveError = null
                 editorLog(
-                    "save start revision=$revisionToSave id=$savedNoteId " +
+                    "save start revision=$revisionToSave id=$savedNoteId contentLength=${contentToSave.length} " +
                         if (savedNoteId == 0L) "creating new note" else "updating note"
                 )
                 try {
