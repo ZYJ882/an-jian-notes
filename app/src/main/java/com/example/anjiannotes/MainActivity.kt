@@ -4,12 +4,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.window.OnBackInvokedCallback
-import android.window.OnBackInvokedDispatcher
 import androidx.activity.ComponentActivity
-import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -132,41 +128,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
-    private var detailBackAction: (() -> Unit)? = null
-    private var predictiveDetailBackRegistered = false
-    private val detailBackCallback = object : OnBackPressedCallback(false) {
-        override fun handleOnBackPressed() {
-            detailBackAction?.invoke()
-        }
-    }
-    private val predictiveDetailBackCallback = OnBackInvokedCallback {
-        detailBackAction?.invoke()
-    }
-
-    private fun setDetailBackAction(action: (() -> Unit)?) {
-        detailBackAction = action
-        // Android 12L 及以下的物理返回键、三键导航和手势由 Dispatcher 处理。
-        detailBackCallback.isEnabled = action != null && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
-
-        // Android 13+ 的预测返回手势会直接进入此回调，避免依赖 Compose
-        // 重新组合期间的临时注册状态。详情页离开时立即注销，恢复系统默认返回行为。
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (action != null && !predictiveDetailBackRegistered) {
-                onBackInvokedDispatcher.registerOnBackInvokedCallback(
-                    OnBackInvokedDispatcher.PRIORITY_DEFAULT,
-                    predictiveDetailBackCallback
-                )
-                predictiveDetailBackRegistered = true
-            } else if (action == null && predictiveDetailBackRegistered) {
-                onBackInvokedDispatcher.unregisterOnBackInvokedCallback(predictiveDetailBackCallback)
-                predictiveDetailBackRegistered = false
-            }
-        }
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        onBackPressedDispatcher.addCallback(this, detailBackCallback)
         val app = application as AnJianApplication
         val factory = NotesViewModelFactory(
             NotesRepository(app.database, app.database.noteDao(), app.database.folderDao()),
@@ -183,19 +146,10 @@ class MainActivity : ComponentActivity() {
                 NotesApp(
                     viewModel = notesViewModel,
                     appearanceMode = appearanceMode,
-                    onAppearanceChange = app.appearancePreferences::setMode,
-                    onDetailBackHandlerChange = ::setDetailBackAction
+                    onAppearanceChange = app.appearancePreferences::setMode
                 )
             }
         }
-    }
-
-    override fun onDestroy() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && predictiveDetailBackRegistered) {
-            onBackInvokedDispatcher.unregisterOnBackInvokedCallback(predictiveDetailBackCallback)
-            predictiveDetailBackRegistered = false
-        }
-        super.onDestroy()
     }
 }
 
@@ -219,8 +173,7 @@ private sealed interface AppPage {
 private fun NotesApp(
     viewModel: NotesViewModel,
     appearanceMode: AppearanceMode,
-    onAppearanceChange: (AppearanceMode) -> Unit,
-    onDetailBackHandlerChange: ((() -> Unit)?) -> Unit
+    onAppearanceChange: (AppearanceMode) -> Unit
 ) {
     val context = LocalContext.current
     val notes by viewModel.notes.collectAsStateWithLifecycle()
@@ -404,7 +357,6 @@ private fun NotesApp(
             initialFolderId = currentPage.folderId,
             folders = folders,
             onBack = { page = AppPage.List },
-            onSystemBackHandlerChange = onDetailBackHandlerChange,
             onSave = { id, title, content, color, pinned, markdown, folderId, createdAt, onSaved ->
                 viewModel.saveNote(id, title, content, color, pinned, markdown, folderId, createdAt, onSaved)
             },
@@ -1194,7 +1146,6 @@ private fun NoteDetailPage(
     initialFolderId: Long,
     folders: List<FolderEntity>,
     onBack: () -> Unit,
-    onSystemBackHandlerChange: ((() -> Unit)?) -> Unit,
     onSave: (Long, String, String, Long, Boolean, Boolean, Long, Long, (Long) -> Unit) -> Unit,
     onDiscard: (Long) -> Unit,
     onDelete: (NoteEntity) -> Unit,
@@ -1225,6 +1176,7 @@ private fun NoteDetailPage(
     var discardAfterSave by remember(note?.id, seed) { mutableStateOf(false) }
     var previewRequested by remember(note?.id, seed) { mutableStateOf(false) }
     var exitRequested by remember(note?.id, seed) { mutableStateOf(false) }
+    var backTransitionInProgress by remember(note?.id, seed) { mutableStateOf(false) }
     val titleFocus = remember { FocusRequester() }
     val contentFocus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -1304,22 +1256,26 @@ private fun NoteDetailPage(
     }
 
     fun finishEditing() {
+        // 同一返回手势可能在系统与界面完成状态更新前重复抵达。第一次返回开始后，
+        // 直到预览态真正绘制一帧之前都忽略后续返回，避免一次手势越过预览直接回列表。
+        if (backTransitionInProgress) return
+
         if (detailMode == DetailMode.EDIT) {
-            // 第一次返回：先提交当前内容，写入确认后回到同一笔记的预览态。
-            if (previewRequested) return
+            backTransitionInProgress = true
             previewRequested = true
             if (title.isBlank() && content.isBlank()) {
                 if (savedNoteId != 0L) onDiscard(savedNoteId)
-                detailMode = DetailMode.PREVIEW
                 previewRequested = false
+                detailMode = DetailMode.PREVIEW
             } else {
                 persistNow()
             }
             return
         }
 
-        // 第二次返回：预览态已是已保存的稳定内容，可直接回到主列表。
+        // 仅在用户已经看到稳定的预览态后，第二次返回才回到笔记列表。
         if (exitRequested) return
+        backTransitionInProgress = true
         exitRequested = true
         if (title.isBlank() && content.isBlank() && savedNoteId != 0L) onDiscard(savedNoteId)
         onBack()
@@ -1365,14 +1321,17 @@ private fun NoteDetailPage(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    val latestFinishEditing by rememberUpdatedState(::finishEditing)
-    // Compose 返回分发覆盖三键导航、物理返回键和旧版系统手势；
-    // Android 13+ 还由 Activity 的预测返回回调调用同一函数。
-    BackHandler(enabled = true) { latestFinishEditing() }
-    DisposableEffect(Unit) {
-        onSystemBackHandlerChange { latestFinishEditing() }
-        onDispose { onSystemBackHandlerChange(null) }
+    LaunchedEffect(detailMode, backTransitionInProgress) {
+        if (detailMode == DetailMode.PREVIEW && backTransitionInProgress) {
+            // 让预览态至少完成一帧绘制后才接受下一次返回。
+            withFrameNanos { }
+            backTransitionInProgress = false
+        }
     }
+
+    val latestFinishEditing by rememberUpdatedState(::finishEditing)
+    // BackHandler 通过 AndroidX 回调覆盖物理返回键、三键导航及系统返回手势。
+    BackHandler(enabled = true) { latestFinishEditing() }
 
     CompositionLocalProvider(
         LocalTextSelectionColors provides TextSelectionColors(
