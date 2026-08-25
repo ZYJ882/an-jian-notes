@@ -195,10 +195,6 @@ class NotesViewModel(
         )
     )
 
-    fun moveNoteToFolder(noteId: Long, folderId: Long) {
-        viewModelScope.launch { repository.moveToFolder(noteId, folderId) }
-    }
-
     fun deleteNote(id: Long) {
         viewModelScope.launch { repository.delete(id) }
     }

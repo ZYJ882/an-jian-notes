@@ -56,9 +56,6 @@ interface NoteDao {
     @Query("DELETE FROM notes WHERE id = :id")
     suspend fun deleteById(id: Long)
 
-    @Query("UPDATE notes SET folderId = :folderId, updatedAt = :updatedAt WHERE id = :noteId")
-    suspend fun moveToFolder(noteId: Long, folderId: Long, updatedAt: Long = System.currentTimeMillis())
-
     @Query("SELECT * FROM notes ORDER BY id ASC")
     suspend fun getAll(): List<NoteEntity>
 
@@ -166,6 +163,6 @@ class NotesRepository(
     }
 
     suspend fun save(note: NoteEntity): Long = noteDao.upsert(note)
-    suspend fun moveToFolder(noteId: Long, folderId: Long) = noteDao.moveToFolder(noteId, folderId)
+
     suspend fun delete(id: Long) = noteDao.deleteById(id)
 }
