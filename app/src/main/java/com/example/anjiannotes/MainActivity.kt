@@ -1836,13 +1836,14 @@ private fun DraggableNoteListScrollbar(
     val totalItems = layoutInfo.totalItemsCount
     val canScroll = visibleItems.isNotEmpty() && visibleItems.size < totalItems
     var dragging by remember { mutableStateOf(false) }
-    val thumbWidthPx = with(density) { 3.dp.toPx() }
-    val minimumThumbHeightPx = with(density) { 28.dp.toPx() }
+    var dragPixelsToScroll by remember { mutableStateOf(0f) }
+    val thumbWidthPx = with(density) { 4.dp.toPx() }
+    val thumbHeightPx = with(density) { 42.dp.toPx() }
     val itemSpacingPx = with(density) { 10.dp.toPx() }
-    val targetAlpha = if (canScroll && (listState.isScrollInProgress || dragging)) 0.52f else 0f
+    val targetAlpha = if (canScroll && (listState.isScrollInProgress || dragging)) 0.58f else 0f
     val thumbAlpha by animateFloatAsState(
         targetValue = targetAlpha,
-        animationSpec = tween(durationMillis = if (targetAlpha > 0f) 110 else 220),
+        animationSpec = tween(durationMillis = if (targetAlpha > 0f) 90 else 180),
         label = "noteListScrollbarAlpha"
     )
 
@@ -1855,21 +1856,31 @@ private fun DraggableNoteListScrollbar(
             .pointerInput(canScroll, totalItems) {
                 if (!canScroll) return@pointerInput
                 detectDragGestures(
-                    onDragStart = { dragging = true },
+                    onDragStart = {
+                        dragging = true
+                        dragPixelsToScroll = 0f
+                        val viewportHeight = size.height.toFloat()
+                        if (viewportHeight > 0f) {
+                            val estimatedContentHeight = averageItemExtent() * totalItems
+                            val trackHeight = (viewportHeight - thumbHeightPx).coerceAtLeast(1f)
+                            val scrollRange = (estimatedContentHeight - viewportHeight).coerceAtLeast(1f)
+                            dragPixelsToScroll = scrollRange / trackHeight
+                        }
+                    },
                     onDrag = { change, dragAmount ->
                         change.consume()
-                        val viewportHeight = size.height.toFloat()
-                        if (viewportHeight <= 0f) return@detectDragGestures
-                        val itemExtent = averageItemExtent()
-                        val estimatedContentHeight = itemExtent * totalItems
-                        val thumbHeight = (viewportHeight * (viewportHeight / estimatedContentHeight))
-                            .coerceIn(minimumThumbHeightPx, viewportHeight)
-                        val trackHeight = (viewportHeight - thumbHeight).coerceAtLeast(1f)
-                        val scrollRange = (estimatedContentHeight - viewportHeight).coerceAtLeast(1f)
-                        listState.dispatchRawDelta(dragAmount.y / trackHeight * scrollRange)
+                        if (dragPixelsToScroll > 0f) {
+                            listState.dispatchRawDelta(dragAmount.y * dragPixelsToScroll)
+                        }
                     },
-                    onDragEnd = { dragging = false },
-                    onDragCancel = { dragging = false }
+                    onDragEnd = {
+                        dragging = false
+                        dragPixelsToScroll = 0f
+                    },
+                    onDragCancel = {
+                        dragging = false
+                        dragPixelsToScroll = 0f
+                    }
                 )
             }
     ) {
@@ -1878,17 +1889,21 @@ private fun DraggableNoteListScrollbar(
         val viewportHeight = size.height
         val itemExtent = averageItemExtent()
         val estimatedContentHeight = itemExtent * totalItems
-        val thumbHeight = (viewportHeight * (viewportHeight / estimatedContentHeight))
-            .coerceIn(minimumThumbHeightPx, viewportHeight)
         val scrollRange = (estimatedContentHeight - viewportHeight).coerceAtLeast(1f)
         val currentOffset = listState.firstVisibleItemIndex * itemExtent + listState.firstVisibleItemScrollOffset
-        val scrollFraction = (currentOffset / scrollRange).coerceIn(0f, 1f)
-        val thumbY = (viewportHeight - thumbHeight) * scrollFraction
+        val estimatedFraction = (currentOffset / scrollRange).coerceIn(0f, 1f)
+        val scrollFraction = when {
+            !listState.canScrollBackward -> 0f
+            !listState.canScrollForward -> 1f
+            else -> estimatedFraction
+        }
+        val actualThumbHeight = thumbHeightPx.coerceAtMost(viewportHeight)
+        val thumbY = (viewportHeight - actualThumbHeight) * scrollFraction
 
         drawRoundRect(
             color = thumbColor.copy(alpha = thumbAlpha),
             topLeft = Offset(size.width - thumbWidthPx, thumbY),
-            size = Size(thumbWidthPx, thumbHeight),
+            size = Size(thumbWidthPx, actualThumbHeight),
             cornerRadius = CornerRadius(thumbWidthPx, thumbWidthPx)
         )
     }
