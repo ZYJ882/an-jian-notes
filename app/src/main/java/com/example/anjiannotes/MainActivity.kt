@@ -6,6 +6,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Debug
+import android.os.SystemClock
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.compose.animation.core.animateFloatAsState
@@ -74,10 +76,13 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.mutableStateOf
@@ -142,6 +147,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -603,6 +609,7 @@ private fun NotesListPage(
     val scope = rememberCoroutineScope()
     val activeFolderName = folders.firstOrNull { it.id == activeFolderId }?.name ?: "全部笔记"
     val noteListState = rememberLazyListState()
+    val listDiagnostics = remember { NoteListScrollDiagnostics() }
     var selectedNoteIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var pendingBatchDeleteIds by remember { mutableStateOf<Set<Long>?>(null) }
     val selectionMode = selectedNoteIds.isNotEmpty()
@@ -612,6 +619,32 @@ private fun NotesListPage(
     }
 
     BackHandler(enabled = selectionMode) { selectedNoteIds = emptySet() }
+
+    if (BuildConfig.DEBUG) {
+        SideEffect { listDiagnostics.pageComposed() }
+        LaunchedEffect(noteListState) {
+            var scrolling = false
+            snapshotFlow {
+                ListScrollSample(
+                    scrolling = noteListState.isScrollInProgress,
+                    index = noteListState.firstVisibleItemIndex,
+                    offset = noteListState.firstVisibleItemScrollOffset
+                )
+            }.collect { sample ->
+                if (sample.scrolling && !scrolling) listDiagnostics.begin(sample)
+                if (sample.scrolling) listDiagnostics.sample(sample)
+                if (!sample.scrolling && scrolling) listDiagnostics.end(sample)
+                scrolling = sample.scrolling
+            }
+        }
+        LaunchedEffect(noteListState) {
+            snapshotFlow { noteListState.isScrollInProgress }.collect { scrolling ->
+                while (scrolling && noteListState.isScrollInProgress) {
+                    withFrameNanos { frameTime -> listDiagnostics.frame(frameTime) }
+                }
+            }
+        }
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -788,7 +821,8 @@ private fun NotesListPage(
                                         if (selectionMode) toggleSelection(notes[index].id) else onOpenNote(notes[index])
                                     },
                                     onLongPress = { toggleSelection(notes[index].id) },
-                                    onToggleStar = { onToggleStar(notes[index]) }
+                                    onToggleStar = { onToggleStar(notes[index]) },
+                                    diagnostics = listDiagnostics
                                 )
                             }
                             item { Spacer(Modifier.height(20.dp)) }
@@ -796,6 +830,7 @@ private fun NotesListPage(
                         DraggableNoteListScrollbar(
                             listState = noteListState,
                             thumbColor = MaterialTheme.colorScheme.primary,
+                            diagnostics = listDiagnostics,
                             modifier = Modifier
                                 .align(Alignment.CenterEnd)
                                 .fillMaxHeight()
@@ -1880,52 +1915,159 @@ private fun DraggableDetailScrollbar(
     }
 }
 
+private data class ListScrollSample(val scrolling: Boolean, val index: Int, val offset: Int)
+
+private class NoteListScrollDiagnostics {
+    private var active = false
+    private var startedAt = 0L
+    private var lastSampleAt = 0L
+    private var samples = 0
+    private var slowSamples = 0
+    private var pageRecompositions = 0
+    private var cardCompositions = 0
+    private var summaryBuilds = 0
+    private var summaryNanos = 0L
+    private var scrollbarCompositions = 0
+    private var frameSamples = 0
+    private var slowFrames = 0
+    private var lastFrameNanos = 0L
+    private var gcAtStart: String? = null
+
+    fun begin(sample: ListScrollSample) {
+        if (!BuildConfig.DEBUG) return
+        active = true
+        startedAt = SystemClock.uptimeMillis()
+        lastSampleAt = startedAt
+        samples = 0
+        slowSamples = 0
+        pageRecompositions = 0
+        cardCompositions = 0
+        summaryBuilds = 0
+        summaryNanos = 0L
+        scrollbarCompositions = 0
+        frameSamples = 0
+        slowFrames = 0
+        lastFrameNanos = 0L
+        gcAtStart = Debug.getRuntimeStat("art.gc.gc-count")
+        Log.d("ListPerf", "scroll start index=${sample.index} offset=${sample.offset}")
+    }
+
+    fun sample(sample: ListScrollSample) {
+        if (!BuildConfig.DEBUG || !active) return
+        samples += 1
+        val now = SystemClock.uptimeMillis()
+        val gap = now - lastSampleAt
+        lastSampleAt = now
+        if (gap > 24L) {
+            slowSamples += 1
+            Log.w("ListPerf", "scroll gapMs=$gap index=${sample.index} offset=${sample.offset}")
+        }
+    }
+
+    fun pageComposed() {
+        if (BuildConfig.DEBUG && active) pageRecompositions += 1
+    }
+
+    fun cardComposed() {
+        if (BuildConfig.DEBUG && active) cardCompositions += 1
+    }
+
+    fun summaryBuilt(durationNanos: Long) {
+        if (BuildConfig.DEBUG && active) {
+            summaryBuilds += 1
+            summaryNanos += durationNanos
+        }
+    }
+
+    fun scrollbarComposed() {
+        if (BuildConfig.DEBUG && active) scrollbarCompositions += 1
+    }
+
+    fun frame(frameNanos: Long) {
+        if (!BuildConfig.DEBUG || !active) return
+        if (lastFrameNanos != 0L) {
+            val gap = frameNanos - lastFrameNanos
+            if (gap > 24_000_000L) {
+                slowFrames += 1
+                Log.w("ListPerf", "frame gapMs=${gap / 1_000_000f}")
+            }
+        }
+        lastFrameNanos = frameNanos
+        frameSamples += 1
+    }
+
+    fun end(sample: ListScrollSample) {
+        if (!BuildConfig.DEBUG || !active) return
+        val duration = SystemClock.uptimeMillis() - startedAt
+        val summaryMillis = summaryNanos / 1_000_000f
+        val gcAtEnd = Debug.getRuntimeStat("art.gc.gc-count")
+        Log.d(
+            "ListPerf",
+            "scroll end durationMs=$duration samples=$samples slowSamples=$slowSamples " +
+                "pageRecompositions=$pageRecompositions cardCompositions=$cardCompositions " +
+                "scrollbarCompositions=$scrollbarCompositions frames=$frameSamples slowFrames=$slowFrames " +
+                "summaryBuilds=$summaryBuilds summaryMs=$summaryMillis gc=$gcAtStart->$gcAtEnd " +
+                "index=${sample.index} offset=${sample.offset}"
+        )
+        active = false
+    }
+}
+
 @Composable
 private fun DraggableNoteListScrollbar(
     listState: LazyListState,
     thumbColor: Color,
+    diagnostics: NoteListScrollDiagnostics? = null,
     modifier: Modifier = Modifier
 ) {
+    if (BuildConfig.DEBUG) SideEffect { diagnostics?.scrollbarComposed() }
     val density = LocalDensity.current
-    val layoutInfo = listState.layoutInfo
-    val visibleItems = layoutInfo.visibleItemsInfo
-    val totalItems = layoutInfo.totalItemsCount
-    val canScroll = visibleItems.isNotEmpty() && visibleItems.size < totalItems
+    val canScroll by remember(listState) {
+        derivedStateOf { listState.canScrollBackward || listState.canScrollForward }
+    }
+    val scrolling by remember(listState) {
+        derivedStateOf { listState.isScrollInProgress }
+    }
     var dragging by remember { mutableStateOf(false) }
     var dragPixelsToScroll by remember { mutableStateOf(0f) }
     val thumbWidthPx = with(density) { 4.dp.toPx() }
     val thumbHeightPx = with(density) { 42.dp.toPx() }
     val itemSpacingPx = with(density) { 10.dp.toPx() }
-    val targetAlpha = if (canScroll && (listState.isScrollInProgress || dragging)) 0.58f else 0f
-    val thumbAlpha by animateFloatAsState(
+    val targetAlpha = if (canScroll && (scrolling || dragging)) 0.58f else 0f
+    val thumbAlpha = animateFloatAsState(
         targetValue = targetAlpha,
         animationSpec = tween(durationMillis = if (targetAlpha > 0f) 90 else 180),
         label = "noteListScrollbarAlpha"
     )
 
-    fun averageItemExtent(): Float =
-        visibleItems.sumOf { it.size }.toFloat() / visibleItems.size + itemSpacingPx
-
     Canvas(
         modifier = modifier
             .width(12.dp)
-            .pointerInput(canScroll, totalItems) {
-                if (!canScroll) return@pointerInput
+            .graphicsLayer { alpha = thumbAlpha.value }
+            .pointerInput(listState) {
                 detectDragGestures(
-                    onDragStart = {
+                    onDragStart = onDragStart@{
+                        val layoutInfo = listState.layoutInfo
+                        val visibleItems = layoutInfo.visibleItemsInfo
+                        val totalItems = layoutInfo.totalItemsCount
+                        if (visibleItems.isEmpty() || visibleItems.size >= totalItems) {
+                            dragging = false
+                            dragPixelsToScroll = 0f
+                            return@onDragStart
+                        }
                         dragging = true
-                        dragPixelsToScroll = 0f
                         val viewportHeight = size.height.toFloat()
                         if (viewportHeight > 0f) {
-                            val estimatedContentHeight = averageItemExtent() * totalItems
+                            val itemExtent = visibleItems.sumOf { it.size }.toFloat() / visibleItems.size + itemSpacingPx
+                            val estimatedContentHeight = itemExtent * totalItems
                             val trackHeight = (viewportHeight - thumbHeightPx).coerceAtLeast(1f)
                             val scrollRange = (estimatedContentHeight - viewportHeight).coerceAtLeast(1f)
                             dragPixelsToScroll = scrollRange / trackHeight
                         }
                     },
                     onDrag = { change, dragAmount ->
-                        change.consume()
                         if (dragPixelsToScroll > 0f) {
+                            change.consume()
                             listState.dispatchRawDelta(dragAmount.y * dragPixelsToScroll)
                         }
                     },
@@ -1940,10 +2082,13 @@ private fun DraggableNoteListScrollbar(
                 )
             }
     ) {
-        if (!canScroll || thumbAlpha <= 0.01f) return@Canvas
+        val layoutInfo = listState.layoutInfo
+        val visibleItems = layoutInfo.visibleItemsInfo
+        val totalItems = layoutInfo.totalItemsCount
+        if (visibleItems.isEmpty() || visibleItems.size >= totalItems) return@Canvas
 
         val viewportHeight = size.height
-        val itemExtent = averageItemExtent()
+        val itemExtent = visibleItems.sumOf { it.size }.toFloat() / visibleItems.size + itemSpacingPx
         val estimatedContentHeight = itemExtent * totalItems
         val scrollRange = (estimatedContentHeight - viewportHeight).coerceAtLeast(1f)
         val currentOffset = listState.firstVisibleItemIndex * itemExtent + listState.firstVisibleItemScrollOffset
@@ -1957,7 +2102,7 @@ private fun DraggableNoteListScrollbar(
         val thumbY = (viewportHeight - actualThumbHeight) * scrollFraction
 
         drawRoundRect(
-            color = thumbColor.copy(alpha = thumbAlpha),
+            color = thumbColor,
             topLeft = Offset(size.width - thumbWidthPx, thumbY),
             size = Size(thumbWidthPx, actualThumbHeight),
             cornerRadius = CornerRadius(thumbWidthPx, thumbWidthPx)
@@ -1973,11 +2118,16 @@ private fun NoteCard(
     selectionMode: Boolean,
     onOpen: () -> Unit,
     onLongPress: () -> Unit,
-    onToggleStar: () -> Unit
+    onToggleStar: () -> Unit,
+    diagnostics: NoteListScrollDiagnostics? = null
 ) {
     val summary = remember(note.id, note.content, note.isMarkdown) {
-        if (note.isMarkdown) markdownToPlainText(note.content) else note.content
+        val startNanos = if (BuildConfig.DEBUG) SystemClock.elapsedRealtimeNanos() else 0L
+        val value = if (note.isMarkdown) markdownToPlainText(note.content) else note.content
+        if (BuildConfig.DEBUG) diagnostics?.summaryBuilt(SystemClock.elapsedRealtimeNanos() - startNanos)
+        value
     }
+    if (BuildConfig.DEBUG) SideEffect { diagnostics?.cardComposed() }
     Card(
         modifier = Modifier
             .fillMaxWidth()
