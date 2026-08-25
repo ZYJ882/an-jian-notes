@@ -1173,6 +1173,7 @@ private fun NoteDetailPage(
     var saveInFlight by remember(note?.id, seed) { mutableStateOf(false) }
     var persistPending by remember(note?.id, seed) { mutableStateOf(false) }
     var discardAfterSave by remember(note?.id, seed) { mutableStateOf(false) }
+    var exitRequested by remember(note?.id, seed) { mutableStateOf(false) }
     val titleFocus = remember { FocusRequester() }
     val contentFocus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -1236,21 +1237,37 @@ private fun NoteDetailPage(
             saveInFlight = false
             if (discardAfterSave) {
                 onDiscard(id)
+                if (exitRequested) onBack()
             } else {
                 autoSaveState = AutoSaveState.SAVED
-                if (persistPending || editRevision > savedRevision) persistNow()
+                // 若编辑还在变化或退出时已有未提交改动，继续写入最新快照；
+                // 直到最后一次数据库写入确认后，才真正离开详情页。
+                if (persistPending || editRevision > savedRevision) {
+                    persistNow()
+                } else if (exitRequested) {
+                    onBack()
+                }
             }
         }
     }
 
     fun finishEditing() {
+        // 顶栏返回、系统返回与手势返回都会进入这里。非空笔记不能在写入确认前
+        // 卸载详情页，否则列表可能短暂显示新内容，而重开时仍读到旧的空草稿。
+        if (exitRequested) return
+        exitRequested = true
         if (title.isBlank() && content.isBlank()) {
-            if (savedNoteId != 0L) onDiscard(savedNoteId)
-            else if (saveInFlight) discardAfterSave = true
+            if (savedNoteId != 0L) {
+                onDiscard(savedNoteId)
+                onBack()
+            } else if (saveInFlight) {
+                discardAfterSave = true
+            } else {
+                onBack()
+            }
         } else {
             persistNow()
         }
-        onBack()
     }
 
     LaunchedEffect(editRevision) {
