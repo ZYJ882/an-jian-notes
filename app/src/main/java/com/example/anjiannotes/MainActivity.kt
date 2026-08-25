@@ -301,7 +301,8 @@ private fun NotesApp(
         }
     }
 
-    BackHandler(enabled = page !is AppPage.List) {
+    // 详情页自身必须独占系统返回事件，以便先执行自动保存；根页面仅处理设置层级的返回。
+    BackHandler(enabled = page is AppPage.Settings || page is AppPage.Appearance) {
         page = if (page is AppPage.Appearance) AppPage.Settings else AppPage.List
     }
 
