@@ -4,7 +4,10 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.BackHandler
@@ -130,9 +133,34 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private var detailBackAction: (() -> Unit)? = null
+    private var predictiveDetailBackRegistered = false
     private val detailBackCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
             detailBackAction?.invoke()
+        }
+    }
+    private val predictiveDetailBackCallback = OnBackInvokedCallback {
+        detailBackAction?.invoke()
+    }
+
+    private fun setDetailBackAction(action: (() -> Unit)?) {
+        detailBackAction = action
+        // Android 12L 及以下的物理返回键、三键导航和手势由 Dispatcher 处理。
+        detailBackCallback.isEnabled = action != null && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+
+        // Android 13+ 的预测返回手势会直接进入此回调，避免依赖 Compose
+        // 重新组合期间的临时注册状态。详情页离开时立即注销，恢复系统默认返回行为。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (action != null && !predictiveDetailBackRegistered) {
+                onBackInvokedDispatcher.registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                    predictiveDetailBackCallback
+                )
+                predictiveDetailBackRegistered = true
+            } else if (action == null && predictiveDetailBackRegistered) {
+                onBackInvokedDispatcher.unregisterOnBackInvokedCallback(predictiveDetailBackCallback)
+                predictiveDetailBackRegistered = false
+            }
         }
     }
 
@@ -156,13 +184,18 @@ class MainActivity : ComponentActivity() {
                     viewModel = notesViewModel,
                     appearanceMode = appearanceMode,
                     onAppearanceChange = app.appearancePreferences::setMode,
-                    onDetailBackHandlerChange = { action ->
-                        detailBackAction = action
-                        detailBackCallback.isEnabled = action != null
-                    }
+                    onDetailBackHandlerChange = ::setDetailBackAction
                 )
             }
         }
+    }
+
+    override fun onDestroy() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && predictiveDetailBackRegistered) {
+            onBackInvokedDispatcher.unregisterOnBackInvokedCallback(predictiveDetailBackCallback)
+            predictiveDetailBackRegistered = false
+        }
+        super.onDestroy()
     }
 }
 
@@ -1333,6 +1366,9 @@ private fun NoteDetailPage(
     }
 
     val latestFinishEditing by rememberUpdatedState(::finishEditing)
+    // Compose 返回分发覆盖三键导航、物理返回键和旧版系统手势；
+    // Android 13+ 还由 Activity 的预测返回回调调用同一函数。
+    BackHandler(enabled = true) { latestFinishEditing() }
     DisposableEffect(Unit) {
         onSystemBackHandlerChange { latestFinishEditing() }
         onDispose { onSystemBackHandlerChange(null) }
