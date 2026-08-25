@@ -49,6 +49,7 @@ fun MarkdownPreview(
     onLinkLongPress: (String) -> Unit = {},
     onLinkClick: (String) -> Unit = {},
     onDoubleClickAt: (Int) -> Unit = {},
+    onLongPress: () -> Unit = {},
     onClick: () -> Unit = {}
 ) {
     val blocks = remember(markdown) { parseMarkdownBlocks(markdown) }
@@ -64,8 +65,8 @@ fun MarkdownPreview(
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(7.dp)) {
         blocks.forEach { block ->
             when (block) {
-                is MarkdownBlock.Line -> MarkdownLine(block.content, block.startOffset, onLinkLongPress, onLinkClick, onDoubleClickAt, onClick)
-                is MarkdownBlock.Table -> MarkdownTable(block, onLinkLongPress, onLinkClick, onDoubleClickAt, onClick)
+                is MarkdownBlock.Line -> MarkdownLine(block.content, block.startOffset, onLinkLongPress, onLinkClick, onDoubleClickAt, onLongPress, onClick)
+                is MarkdownBlock.Table -> MarkdownTable(block, onLinkLongPress, onLinkClick, onDoubleClickAt, onLongPress, onClick)
             }
         }
     }
@@ -121,6 +122,7 @@ private fun MarkdownTable(
     onLinkLongPress: (String) -> Unit,
     onLinkClick: (String) -> Unit,
     onDoubleClickAt: (Int) -> Unit,
+    onLongPress: () -> Unit,
     onClick: () -> Unit
 ) {
     val blockText = buildString {
@@ -134,7 +136,7 @@ private fun MarkdownTable(
         .combinedClickable(
             onClick = { link?.let(onLinkClick) ?: onClick() },
             onDoubleClick = { onDoubleClickAt(table.startOffset) },
-            onLongClick = { link?.let(onLinkLongPress) }
+            onLongClick = { link?.let(onLinkLongPress) ?: onLongPress() }
         )
     Surface(
         modifier = modifier,
@@ -176,6 +178,7 @@ private fun MarkdownLine(
     onLinkLongPress: (String) -> Unit,
     onLinkClick: (String) -> Unit,
     onDoubleClickAt: (Int) -> Unit,
+    onLongPress: () -> Unit,
     onClick: () -> Unit
 ) {
     val link = remember(line) { extractFirstLink(line) }
@@ -189,7 +192,7 @@ private fun MarkdownLine(
                 val localOffset = textLayout?.getOffsetForPosition(position) ?: 0
                 onDoubleClickAt((startOffset + localOffset).coerceIn(startOffset, startOffset + line.length))
             },
-            onLongPress = { link?.let(onLinkLongPress) }
+            onLongPress = { link?.let(onLinkLongPress) ?: onLongPress() }
         )
     }
     when {

@@ -1,5 +1,6 @@
 package com.example.anjiannotes
 
+import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -1316,6 +1317,8 @@ private fun NoteDetailPage(
     var pinned by remember(note?.id) { mutableStateOf(note?.isPinned ?: false) }
     var selectedFolderId by remember(note?.id, initialFolderId) { mutableStateOf(note?.folderId ?: initialFolderId) }
     var showFolderPicker by remember { mutableStateOf(false) }
+    var showPreviewCopyMenu by remember(note?.id, seed) { mutableStateOf(false) }
+    var previewMenuLink by remember(note?.id, seed) { mutableStateOf<String?>(null) }
     var formatMode by remember(note?.id, seed) {
         mutableStateOf(
             if (note != null) {
@@ -1531,6 +1534,19 @@ private fun NoteDetailPage(
         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }
     }
 
+    fun showPreviewActions(link: String? = null) {
+        previewMenuLink = link
+        showPreviewCopyMenu = true
+    }
+
+    fun copyPreviewContent() {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val textToCopy = if (markdownActive) markdownToPlainText(content) else content
+        clipboard.setPrimaryClip(ClipData.newPlainText(title.ifBlank { "笔记" }, textToCopy))
+        showPreviewCopyMenu = false
+        previewMenuLink = null
+    }
+
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -1570,7 +1586,7 @@ private fun NoteDetailPage(
                 },
                 navigationIcon = {
                     TextButton(onClick = ::handleBack) {
-                        Text(if (detailMode == DetailMode.EDIT) "预览" else "返回")
+                        Text("返回")
                     }
                 },
                 actions = {
@@ -1685,8 +1701,10 @@ private fun NoteDetailPage(
                 MarkdownPreview(
                     content,
                     modifier = Modifier.fillMaxWidth(),
+                    onLinkLongPress = { link -> showPreviewActions(link) },
                     onLinkClick = ::openPreviewLink,
                     onDoubleClickAt = { position -> enterEdit(InlineEditTarget.CONTENT, position) },
+                    onLongPress = { showPreviewActions() },
                     onClick = {}
                 )
             } else {
@@ -1710,6 +1728,12 @@ private fun NoteDetailPage(
                                 plainTextLayout?.let { layout ->
                                     enterEdit(InlineEditTarget.CONTENT, layout.getOffsetForPosition(offset))
                                 }
+                            },
+                            onLongPress = { offset ->
+                                val link = plainTextLayout?.let { layout ->
+                                    extractLinkAt(content, layout.getOffsetForPosition(offset))
+                                }
+                                showPreviewActions(link)
                             }
                         )
                     }
@@ -1724,6 +1748,38 @@ private fun NoteDetailPage(
                         .align(Alignment.CenterEnd)
                         .fillMaxHeight()
                 )
+                if (showPreviewCopyMenu && detailMode == DetailMode.PREVIEW) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 8.dp)
+                            .width(1.dp)
+                            .height(1.dp)
+                    ) {
+                        DropdownMenu(
+                            expanded = true,
+                            onDismissRequest = {
+                                showPreviewCopyMenu = false
+                                previewMenuLink = null
+                            }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("复制正文") },
+                                onClick = ::copyPreviewContent
+                            )
+                            previewMenuLink?.let { link ->
+                                DropdownMenuItem(
+                                    text = { Text("打开链接") },
+                                    onClick = {
+                                        openPreviewLink(link)
+                                        showPreviewCopyMenu = false
+                                        previewMenuLink = null
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1776,8 +1832,8 @@ private fun DraggableDetailScrollbar(
     val density = LocalDensity.current
     val canScroll = scrollState.maxValue > 0
     var dragging by remember { mutableStateOf(false) }
-    val thumbWidthPx = with(density) { 3.dp.toPx() }
-    val minimumThumbHeightPx = with(density) { 28.dp.toPx() }
+    val thumbWidthPx = with(density) { 4.dp.toPx() }
+    val thumbHeightPx = with(density) { 42.dp.toPx() }
 
     fun scrollToFraction(fraction: Float) {
         val targetValue = (fraction.coerceIn(0f, 1f) * scrollState.maxValue).roundToInt()
@@ -1809,16 +1865,14 @@ private fun DraggableDetailScrollbar(
         if (!canScroll || (!scrollState.isScrollInProgress && !dragging)) return@Canvas
 
         val viewportHeight = size.height
-        val estimatedContentHeight = viewportHeight + scrollState.maxValue
-        val thumbHeight = (viewportHeight * (viewportHeight / estimatedContentHeight))
-            .coerceIn(minimumThumbHeightPx, viewportHeight)
+        val actualThumbHeight = thumbHeightPx.coerceAtMost(viewportHeight)
         val scrollFraction = (scrollState.value.toFloat() / scrollState.maxValue).coerceIn(0f, 1f)
-        val thumbY = (viewportHeight - thumbHeight) * scrollFraction
+        val thumbY = (viewportHeight - actualThumbHeight) * scrollFraction
 
         drawRoundRect(
             color = thumbColor.copy(alpha = 0.52f),
             topLeft = Offset(size.width - thumbWidthPx, thumbY),
-            size = Size(thumbWidthPx, thumbHeight),
+            size = Size(thumbWidthPx, actualThumbHeight),
             cornerRadius = CornerRadius(thumbWidthPx, thumbWidthPx)
         )
     }
