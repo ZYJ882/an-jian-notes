@@ -41,6 +41,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -85,9 +87,13 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -586,6 +592,7 @@ private fun NotesListPage(
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val activeFolderName = folders.firstOrNull { it.id == activeFolderId }?.name ?: "全部笔记"
+    val noteListState = rememberLazyListState()
     var selectedNoteIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var pendingBatchDeleteIds by remember { mutableStateOf<Set<Long>?>(null) }
     val selectionMode = selectedNoteIds.isNotEmpty()
@@ -754,8 +761,11 @@ private fun NotesListPage(
                     EmptyNotes(query = query, onCreate = onNewNote)
                 } else {
                     androidx.compose.foundation.lazy.LazyColumn(
+                        state = noteListState,
                         verticalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .noteListScrollbar(noteListState, MaterialTheme.colorScheme.primary)
                     ) {
                         item { Text("共 ${notes.size} 条笔记", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 2.dp)) }
                         items(notes.size, key = { notes[it].id }) { index ->
@@ -1726,6 +1736,39 @@ private fun EmptyNotes(query: String, onCreate: () -> Unit) {
             }
         }
     }
+}
+
+private fun Modifier.noteListScrollbar(
+    listState: LazyListState,
+    thumbColor: Color
+): Modifier = drawWithContent {
+    drawContent()
+
+    val layoutInfo = listState.layoutInfo
+    val visibleItems = layoutInfo.visibleItemsInfo
+    val totalItems = layoutInfo.totalItemsCount
+    if (!listState.isScrollInProgress || visibleItems.isEmpty() || visibleItems.size >= totalItems) return@drawWithContent
+
+    val viewportStart = layoutInfo.viewportStartOffset.coerceAtLeast(0).toFloat()
+    val viewportHeight = (layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset).toFloat()
+    if (viewportHeight <= 0f) return@drawWithContent
+
+    val averageItemHeight = visibleItems.sumOf { it.size }.toFloat() / visibleItems.size
+    val estimatedContentHeight = averageItemHeight * totalItems
+    val thumbHeight = (viewportHeight * (viewportHeight / estimatedContentHeight))
+        .coerceIn(28.dp.toPx(), viewportHeight)
+    val scrollableItems = (totalItems - visibleItems.size).coerceAtLeast(1)
+    val scrollFraction = (listState.firstVisibleItemIndex.toFloat() / scrollableItems).coerceIn(0f, 1f)
+    val thumbY = viewportStart + (viewportHeight - thumbHeight) * scrollFraction
+    val thumbWidth = 2.dp.toPx()
+    val thumbInset = 3.dp.toPx()
+
+    drawRoundRect(
+        color = thumbColor.copy(alpha = 0.46f),
+        topLeft = Offset(size.width - thumbInset - thumbWidth, thumbY),
+        size = Size(thumbWidth, thumbHeight),
+        cornerRadius = CornerRadius(thumbWidth, thumbWidth)
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)
