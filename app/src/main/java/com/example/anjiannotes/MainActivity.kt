@@ -12,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -27,6 +28,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
@@ -43,6 +45,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -87,7 +90,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -98,6 +100,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -134,6 +137,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -760,27 +764,36 @@ private fun NotesListPage(
                 if (notes.isEmpty()) {
                     EmptyNotes(query = query, onCreate = onNewNote)
                 } else {
-                    androidx.compose.foundation.lazy.LazyColumn(
-                        state = noteListState,
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .noteListScrollbar(noteListState, MaterialTheme.colorScheme.primary)
-                    ) {
-                        item { Text("共 ${notes.size} 条笔记", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 2.dp)) }
-                        items(notes.size, key = { notes[it].id }) { index ->
-                            NoteCard(
-                                note = notes[index],
-                                selected = notes[index].id in selectedNoteIds,
-                                selectionMode = selectionMode,
-                                onOpen = {
-                                    if (selectionMode) toggleSelection(notes[index].id) else onOpenNote(notes[index])
-                                },
-                                onLongPress = { toggleSelection(notes[index].id) },
-                                onToggleStar = { onToggleStar(notes[index]) }
-                            )
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        androidx.compose.foundation.lazy.LazyColumn(
+                            state = noteListState,
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(end = 12.dp)
+                        ) {
+                            item { Text("共 ${notes.size} 条笔记", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 2.dp)) }
+                            items(notes.size, key = { notes[it].id }) { index ->
+                                NoteCard(
+                                    note = notes[index],
+                                    selected = notes[index].id in selectedNoteIds,
+                                    selectionMode = selectionMode,
+                                    onOpen = {
+                                        if (selectionMode) toggleSelection(notes[index].id) else onOpenNote(notes[index])
+                                    },
+                                    onLongPress = { toggleSelection(notes[index].id) },
+                                    onToggleStar = { onToggleStar(notes[index]) }
+                                )
+                            }
+                            item { Spacer(Modifier.height(20.dp)) }
                         }
-                        item { Spacer(Modifier.height(20.dp)) }
+                        DraggableNoteListScrollbar(
+                            listState = noteListState,
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .fillMaxHeight()
+                        )
                     }
                 }
             }
@@ -1738,37 +1751,68 @@ private fun EmptyNotes(query: String, onCreate: () -> Unit) {
     }
 }
 
-private fun Modifier.noteListScrollbar(
+@Composable
+private fun DraggableNoteListScrollbar(
     listState: LazyListState,
-    thumbColor: Color
-): Modifier = drawWithContent {
-    drawContent()
-
+    thumbColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
     val layoutInfo = listState.layoutInfo
     val visibleItems = layoutInfo.visibleItemsInfo
     val totalItems = layoutInfo.totalItemsCount
-    if (!listState.isScrollInProgress || visibleItems.isEmpty() || visibleItems.size >= totalItems) return@drawWithContent
+    val canScroll = visibleItems.isNotEmpty() && visibleItems.size < totalItems
+    var dragging by remember { mutableStateOf(false) }
+    val thumbWidthPx = with(density) { 3.dp.toPx() }
+    val minimumThumbHeightPx = with(density) { 28.dp.toPx() }
 
-    val viewportStart = layoutInfo.viewportStartOffset.coerceAtLeast(0).toFloat()
-    val viewportHeight = (layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset).toFloat()
-    if (viewportHeight <= 0f) return@drawWithContent
+    fun scrollToFraction(fraction: Float) {
+        val scrollableItems = (totalItems - visibleItems.size).coerceAtLeast(1)
+        val targetIndex = (fraction.coerceIn(0f, 1f) * scrollableItems).roundToInt()
+        scope.launch { listState.scrollToItem(targetIndex) }
+    }
 
-    val averageItemHeight = visibleItems.sumOf { it.size }.toFloat() / visibleItems.size
-    val estimatedContentHeight = averageItemHeight * totalItems
-    val thumbHeight = (viewportHeight * (viewportHeight / estimatedContentHeight))
-        .coerceIn(28.dp.toPx(), viewportHeight)
-    val scrollableItems = (totalItems - visibleItems.size).coerceAtLeast(1)
-    val scrollFraction = (listState.firstVisibleItemIndex.toFloat() / scrollableItems).coerceIn(0f, 1f)
-    val thumbY = viewportStart + (viewportHeight - thumbHeight) * scrollFraction
-    val thumbWidth = 2.dp.toPx()
-    val thumbInset = 3.dp.toPx()
+    Canvas(
+        modifier = modifier
+            .width(12.dp)
+            .pointerInput(canScroll, totalItems, visibleItems.size) {
+                if (!canScroll) return@pointerInput
+                fun scrollToPointer(positionY: Float) {
+                    scrollToFraction(positionY / size.height.coerceAtLeast(1))
+                }
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        dragging = true
+                        scrollToPointer(offset.y)
+                    },
+                    onDrag = { change, _ ->
+                        change.consume()
+                        scrollToPointer(change.position.y)
+                    },
+                    onDragEnd = { dragging = false },
+                    onDragCancel = { dragging = false }
+                )
+            }
+    ) {
+        if (!canScroll || (!listState.isScrollInProgress && !dragging)) return@Canvas
 
-    drawRoundRect(
-        color = thumbColor.copy(alpha = 0.46f),
-        topLeft = Offset(size.width - thumbInset - thumbWidth, thumbY),
-        size = Size(thumbWidth, thumbHeight),
-        cornerRadius = CornerRadius(thumbWidth, thumbWidth)
-    )
+        val viewportHeight = size.height
+        val averageItemHeight = visibleItems.sumOf { it.size }.toFloat() / visibleItems.size
+        val estimatedContentHeight = averageItemHeight * totalItems
+        val thumbHeight = (viewportHeight * (viewportHeight / estimatedContentHeight))
+            .coerceIn(minimumThumbHeightPx, viewportHeight)
+        val scrollableItems = (totalItems - visibleItems.size).coerceAtLeast(1)
+        val scrollFraction = (listState.firstVisibleItemIndex.toFloat() / scrollableItems).coerceIn(0f, 1f)
+        val thumbY = (viewportHeight - thumbHeight) * scrollFraction
+
+        drawRoundRect(
+            color = thumbColor.copy(alpha = 0.52f),
+            topLeft = Offset(size.width - thumbWidthPx, thumbY),
+            size = Size(thumbWidthPx, thumbHeight),
+            cornerRadius = CornerRadius(thumbWidthPx, thumbWidthPx)
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
