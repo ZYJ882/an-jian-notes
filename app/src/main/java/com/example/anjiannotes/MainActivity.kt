@@ -57,6 +57,7 @@ import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -65,6 +66,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -115,9 +117,9 @@ import com.example.anjiannotes.ui.extractLinkAt
 import com.example.anjiannotes.ui.formatForFileName
 import com.example.anjiannotes.ui.linkifyPlainText
 import com.example.anjiannotes.ui.markdownToPlainText
-import com.example.anjiannotes.ui.previewLinkColor
 import com.example.anjiannotes.ui.readTextImport
 import com.example.anjiannotes.ui.theme.AnJianTheme
+import com.example.anjiannotes.ui.theme.AppearanceMode
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -134,9 +136,17 @@ class MainActivity : ComponentActivity() {
             app.webDavBackupClient
         )
         setContent {
-            AnJianTheme {
+            val appearanceMode by app.appearancePreferences.mode.collectAsStateWithLifecycle()
+            AnJianTheme(
+                appearanceMode = appearanceMode,
+                systemDarkTheme = isSystemInDarkTheme()
+            ) {
                 val notesViewModel: NotesViewModel = viewModel(factory = factory)
-                NotesApp(notesViewModel)
+                NotesApp(
+                    viewModel = notesViewModel,
+                    appearanceMode = appearanceMode,
+                    onAppearanceChange = app.appearancePreferences::setMode
+                )
             }
         }
     }
@@ -154,11 +164,16 @@ private sealed interface AppPage {
         val folderId: Long = DEFAULT_FOLDER_ID
     ) : AppPage
     data object Settings : AppPage
+    data object Appearance : AppPage
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NotesApp(viewModel: NotesViewModel) {
+private fun NotesApp(
+    viewModel: NotesViewModel,
+    appearanceMode: AppearanceMode,
+    onAppearanceChange: (AppearanceMode) -> Unit
+) {
     val context = LocalContext.current
     val notes by viewModel.notes.collectAsStateWithLifecycle()
     val query by viewModel.query.collectAsStateWithLifecycle()
@@ -286,7 +301,9 @@ private fun NotesApp(viewModel: NotesViewModel) {
         }
     }
 
-    BackHandler(enabled = page !is AppPage.List) { page = AppPage.List }
+    BackHandler(enabled = page !is AppPage.List) {
+        page = if (page is AppPage.Appearance) AppPage.Settings else AppPage.List
+    }
 
     when (val currentPage = page) {
         AppPage.List -> NotesListPage(
@@ -321,9 +338,16 @@ private fun NotesApp(viewModel: NotesViewModel) {
         )
         AppPage.Settings -> SettingsPage(
             onBack = { page = AppPage.List },
+            onOpenAppearance = { page = AppPage.Appearance },
+            appearanceMode = appearanceMode,
             onBackupClick = { showBackupMenu = true },
             onWebDavClick = { showWebDavDialog = true },
             webDavConfigured = webDavConfig != null
+        )
+        AppPage.Appearance -> AppearanceSettingsPage(
+            appearanceMode = appearanceMode,
+            onBack = { page = AppPage.Settings },
+            onSelect = onAppearanceChange
         )
         is AppPage.Detail -> NoteDetailPage(
             note = currentPage.note,
@@ -695,6 +719,8 @@ private fun FolderPickerDialog(
 @Composable
 private fun SettingsPage(
     onBack: () -> Unit,
+    onOpenAppearance: () -> Unit,
+    appearanceMode: AppearanceMode,
     onBackupClick: () -> Unit,
     onWebDavClick: () -> Unit,
     webDavConfigured: Boolean
@@ -718,6 +744,12 @@ private fun SettingsPage(
             verticalArrangement = Arrangement.spacedBy(22.dp)
         ) {
             SettingsGroup(
+                title = "外观",
+                items = listOf(
+                    SettingsEntry("◐", "外观", "当前：${appearanceMode.label}", onOpenAppearance)
+                )
+            )
+            SettingsGroup(
                 title = "数据与备份",
                 items = listOf(
                     SettingsEntry("↥", "本地备份与恢复", "Markdown ZIP，可在其他应用中直接阅读", onBackupClick),
@@ -732,9 +764,105 @@ private fun SettingsPage(
             SettingsGroup(
                 title = "关于",
                 items = listOf(
-                    SettingsEntry("i", "安笺", "离线笔记 · 轻写轻放", onClick = {})
+                    SettingsEntry("i", "安装", "安笺 ${BuildConfig.VERSION_NAME} · 离线笔记", onClick = {})
                 )
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AppearanceSettingsPage(
+    appearanceMode: AppearanceMode,
+    onBack: () -> Unit,
+    onSelect: (AppearanceMode) -> Unit
+) {
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            TopAppBar(
+                title = { Text("外观", fontWeight = FontWeight.SemiBold) },
+                navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 20.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                "选择主题后会立即应用到当前页面和所有组件。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 4.dp)
+            )
+            AppearanceOption(
+                symbol = "☀",
+                title = "浅色",
+                subtitle = "柔和浅灰背景，适合明亮环境",
+                selected = appearanceMode == AppearanceMode.LIGHT,
+                onClick = { onSelect(AppearanceMode.LIGHT) }
+            )
+            AppearanceOption(
+                symbol = "☾",
+                title = "深色",
+                subtitle = "低亮度深灰层级，适合暗光阅读",
+                selected = appearanceMode == AppearanceMode.DARK,
+                onClick = { onSelect(AppearanceMode.DARK) }
+            )
+            AppearanceOption(
+                symbol = "⚙",
+                title = "跟随系统",
+                subtitle = "随 Android 系统的浅色与深色模式实时变化",
+                selected = appearanceMode == AppearanceMode.SYSTEM,
+                onClick = { onSelect(AppearanceMode.SYSTEM) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun AppearanceOption(
+    symbol: String,
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        shape = MaterialTheme.shapes.large,
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+        border = BorderStroke(
+            1.dp,
+            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+        )
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Surface(
+                color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant,
+                shape = CircleShape,
+                modifier = Modifier.size(40.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(symbol, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            RadioButton(selected = selected, onClick = onClick)
         }
     }
 }
@@ -925,6 +1053,7 @@ private fun QuickCaptureBar(
     onImportClipboard: () -> Unit
 ) {
     val pillShape = RoundedCornerShape(30.dp)
+    val shadowColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.18f)
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -942,15 +1071,18 @@ private fun QuickCaptureBar(
                     .weight(1f)
                     .height(56.dp)
                     .shadow(
-                        elevation = 12.dp,
+                        elevation = 8.dp,
                         shape = pillShape,
-                        ambientColor = Color.Black.copy(alpha = 0.42f),
-                        spotColor = Color.Black.copy(alpha = 0.52f)
+                        ambientColor = shadowColor,
+                        spotColor = shadowColor
                     )
                     .clip(pillShape)
                     .background(
                         Brush.verticalGradient(
-                            listOf(Color(0xFF1B1E25), Color(0xFF16181D))
+                            listOf(
+                                MaterialTheme.colorScheme.surfaceVariant,
+                                MaterialTheme.colorScheme.surface
+                            )
                         )
                     )
                     .clickable(onClick = onStartWriting)
@@ -968,10 +1100,10 @@ private fun QuickCaptureBar(
                     modifier = Modifier
                         .size(56.dp)
                         .shadow(
-                            elevation = 10.dp,
+                            elevation = 7.dp,
                             shape = CircleShape,
-                            ambientColor = Color.Black.copy(alpha = 0.38f),
-                            spotColor = Color.Black.copy(alpha = 0.48f)
+                            ambientColor = shadowColor,
+                            spotColor = shadowColor
                         )
                         .clickable { onExpandedChange(!expanded) },
                     color = MaterialTheme.colorScheme.surfaceVariant,
@@ -1277,7 +1409,7 @@ private fun NoteDetailPage(
                 )
             } else {
                 var plainTextLayout by remember(content) { mutableStateOf<TextLayoutResult?>(null) }
-                val linkColor = previewLinkColor(darkTheme = true)
+                val linkColor = MaterialTheme.colorScheme.primary
                 val previewText = remember(content, linkColor) {
                     linkifyPlainText(content.ifBlank { "空白笔记" }, linkColor)
                 }
@@ -1323,10 +1455,23 @@ private fun NoteDetailPage(
 @Composable
 private fun EmptyNotes(query: String, onCreate: () -> Unit) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(if (query.isBlank()) "还没有笔记" else "没有匹配的笔记", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-            Text(if (query.isBlank()) "从一条简短记录开始吧。" else "尝试换个关键词，或清除搜索条件。", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (query.isBlank()) ElevatedButton(onClick = onCreate) { Text("写下第一条") }
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+            shape = MaterialTheme.shapes.large
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 28.dp, vertical = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(if (query.isBlank()) "从一条笔记开始" else "没有匹配的笔记", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (query.isBlank()) "点击底部输入栏，随手记录此刻想法。" else "尝试换个关键词，或清除搜索条件。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (query.isBlank()) TextButton(onClick = onCreate) { Text("写下第一条") }
+            }
         }
     }
 }
@@ -1343,16 +1488,16 @@ private fun NoteCard(note: NoteEntity, onOpen: () -> Unit) {
             containerColor = MaterialTheme.colorScheme.surface,
             contentColor = MaterialTheme.colorScheme.onSurface
         ),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.34f)),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.padding(18.dp).heightIn(min = 122.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
                 note.title.ifBlank { "未命名笔记" },
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -1361,7 +1506,7 @@ private fun NoteCard(note: NoteEntity, onOpen: () -> Unit) {
                 Text(
                     summary,
                     style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 3,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1369,16 +1514,16 @@ private fun NoteCard(note: NoteEntity, onOpen: () -> Unit) {
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     formatDate(note.updatedAt),
-                    style = MaterialTheme.typography.labelMedium,
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f)
                 )
                 if (note.isMarkdown) {
-                    Text("MD", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 12.dp))
+                    Text("MD", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.82f), modifier = Modifier.padding(end = 12.dp))
                 }
                 Text(
                     if (note.isPinned) "★" else "☆",
-                    fontSize = 22.sp,
+                    fontSize = 18.sp,
                     color = if (note.isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
                 )
             }

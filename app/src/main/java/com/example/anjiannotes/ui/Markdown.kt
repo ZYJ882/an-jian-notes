@@ -153,11 +153,12 @@ private fun MarkdownTable(
 
 @Composable
 private fun MarkdownTableRow(cells: List<String>, header: Boolean) {
-    val linkColor = previewLinkColor(darkTheme = true)
+    val linkColor = MaterialTheme.colorScheme.primary
+    val codeBackground = MaterialTheme.colorScheme.surfaceVariant
     Row(verticalAlignment = Alignment.Top) {
         cells.forEach { cell ->
             Text(
-                text = markdownInline(cell, linkColor),
+                text = markdownInline(cell, linkColor, codeBackground),
                 modifier = Modifier.widthIn(min = 104.dp, max = 240.dp).padding(horizontal = 10.dp, vertical = 9.dp),
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = if (header) FontWeight.SemiBold else FontWeight.Normal,
@@ -178,7 +179,8 @@ private fun MarkdownLine(
     onClick: () -> Unit
 ) {
     val link = remember(line) { extractFirstLink(line) }
-    val linkColor = previewLinkColor(darkTheme = true)
+    val linkColor = MaterialTheme.colorScheme.primary
+    val codeBackground = MaterialTheme.colorScheme.surfaceVariant
     var textLayout by remember(line) { mutableStateOf<TextLayoutResult?>(null) }
     val lineModifier = Modifier.pointerInput(line) {
         detectTapGestures(
@@ -191,25 +193,25 @@ private fun MarkdownLine(
         )
     }
     when {
-        line.startsWith("### ") -> MarkdownLineText(markdownInline(line.removePrefix("### "), linkColor), MaterialTheme.typography.titleMedium, lineModifier, FontWeight.Bold, onTextLayout = { textLayout = it })
-        line.startsWith("## ") -> MarkdownLineText(markdownInline(line.removePrefix("## "), linkColor), MaterialTheme.typography.titleLarge, lineModifier, FontWeight.Bold, onTextLayout = { textLayout = it })
-        line.startsWith("# ") -> MarkdownLineText(markdownInline(line.removePrefix("# "), linkColor), MaterialTheme.typography.headlineSmall, lineModifier, FontWeight.Bold, onTextLayout = { textLayout = it })
+        line.startsWith("### ") -> MarkdownLineText(markdownInline(line.removePrefix("### "), linkColor, codeBackground), MaterialTheme.typography.titleMedium, lineModifier, FontWeight.Bold, onTextLayout = { textLayout = it })
+        line.startsWith("## ") -> MarkdownLineText(markdownInline(line.removePrefix("## "), linkColor, codeBackground), MaterialTheme.typography.titleLarge, lineModifier, FontWeight.Bold, onTextLayout = { textLayout = it })
+        line.startsWith("# ") -> MarkdownLineText(markdownInline(line.removePrefix("# "), linkColor, codeBackground), MaterialTheme.typography.headlineSmall, lineModifier, FontWeight.Bold, onTextLayout = { textLayout = it })
         line.trim() == "---" || line.trim() == "***" -> Spacer(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
         line.startsWith("> ") -> Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium) {
-            MarkdownLineText(markdownInline(line.removePrefix("> "), linkColor), MaterialTheme.typography.bodyMedium, lineModifier.padding(horizontal = 12.dp, vertical = 9.dp), onTextLayout = { textLayout = it })
+            MarkdownLineText(markdownInline(line.removePrefix("> "), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier.padding(horizontal = 12.dp, vertical = 9.dp), onTextLayout = { textLayout = it })
         }
         line.matches(Regex("^[-+*]\\s+.*")) -> Row(verticalAlignment = Alignment.Top) {
             Text("•", modifier = Modifier.padding(end = 8.dp), color = MaterialTheme.colorScheme.primary)
-            MarkdownLineText(markdownInline(line.replaceFirst(Regex("^[-+*]\\s+"), ""), linkColor), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = { textLayout = it })
+            MarkdownLineText(markdownInline(line.replaceFirst(Regex("^[-+*]\\s+"), ""), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = { textLayout = it })
         }
         line.matches(Regex("^\\d+\\.\\s+.*")) -> {
             val prefix = line.substringBefore(' ')
             Row(verticalAlignment = Alignment.Top) {
                 Text(prefix, modifier = Modifier.padding(end = 8.dp), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-                MarkdownLineText(markdownInline(line.removePrefix("$prefix "), linkColor), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = { textLayout = it })
+                MarkdownLineText(markdownInline(line.removePrefix("$prefix "), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = { textLayout = it })
             }
         }
-        else -> MarkdownLineText(markdownInline(line, linkColor), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = { textLayout = it })
+        else -> MarkdownLineText(markdownInline(line, linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = { textLayout = it })
     }
 }
 
@@ -226,11 +228,11 @@ private fun MarkdownLineText(
 
 private val MarkdownLinkPattern = Regex("\\[([^\\]]+)\\]\\((https?://[^\\s)]+)\\)", RegexOption.IGNORE_CASE)
 private val UrlPattern = Regex("https?://[^\\s)]+", RegexOption.IGNORE_CASE)
-private val PreviewLinkBlueLight = Color(0xFF0B57D0)
-private val PreviewLinkBlueDark = Color(0xFF8AB4F8)
+private val PreviewLinkBlueLight = Color(0xFF70558C)
+private val PreviewLinkBlueDark = Color(0xFFC6A8DE)
 
+/** 兼容旧备份与单元测试；实际预览界面直接使用 MaterialTheme.colorScheme.primary。 */
 fun previewLinkColor(darkTheme: Boolean): Color = if (darkTheme) PreviewLinkBlueDark else PreviewLinkBlueLight
-
 fun linkifyPlainText(text: String, linkColor: Color): AnnotatedString = buildAnnotatedString {
     var cursor = 0
     while (cursor < text.length) {
@@ -247,7 +249,7 @@ fun linkifyPlainText(text: String, linkColor: Color): AnnotatedString = buildAnn
     }
 }
 
-private fun markdownInline(text: String, linkColor: Color): AnnotatedString = buildAnnotatedString {
+private fun markdownInline(text: String, linkColor: Color, codeBackground: Color): AnnotatedString = buildAnnotatedString {
     var cursor = 0
     while (cursor < text.length) {
         val markdownLink = MarkdownLinkPattern.find(text, cursor)
@@ -283,7 +285,7 @@ private fun markdownInline(text: String, linkColor: Color): AnnotatedString = bu
             "**" -> SpanStyle(fontWeight = FontWeight.Bold)
             "*" -> SpanStyle(fontStyle = FontStyle.Italic)
             "~~" -> SpanStyle(textDecoration = TextDecoration.LineThrough)
-            else -> SpanStyle(fontFamily = FontFamily.Monospace, background = Color(0x18000000))
+            else -> SpanStyle(fontFamily = FontFamily.Monospace, background = codeBackground)
         }
         pushStyle(style)
         append(content)
