@@ -228,8 +228,8 @@ private fun MarkdownLineText(
 
 private val MarkdownLinkPattern = Regex("\\[([^\\]]+)\\]\\((https?://[^\\s)]+)\\)", RegexOption.IGNORE_CASE)
 private val UrlPattern = Regex("https?://[^\\s)]+", RegexOption.IGNORE_CASE)
-private val PreviewLinkBlueLight = Color(0xFF70558C)
-private val PreviewLinkBlueDark = Color(0xFFC6A8DE)
+private val PreviewLinkBlueLight = Color(0xFF765F82)
+private val PreviewLinkBlueDark = Color(0xFFC7B1CF)
 
 /** 兼容旧备份与单元测试；实际预览界面直接使用 MaterialTheme.colorScheme.primary。 */
 fun previewLinkColor(darkTheme: Boolean): Color = if (darkTheme) PreviewLinkBlueDark else PreviewLinkBlueLight
