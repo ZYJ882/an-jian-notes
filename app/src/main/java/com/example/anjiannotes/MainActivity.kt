@@ -1852,7 +1852,7 @@ private fun DraggableNoteListScrollbar(
     Canvas(
         modifier = modifier
             .width(12.dp)
-            .pointerInput(canScroll, totalItems, visibleItems.size) {
+            .pointerInput(canScroll, totalItems) {
                 if (!canScroll) return@pointerInput
                 detectDragGestures(
                     onDragStart = { dragging = true },
