@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -75,6 +76,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextLayoutResult
@@ -127,8 +129,16 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+    private var detailBackAction: (() -> Unit)? = null
+    private val detailBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            detailBackAction?.invoke()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        onBackPressedDispatcher.addCallback(this, detailBackCallback)
         val app = application as AnJianApplication
         val factory = NotesViewModelFactory(
             NotesRepository(app.database, app.database.noteDao(), app.database.folderDao()),
@@ -145,7 +155,11 @@ class MainActivity : ComponentActivity() {
                 NotesApp(
                     viewModel = notesViewModel,
                     appearanceMode = appearanceMode,
-                    onAppearanceChange = app.appearancePreferences::setMode
+                    onAppearanceChange = app.appearancePreferences::setMode,
+                    onDetailBackHandlerChange = { action ->
+                        detailBackAction = action
+                        detailBackCallback.isEnabled = action != null
+                    }
                 )
             }
         }
@@ -172,7 +186,8 @@ private sealed interface AppPage {
 private fun NotesApp(
     viewModel: NotesViewModel,
     appearanceMode: AppearanceMode,
-    onAppearanceChange: (AppearanceMode) -> Unit
+    onAppearanceChange: (AppearanceMode) -> Unit,
+    onDetailBackHandlerChange: ((() -> Unit)?) -> Unit
 ) {
     val context = LocalContext.current
     val notes by viewModel.notes.collectAsStateWithLifecycle()
@@ -356,6 +371,7 @@ private fun NotesApp(
             initialFolderId = currentPage.folderId,
             folders = folders,
             onBack = { page = AppPage.List },
+            onSystemBackHandlerChange = onDetailBackHandlerChange,
             onSave = { id, title, content, color, pinned, markdown, folderId, createdAt, onSaved ->
                 viewModel.saveNote(id, title, content, color, pinned, markdown, folderId, createdAt, onSaved)
             },
@@ -1145,6 +1161,7 @@ private fun NoteDetailPage(
     initialFolderId: Long,
     folders: List<FolderEntity>,
     onBack: () -> Unit,
+    onSystemBackHandlerChange: ((() -> Unit)?) -> Unit,
     onSave: (Long, String, String, Long, Boolean, Boolean, Long, Long, (Long) -> Unit) -> Unit,
     onDiscard: (Long) -> Unit,
     onDelete: (NoteEntity) -> Unit,
@@ -1315,7 +1332,11 @@ private fun NoteDetailPage(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    BackHandler(onBack = ::finishEditing)
+    val latestFinishEditing by rememberUpdatedState(::finishEditing)
+    DisposableEffect(Unit) {
+        onSystemBackHandlerChange { latestFinishEditing() }
+        onDispose { onSystemBackHandlerChange(null) }
+    }
 
     CompositionLocalProvider(
         LocalTextSelectionColors provides TextSelectionColors(
