@@ -10,6 +10,7 @@ import com.example.anjiannotes.data.MarkdownZipBackupCodec
 import com.example.anjiannotes.data.NoteEntity
 import com.example.anjiannotes.data.NotesRepository
 import com.example.anjiannotes.data.PlainTextBackupCodec
+import com.example.anjiannotes.data.STARRED_FOLDER
 import com.example.anjiannotes.data.WebDavBackupClient
 import com.example.anjiannotes.data.WebDavConfig
 import com.example.anjiannotes.data.WebDavConfigStore
@@ -22,6 +23,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -39,6 +41,7 @@ class NotesViewModel(
     val activeFolderId: StateFlow<Long> = selectedFolderId.asStateFlow()
     val webDavConfig: StateFlow<WebDavConfig?> = configuredWebDav.asStateFlow()
     val folders: StateFlow<List<FolderEntity>> = repository.observeFolders()
+        .map { folders -> listOf(STARRED_FOLDER) + folders }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val notes: StateFlow<List<NoteEntity>> = combine(
@@ -194,6 +197,17 @@ class NotesViewModel(
             folderId = folderId
         )
     )
+
+    fun toggleStar(note: NoteEntity) {
+        viewModelScope.launch {
+            repository.save(
+                note.copy(
+                    isPinned = !note.isPinned,
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+        }
+    }
 
     fun deleteNote(id: Long) {
         viewModelScope.launch { repository.delete(id) }

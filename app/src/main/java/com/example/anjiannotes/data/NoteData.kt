@@ -14,6 +14,15 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 const val DEFAULT_FOLDER_ID = 1L
+/** 仅用于界面筛选的内置收藏夹，不会写入 folders 表或改变笔记原有 folderId。 */
+const val STARRED_FOLDER_ID = -1L
+
+val STARRED_FOLDER = FolderEntity(
+    id = STARRED_FOLDER_ID,
+    name = "星标笔记",
+    createdAt = Long.MIN_VALUE,
+    sortOrder = Long.MIN_VALUE
+)
 
 @Entity(tableName = "folders")
 data class FolderEntity(
@@ -41,14 +50,17 @@ interface NoteDao {
     @Query(
         """
         SELECT * FROM notes
-        WHERE folderId = :folderId
+        WHERE (
+            (:showStarred = 1 AND isPinned = 1)
+            OR (:showStarred = 0 AND folderId = :folderId)
+        )
           AND (:query = ''
             OR title LIKE '%' || :query || '%'
             OR content LIKE '%' || :query || '%')
         ORDER BY isPinned DESC, updatedAt DESC
         """
     )
-    fun observeNotes(query: String, folderId: Long): Flow<List<NoteEntity>>
+    fun observeNotes(query: String, folderId: Long, showStarred: Boolean): Flow<List<NoteEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(note: NoteEntity): Long
@@ -123,7 +135,12 @@ class NotesRepository(
     private val noteDao: NoteDao,
     private val folderDao: FolderDao
 ) {
-    fun observeNotes(query: String, folderId: Long): Flow<List<NoteEntity>> = noteDao.observeNotes(query.trim(), folderId)
+    fun observeNotes(query: String, folderId: Long): Flow<List<NoteEntity>> =
+        noteDao.observeNotes(
+            query = query.trim(),
+            folderId = folderId,
+            showStarred = folderId == STARRED_FOLDER_ID
+        )
     fun observeFolders(): Flow<List<FolderEntity>> = folderDao.observeFolders()
 
     suspend fun ensureDefaultFolder() {

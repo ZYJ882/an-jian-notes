@@ -108,6 +108,7 @@ import com.example.anjiannotes.data.DEFAULT_FOLDER_ID
 import com.example.anjiannotes.data.FolderEntity
 import com.example.anjiannotes.data.NoteEntity
 import com.example.anjiannotes.data.NotesRepository
+import com.example.anjiannotes.data.STARRED_FOLDER_ID
 import com.example.anjiannotes.data.WebDavConfig
 import com.example.anjiannotes.ui.EditorSeed
 import com.example.anjiannotes.ui.ImportReadResult
@@ -160,6 +161,16 @@ private enum class InlineEditTarget { TITLE, CONTENT }
 private enum class DetailMode { PREVIEW, EDIT }
 private enum class AutoSaveState { IDLE, SAVING, SAVED }
 
+/** 每次编辑事件同步生成的不可变保存快照，避免组合重绘前读取到旧文本。 */
+private data class NoteDraftSnapshot(
+    val title: String,
+    val content: String,
+    val color: Long,
+    val isPinned: Boolean,
+    val isMarkdown: Boolean,
+    val folderId: Long
+)
+
 private sealed interface AppPage {
     data object List : AppPage
     data class Detail(
@@ -200,8 +211,11 @@ private fun NotesApp(
     var pendingMarkdownZipRestorePayload by remember { mutableStateOf<ByteArray?>(null) }
     var showWebDavDialog by remember { mutableStateOf(false) }
 
+    fun writableFolderId(): Long =
+        activeFolderId.takeUnless { it == STARRED_FOLDER_ID } ?: DEFAULT_FOLDER_ID
+
     fun openImported(note: EditorSeed) {
-        page = AppPage.Detail(note = null, seed = note, folderId = activeFolderId)
+        page = AppPage.Detail(note = null, seed = note, folderId = writableFolderId())
     }
 
     val backupSaveLauncher = rememberLauncherForActivityResult(
@@ -327,7 +341,7 @@ private fun NotesApp(
             onOpenSettings = { page = AppPage.Settings },
             createMenuExpanded = showCreateMenu,
             onCreateMenuExpanded = { showCreateMenu = it },
-            onNewNote = { page = AppPage.Detail(note = null, folderId = activeFolderId) },
+            onNewNote = { page = AppPage.Detail(note = null, folderId = writableFolderId()) },
             onImportFile = { fileLauncher.launch(arrayOf("text/plain", "text/markdown", "text/x-markdown", "text/*")) },
             onImportClipboard = {
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -337,9 +351,14 @@ private fun NotesApp(
                         .mapNotNull { index -> clip.getItemAt(index).coerceToText(context)?.toString() }
                         .firstOrNull { it.isNotBlank() }
                 }.orEmpty()
-                page = AppPage.Detail(note = null, seed = EditorSeed("剪切板笔记", recentText, NoteFormatMode.AUTO), folderId = activeFolderId)
+                page = AppPage.Detail(
+                    note = null,
+                    seed = EditorSeed("剪切板笔记", recentText, NoteFormatMode.AUTO),
+                    folderId = writableFolderId()
+                )
             },
-            onOpenNote = { note -> page = AppPage.Detail(note = note, folderId = note.folderId) }
+            onOpenNote = { note -> page = AppPage.Detail(note = note, folderId = note.folderId) },
+            onToggleStar = viewModel::toggleStar
         )
         AppPage.Settings -> SettingsPage(
             onBack = { page = AppPage.List },
@@ -358,7 +377,7 @@ private fun NotesApp(
             note = currentPage.note,
             seed = currentPage.seed,
             initialFolderId = currentPage.folderId,
-            folders = folders,
+            folders = folders.filterNot { it.id == STARRED_FOLDER_ID },
             onBack = { page = AppPage.List },
             onSave = { id, title, content, color, pinned, markdown, folderId, createdAt ->
                 viewModel.saveNote(id, title, content, color, pinned, markdown, folderId, createdAt)
@@ -529,7 +548,8 @@ private fun NotesListPage(
     onNewNote: () -> Unit,
     onImportFile: () -> Unit,
     onImportClipboard: () -> Unit,
-    onOpenNote: (NoteEntity) -> Unit
+    onOpenNote: (NoteEntity) -> Unit,
+    onToggleStar: (NoteEntity) -> Unit
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -662,7 +682,11 @@ private fun NotesListPage(
                     ) {
                         item { Text("共 ${notes.size} 条笔记", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 2.dp)) }
                         items(notes.size, key = { notes[it].id }) { index ->
-                            NoteCard(note = notes[index], onOpen = { onOpenNote(notes[index]) })
+                            NoteCard(
+                                note = notes[index],
+                                onOpen = { onOpenNote(notes[index]) },
+                                onToggleStar = { onToggleStar(notes[index]) }
+                            )
                         }
                         item { Spacer(Modifier.height(20.dp)) }
                     }
@@ -1158,7 +1182,28 @@ private fun NoteDetailPage(
     var pinned by remember(note?.id) { mutableStateOf(note?.isPinned ?: false) }
     var selectedFolderId by remember(note?.id, initialFolderId) { mutableStateOf(note?.folderId ?: initialFolderId) }
     var showFolderPicker by remember { mutableStateOf(false) }
-    var formatMode by remember(note?.id, seed) { mutableStateOf(if (note != null) if (note.isMarkdown) NoteFormatMode.MARKDOWN else NoteFormatMode.PLAIN else seed.formatMode) }
+    var formatMode by remember(note?.id, seed) {
+        mutableStateOf(
+            if (note != null) {
+                if (note.isMarkdown) NoteFormatMode.MARKDOWN else NoteFormatMode.PLAIN
+            } else {
+                seed.formatMode
+            }
+        )
+    }
+    var latestDraft by remember(note?.id, seed, initialFolderId) {
+        val initialContent = note?.content ?: seed.content
+        mutableStateOf(
+            NoteDraftSnapshot(
+                title = note?.title ?: seed.title,
+                content = initialContent,
+                color = note?.color ?: NoteColors.first(),
+                isPinned = note?.isPinned ?: false,
+                isMarkdown = formatMode.resolvesToMarkdown(initialContent),
+                folderId = note?.folderId ?: initialFolderId
+            )
+        )
+    }
     var detailMode by remember(note?.id, seed) {
         mutableStateOf(if (note == null) DetailMode.EDIT else DetailMode.PREVIEW)
     }
@@ -1226,29 +1271,23 @@ private fun NoteDetailPage(
         saveWorker = editorScope.launch {
             while (hasUserEdited && savedRevision < editRevision) {
                 val revisionToSave = editRevision
-                val titleToSave = title
-                // 不能读取组合开始时计算出的 content 局部值：输入事件刚更新
-                // TextFieldValue 后尚未重新组合时，该局部值仍可能是旧的空字符串。
-                val contentToSave = contentValue.text
-                val colorToSave = color
-                val pinnedToSave = pinned
-                val markdownToSave = formatMode.resolvesToMarkdown(contentToSave)
-                val folderToSave = selectedFolderId
+                // latestDraft 在 TextField 的 onValueChange 内同步更新，不依赖下一次组合重绘。
+                val draftToSave = latestDraft
                 autoSaveState = AutoSaveState.SAVING
                 saveError = null
                 editorLog(
-                    "save start revision=$revisionToSave id=$savedNoteId contentLength=${contentToSave.length} " +
+                    "save start revision=$revisionToSave id=$savedNoteId contentLength=${draftToSave.content.length} " +
                         if (savedNoteId == 0L) "creating new note" else "updating note"
                 )
                 try {
                     val id = onSave(
                         savedNoteId,
-                        titleToSave,
-                        contentToSave,
-                        colorToSave,
-                        pinnedToSave,
-                        markdownToSave,
-                        folderToSave,
+                        draftToSave.title,
+                        draftToSave.content,
+                        draftToSave.color,
+                        draftToSave.isPinned,
+                        draftToSave.isMarkdown,
+                        draftToSave.folderId,
                         draftCreatedAt
                     )
                     savedNoteId = id
@@ -1281,11 +1320,23 @@ private fun NoteDetailPage(
         }
     }
 
-    fun markEdited() {
+    fun markEdited(
+        titleOverride: String = title,
+        contentOverride: String = contentValue.text
+    ) {
+        // 在输入回调内保存最新值；即使用户立刻侧滑返回，保存队列也不会读取旧快照。
+        latestDraft = NoteDraftSnapshot(
+            title = titleOverride,
+            content = contentOverride,
+            color = color,
+            isPinned = pinned,
+            isMarkdown = formatMode.resolvesToMarkdown(contentOverride),
+            folderId = selectedFolderId
+        )
         hasUserEdited = true
         editRevision++
         saveError = null
-        editorLog("content changed dirty=true revision=$editRevision")
+        editorLog("content changed dirty=true revision=$editRevision contentLength=${contentOverride.length}")
         scheduleAutoSave()
     }
 
@@ -1408,7 +1459,7 @@ private fun NoteDetailPage(
                     value = title,
                     onValueChange = {
                         title = it
-                        markEdited()
+                        markEdited(titleOverride = it)
                     },
                     modifier = Modifier.fillMaxWidth().focusRequester(titleFocus),
                     textStyle = MaterialTheme.typography.titleLarge.copy(color = MaterialTheme.colorScheme.onBackground),
@@ -1446,7 +1497,13 @@ private fun NoteDetailPage(
                         label = { Text("格式：$formatDetail") }
                     )
                     AssistChip(onClick = { showFolderPicker = true }, label = { Text("收藏夹：$folderName") })
-                    if (pinned) AssistChip(onClick = {}, label = { Text("已置顶") })
+                    if (pinned) {
+                        AssistChip(
+                            onClick = { pinned = !pinned; markEdited() },
+                            label = { Text("已星标") }
+                        )
+                    }
+
                     Text(formatDate(note?.updatedAt ?: System.currentTimeMillis()), maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
@@ -1457,7 +1514,7 @@ private fun NoteDetailPage(
                     value = contentValue,
                     onValueChange = { value ->
                         contentValue = value
-                        markEdited()
+                        markEdited(contentOverride = value.text)
                     },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp).focusRequester(contentFocus),
                     textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onBackground),
@@ -1466,7 +1523,7 @@ private fun NoteDetailPage(
                 )
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     if (note != null) TextButton(onClick = { onDelete(note) }) { Text("删除", color = MaterialTheme.colorScheme.error) } else Spacer(Modifier.width(1.dp))
-                    TextButton(onClick = { pinned = !pinned; markEdited() }) { Text(if (pinned) "取消置顶" else "置顶") }
+                    TextButton(onClick = { pinned = !pinned; markEdited() }) { Text(if (pinned) "取消星标" else "加入星标") }
                 }
             } else if (markdownActive) {
                 MarkdownPreview(
@@ -1546,7 +1603,11 @@ private fun EmptyNotes(query: String, onCreate: () -> Unit) {
 }
 
 @Composable
-private fun NoteCard(note: NoteEntity, onOpen: () -> Unit) {
+private fun NoteCard(
+    note: NoteEntity,
+    onOpen: () -> Unit,
+    onToggleStar: () -> Unit
+) {
     val summary = remember(note.id, note.content, note.isMarkdown) {
         if (note.isMarkdown) markdownToPlainText(note.content) else note.content
     }
@@ -1592,8 +1653,12 @@ private fun NoteCard(note: NoteEntity, onOpen: () -> Unit) {
                 }
                 Text(
                     if (note.isPinned) "★" else "☆",
-                    fontSize = 18.sp,
-                    color = if (note.isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                    fontSize = 22.sp,
+                    color = if (note.isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable(onClick = onToggleStar)
+                        .padding(6.dp)
                 )
             }
         }
