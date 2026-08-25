@@ -68,6 +68,13 @@ interface NoteDao {
     @Query("DELETE FROM notes WHERE id = :id")
     suspend fun deleteById(id: Long)
 
+    @Query("UPDATE notes SET folderId = :targetFolderId, updatedAt = :updatedAt WHERE folderId = :sourceFolderId")
+    suspend fun moveAllToFolder(
+        sourceFolderId: Long,
+        targetFolderId: Long,
+        updatedAt: Long = System.currentTimeMillis()
+    )
+
     @Query("SELECT * FROM notes ORDER BY id ASC")
     suspend fun getAll(): List<NoteEntity>
 
@@ -97,6 +104,9 @@ interface FolderDao {
 
     @Query("DELETE FROM folders")
     suspend fun clearAll()
+
+    @Query("DELETE FROM folders WHERE id = :id")
+    suspend fun deleteById(id: Long)
 }
 
 @Database(entities = [NoteEntity::class, FolderEntity::class], version = 4, exportSchema = false)
@@ -180,6 +190,18 @@ class NotesRepository(
     }
 
     suspend fun save(note: NoteEntity): Long = noteDao.upsert(note)
+
+    /**
+     * 删除自定义收藏夹时，先将其中笔记迁回默认收藏夹，再删除收藏夹记录。
+     * 默认收藏夹与虚拟星标入口均不可删除。
+     */
+    suspend fun deleteFolder(folderId: Long) {
+        require(folderId != DEFAULT_FOLDER_ID && folderId != STARRED_FOLDER_ID) { "该收藏夹不可删除" }
+        database.withTransaction {
+            noteDao.moveAllToFolder(folderId, DEFAULT_FOLDER_ID)
+            folderDao.deleteById(folderId)
+        }
+    }
 
     suspend fun delete(id: Long) = noteDao.deleteById(id)
 }

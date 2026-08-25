@@ -209,6 +209,21 @@ class NotesViewModel(
         }
     }
 
+    fun deleteFolder(
+        folderId: Long,
+        onSuccess: (String) -> Unit,
+        onFailure: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            runCatching {
+                repository.deleteFolder(folderId)
+                if (selectedFolderId.value == folderId) selectedFolderId.value = DEFAULT_FOLDER_ID
+                "收藏夹已删除，笔记已移动到默认收藏夹"
+            }.onSuccess(onSuccess)
+                .onFailure { onFailure(it.message ?: "收藏夹删除失败，请重试") }
+        }
+    }
+
     fun deleteNote(id: Long) {
         viewModelScope.launch { repository.delete(id) }
     }

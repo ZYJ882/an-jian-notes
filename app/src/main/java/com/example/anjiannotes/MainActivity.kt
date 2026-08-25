@@ -199,6 +199,7 @@ private fun NotesApp(
     var showSearch by remember { mutableStateOf(false) }
     var showCreateMenu by remember { mutableStateOf(false) }
     var noteToDelete by remember { mutableStateOf<NoteEntity?>(null) }
+    var folderToDelete by remember { mutableStateOf<FolderEntity?>(null) }
     var importError by remember { mutableStateOf<String?>(null) }
     var showNewFolderDialog by remember { mutableStateOf(false) }
     var showBackupMenu by remember { mutableStateOf(false) }
@@ -358,7 +359,8 @@ private fun NotesApp(
                 )
             },
             onOpenNote = { note -> page = AppPage.Detail(note = note, folderId = note.folderId) },
-            onToggleStar = viewModel::toggleStar
+            onToggleStar = viewModel::toggleStar,
+            onDeleteFolder = { folderToDelete = it }
         )
         AppPage.Settings -> SettingsPage(
             onBack = { page = AppPage.List },
@@ -390,6 +392,25 @@ private fun NotesApp(
         ConfirmDeleteDialog(
             onDismiss = { noteToDelete = null },
             onConfirm = { viewModel.deleteNote(note.id); noteToDelete = null; page = AppPage.List }
+        )
+    }
+    folderToDelete?.let { folder ->
+        FolderDeleteDialog(
+            folder = folder,
+            onDismiss = { folderToDelete = null },
+            onConfirm = {
+                viewModel.deleteFolder(
+                    folderId = folder.id,
+                    onSuccess = { message ->
+                        folderToDelete = null
+                        feedbackMessage = message
+                    },
+                    onFailure = { message ->
+                        folderToDelete = null
+                        feedbackMessage = message
+                    }
+                )
+            }
         )
     }
     importError?.let { message ->
@@ -549,7 +570,8 @@ private fun NotesListPage(
     onImportFile: () -> Unit,
     onImportClipboard: () -> Unit,
     onOpenNote: (NoteEntity) -> Unit,
-    onToggleStar: (NoteEntity) -> Unit
+    onToggleStar: (NoteEntity) -> Unit,
+    onDeleteFolder: (FolderEntity) -> Unit
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -600,7 +622,24 @@ private fun NotesListPage(
                         items(folders.size, key = { folders[it].id }) { index ->
                             val folder = folders[index]
                             NavigationDrawerItem(
-                                label = { Text(folder.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                label = {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            folder.name,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        if (folder.id != DEFAULT_FOLDER_ID && folder.id != STARRED_FOLDER_ID) {
+                                            TextButton(onClick = { onDeleteFolder(folder) }) {
+                                                Text("删除")
+                                            }
+                                        }
+                                    }
+                                },
                                 selected = folder.id == activeFolderId,
                                 onClick = {
                                     onFolderSelected(folder.id)
@@ -712,6 +751,23 @@ private fun FolderNameDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit)
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
         confirmButton = { TextButton(onClick = { if (name.isNotBlank()) onConfirm(name) }) { Text("创建") } }
+    )
+}
+
+@Composable
+private fun FolderDeleteDialog(
+    folder: FolderEntity,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("删除收藏夹？") },
+        text = {
+            Text("“${folder.name}”中的笔记会移动到默认收藏夹，星标状态保持不变。此收藏夹随后将被删除。")
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("删除", color = MaterialTheme.colorScheme.error) } }
     )
 }
 
