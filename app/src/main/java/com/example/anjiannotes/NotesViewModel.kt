@@ -227,6 +227,18 @@ class NotesViewModel(
     fun deleteNote(id: Long) {
         viewModelScope.launch { repository.delete(id) }
     }
+
+    fun deleteNotes(ids: Collection<Long>, onComplete: (Int) -> Unit) {
+        viewModelScope.launch {
+            onComplete(repository.deleteMany(ids))
+        }
+    }
+
+    fun starNotes(ids: Collection<Long>, onComplete: (Int) -> Unit) {
+        viewModelScope.launch {
+            onComplete(repository.starMany(ids))
+        }
+    }
 }
 
 class NotesViewModelFactory(

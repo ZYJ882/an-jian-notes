@@ -68,6 +68,12 @@ interface NoteDao {
     @Query("DELETE FROM notes WHERE id = :id")
     suspend fun deleteById(id: Long)
 
+    @Query("DELETE FROM notes WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<Long>): Int
+
+    @Query("UPDATE notes SET isPinned = 1, updatedAt = :updatedAt WHERE id IN (:ids)")
+    suspend fun starByIds(ids: List<Long>, updatedAt: Long = System.currentTimeMillis()): Int
+
     @Query("UPDATE notes SET folderId = :targetFolderId, updatedAt = :updatedAt WHERE folderId = :sourceFolderId")
     suspend fun moveAllToFolder(
         sourceFolderId: Long,
@@ -204,4 +210,14 @@ class NotesRepository(
     }
 
     suspend fun delete(id: Long) = noteDao.deleteById(id)
+
+    suspend fun deleteMany(ids: Collection<Long>): Int {
+        val normalizedIds = ids.distinct()
+        return if (normalizedIds.isEmpty()) 0 else noteDao.deleteByIds(normalizedIds)
+    }
+
+    suspend fun starMany(ids: Collection<Long>): Int {
+        val normalizedIds = ids.distinct()
+        return if (normalizedIds.isEmpty()) 0 else noteDao.starByIds(normalizedIds)
+    }
 }

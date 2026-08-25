@@ -358,7 +358,17 @@ private fun NotesApp(
             },
             onOpenNote = { note -> page = AppPage.Detail(note = note, folderId = note.folderId) },
             onToggleStar = viewModel::toggleStar,
-            onDeleteFolder = { folderToDelete = it }
+            onDeleteFolder = { folderToDelete = it },
+            onBatchDelete = { ids ->
+                viewModel.deleteNotes(ids) { deletedCount ->
+                    feedbackMessage = "已删除 $deletedCount 条笔记"
+                }
+            },
+            onBatchStar = { ids ->
+                viewModel.starNotes(ids) { starredCount ->
+                    feedbackMessage = "已加入星标 $starredCount 条笔记"
+                }
+            }
         )
         AppPage.Settings -> SettingsPage(
             onBack = { page = AppPage.List },
@@ -569,11 +579,22 @@ private fun NotesListPage(
     onImportClipboard: () -> Unit,
     onOpenNote: (NoteEntity) -> Unit,
     onToggleStar: (NoteEntity) -> Unit,
-    onDeleteFolder: (FolderEntity) -> Unit
+    onDeleteFolder: (FolderEntity) -> Unit,
+    onBatchDelete: (Set<Long>) -> Unit,
+    onBatchStar: (Set<Long>) -> Unit
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val activeFolderName = folders.firstOrNull { it.id == activeFolderId }?.name ?: "全部笔记"
+    var selectedNoteIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var pendingBatchDeleteIds by remember { mutableStateOf<Set<Long>?>(null) }
+    val selectionMode = selectedNoteIds.isNotEmpty()
+
+    fun toggleSelection(noteId: Long) {
+        selectedNoteIds = if (noteId in selectedNoteIds) selectedNoteIds - noteId else selectedNoteIds + noteId
+    }
+
+    BackHandler(enabled = selectionMode) { selectedNoteIds = emptySet() }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -666,23 +687,42 @@ private fun NotesListPage(
             topBar = {
                 TopAppBar(
                     title = {
-                        Column {
-                            Text(activeFolderName, fontWeight = FontWeight.Bold)
-                            Text("轻写，轻放", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (selectionMode) {
+                            Text("已选择 ${selectedNoteIds.size} 条", fontWeight = FontWeight.SemiBold)
+                        } else {
+                            Column {
+                                Text(activeFolderName, fontWeight = FontWeight.Bold)
+                                Text("轻写，轻放", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                     },
                     navigationIcon = {
                         TextButton(onClick = {
-                            scope.launch {
-                                if (drawerState.currentValue == DrawerValue.Closed) drawerState.open() else drawerState.close()
+                            if (selectionMode) {
+                                selectedNoteIds = emptySet()
+                            } else {
+                                scope.launch {
+                                    if (drawerState.currentValue == DrawerValue.Closed) drawerState.open() else drawerState.close()
+                                }
                             }
                         }) {
-                            Text("☰", fontSize = 24.sp, color = MaterialTheme.colorScheme.onSurface)
+                            Text(if (selectionMode) "取消" else "☰", fontSize = if (selectionMode) 15.sp else 24.sp, color = MaterialTheme.colorScheme.onSurface)
                         }
                     },
                     actions = {
-                        TextButton(onClick = onSearchToggle) {
-                            Text(if (showSearch) "×" else "⌕", fontSize = 26.sp, color = MaterialTheme.colorScheme.onSurface)
+                        if (selectionMode) {
+                            TextButton(onClick = {
+                                val ids = selectedNoteIds
+                                selectedNoteIds = emptySet()
+                                onBatchStar(ids)
+                            }) { Text("星标") }
+                            TextButton(onClick = { pendingBatchDeleteIds = selectedNoteIds }) {
+                                Text("删除", color = MaterialTheme.colorScheme.error)
+                            }
+                        } else {
+                            TextButton(onClick = onSearchToggle) {
+                                Text(if (showSearch) "×" else "⌕", fontSize = 26.sp, color = MaterialTheme.colorScheme.onSurface)
+                            }
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
@@ -701,7 +741,7 @@ private fun NotesListPage(
             Column(
                 modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp)
             ) {
-                if (showSearch) {
+                if (showSearch && !selectionMode) {
                     OutlinedTextField(
                         value = query,
                         onValueChange = onSearchChange,
@@ -721,7 +761,12 @@ private fun NotesListPage(
                         items(notes.size, key = { notes[it].id }) { index ->
                             NoteCard(
                                 note = notes[index],
-                                onOpen = { onOpenNote(notes[index]) },
+                                selected = notes[index].id in selectedNoteIds,
+                                selectionMode = selectionMode,
+                                onOpen = {
+                                    if (selectionMode) toggleSelection(notes[index].id) else onOpenNote(notes[index])
+                                },
+                                onLongPress = { toggleSelection(notes[index].id) },
                                 onToggleStar = { onToggleStar(notes[index]) }
                             )
                         }
@@ -730,6 +775,18 @@ private fun NotesListPage(
                 }
             }
         }
+    }
+
+    pendingBatchDeleteIds?.let { ids ->
+        BatchDeleteDialog(
+            count = ids.size,
+            onDismiss = { pendingBatchDeleteIds = null },
+            onConfirm = {
+                pendingBatchDeleteIds = null
+                selectedNoteIds = emptySet()
+                onBatchDelete(ids)
+            }
+        )
     }
 }
 
@@ -1671,23 +1728,33 @@ private fun EmptyNotes(query: String, onCreate: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun NoteCard(
     note: NoteEntity,
+    selected: Boolean,
+    selectionMode: Boolean,
     onOpen: () -> Unit,
+    onLongPress: () -> Unit,
     onToggleStar: () -> Unit
 ) {
     val summary = remember(note.id, note.content, note.isMarkdown) {
         if (note.isMarkdown) markdownToPlainText(note.content) else note.content
     }
     Card(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(onClick = onOpen, onLongClick = onLongPress),
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface,
+            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.52f) else MaterialTheme.colorScheme.surface,
             contentColor = MaterialTheme.colorScheme.onSurface
         ),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.18f)),
+        border = BorderStroke(
+            1.dp,
+            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.58f)
+            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.18f)
+        ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(
@@ -1720,18 +1787,42 @@ private fun NoteCard(
                 if (note.isMarkdown) {
                     Text("MD", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.66f), modifier = Modifier.padding(end = 12.dp))
                 }
-                Text(
-                    if (note.isPinned) "★" else "☆",
-                    fontSize = 22.sp,
-                    color = if (note.isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .clickable(onClick = onToggleStar)
-                        .padding(6.dp)
-                )
+                if (selectionMode) {
+                    Text(
+                        if (selected) "✓" else "○",
+                        fontSize = 22.sp,
+                        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.padding(6.dp)
+                    )
+                } else {
+                    Text(
+                        if (note.isPinned) "★" else "☆",
+                        fontSize = 22.sp,
+                        color = if (note.isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .clickable(onClick = onToggleStar)
+                            .padding(6.dp)
+                    )
+                }
             }
         }
     }
+}
+
+@Composable
+private fun BatchDeleteDialog(
+    count: Int,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("删除 $count 条笔记？") },
+        text = { Text("批量删除后无法恢复。") },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("删除", color = MaterialTheme.colorScheme.error) } }
+    )
 }
 
 @Composable
