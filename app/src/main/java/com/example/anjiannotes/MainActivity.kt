@@ -1190,6 +1190,7 @@ private fun NoteDetailPage(
     var saveInFlight by remember(note?.id, seed) { mutableStateOf(false) }
     var persistPending by remember(note?.id, seed) { mutableStateOf(false) }
     var discardAfterSave by remember(note?.id, seed) { mutableStateOf(false) }
+    var previewRequested by remember(note?.id, seed) { mutableStateOf(false) }
     var exitRequested by remember(note?.id, seed) { mutableStateOf(false) }
     val titleFocus = remember { FocusRequester() }
     val contentFocus = remember { FocusRequester() }
@@ -1257,10 +1258,11 @@ private fun NoteDetailPage(
                 if (exitRequested) onBack()
             } else {
                 autoSaveState = AutoSaveState.SAVED
-                // 若编辑还在变化或退出时已有未提交改动，继续写入最新快照；
-                // 直到最后一次数据库写入确认后，才真正离开详情页。
                 if (persistPending || editRevision > savedRevision) {
                     persistNow()
+                } else if (previewRequested) {
+                    previewRequested = false
+                    detailMode = DetailMode.PREVIEW
                 } else if (exitRequested) {
                     onBack()
                 }
@@ -1269,22 +1271,25 @@ private fun NoteDetailPage(
     }
 
     fun finishEditing() {
-        // 顶栏返回、系统返回与手势返回都会进入这里。非空笔记不能在写入确认前
-        // 卸载详情页，否则列表可能短暂显示新内容，而重开时仍读到旧的空草稿。
+        if (detailMode == DetailMode.EDIT) {
+            // 第一次返回：先提交当前内容，写入确认后回到同一笔记的预览态。
+            if (previewRequested) return
+            previewRequested = true
+            if (title.isBlank() && content.isBlank()) {
+                if (savedNoteId != 0L) onDiscard(savedNoteId)
+                detailMode = DetailMode.PREVIEW
+                previewRequested = false
+            } else {
+                persistNow()
+            }
+            return
+        }
+
+        // 第二次返回：预览态已是已保存的稳定内容，可直接回到主列表。
         if (exitRequested) return
         exitRequested = true
-        if (title.isBlank() && content.isBlank()) {
-            if (savedNoteId != 0L) {
-                onDiscard(savedNoteId)
-                onBack()
-            } else if (saveInFlight) {
-                discardAfterSave = true
-            } else {
-                onBack()
-            }
-        } else {
-            persistNow()
-        }
+        if (title.isBlank() && content.isBlank() && savedNoteId != 0L) onDiscard(savedNoteId)
+        onBack()
     }
 
     LaunchedEffect(editRevision) {
@@ -1311,12 +1316,7 @@ private fun NoteDetailPage(
     }
 
     fun toggleDetailMode() {
-        if (detailMode == DetailMode.PREVIEW) {
-            enterEdit(InlineEditTarget.CONTENT)
-        } else {
-            persistNow()
-            detailMode = DetailMode.PREVIEW
-        }
+        if (detailMode == DetailMode.PREVIEW) enterEdit(InlineEditTarget.CONTENT) else finishEditing()
     }
 
     fun openPreviewLink(link: String) {
@@ -1358,7 +1358,11 @@ private fun NoteDetailPage(
                         }
                     }
                 },
-                navigationIcon = { TextButton(onClick = ::finishEditing) { Text("返回") } },
+                navigationIcon = {
+                    TextButton(onClick = ::finishEditing) {
+                        Text(if (detailMode == DetailMode.EDIT) "预览" else "返回")
+                    }
+                },
                 actions = {
                     TextButton(onClick = ::toggleDetailMode) {
                         Text(if (detailMode == DetailMode.PREVIEW) "编辑" else "预览")
