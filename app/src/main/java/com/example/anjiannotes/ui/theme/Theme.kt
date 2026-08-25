@@ -35,10 +35,10 @@ private val ComfortableLightColors = lightColorScheme(
     onBackground = Color(0xFF27242A),
     surface = Color(0xFFFFFCFF),
     onSurface = Color(0xFF27242A),
-    surfaceVariant = Color(0xFFF0EDF1),
+    surfaceVariant = Color(0xFFF3F0F4),
     onSurfaceVariant = Color(0xFF6E6972),
     outline = Color(0xFF847E87),
-    outlineVariant = Color(0xFFD8D2DB),
+    outlineVariant = Color(0xFFDED9E1),
     error = Color(0xFFB3261E)
 )
 
@@ -54,19 +54,19 @@ private val ComfortableDarkColors = darkColorScheme(
     onBackground = Color(0xFFE7E1E7),
     surface = Color(0xFF1D1A1F),
     onSurface = Color(0xFFE7E1E7),
-    surfaceVariant = Color(0xFF27232B),
+    surfaceVariant = Color(0xFF242127),
     onSurfaceVariant = Color(0xFFCAC3CC),
     outline = Color(0xFF958D98),
-    outlineVariant = Color(0xFF504A53),
+    outlineVariant = Color(0xFF48434B),
     error = Color(0xFFFFB4AB)
 )
 
 private val AnJianShapes = Shapes(
-    extraSmall = RoundedCornerShape(12.dp),
-    small = RoundedCornerShape(14.dp),
-    medium = RoundedCornerShape(18.dp),
-    large = RoundedCornerShape(18.dp),
-    extraLarge = RoundedCornerShape(28.dp)
+    extraSmall = RoundedCornerShape(10.dp),
+    small = RoundedCornerShape(12.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(16.dp),
+    extraLarge = RoundedCornerShape(24.dp)
 )
 
 @Composable
