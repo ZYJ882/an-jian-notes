@@ -168,10 +168,11 @@ class NotesViewModel(
     }
 
     /**
-     * 编辑页以防抖方式频繁调用该方法。正文不做 trim，确保 Markdown 换行、
-     * 空格和代码块等原始书写内容不会在自动保存时被悄悄改写。
+     * 可等待的单次写入。编辑页以单一保存队列顺序调用它，只有 Room 确认写入后才会
+     * 切换预览或离开详情页。正文不做 trim，确保 Markdown 换行、空格和代码块等
+     * 原始书写内容不会被悄悄改写；即使最终标题和正文都为空，也会保存已编辑笔记的最终状态。
      */
-    fun saveNote(
+    suspend fun saveNote(
         id: Long,
         title: String,
         content: String,
@@ -179,27 +180,20 @@ class NotesViewModel(
         pinned: Boolean,
         markdown: Boolean,
         folderId: Long,
-        createdAt: Long = System.currentTimeMillis(),
-        onSaved: (Long) -> Unit = {}
-    ) {
-        if (title.isBlank() && content.isBlank()) return
-        viewModelScope.launch {
-            val savedId = repository.save(
-                NoteEntity(
-                    id = id,
-                    title = title,
-                    content = content,
-                    color = color,
-                    createdAt = createdAt,
-                    updatedAt = System.currentTimeMillis(),
-                    isPinned = pinned,
-                    isMarkdown = markdown,
-                    folderId = folderId
-                )
-            )
-            onSaved(savedId)
-        }
-    }
+        createdAt: Long = System.currentTimeMillis()
+    ): Long = repository.save(
+        NoteEntity(
+            id = id,
+            title = title,
+            content = content,
+            color = color,
+            createdAt = createdAt,
+            updatedAt = System.currentTimeMillis(),
+            isPinned = pinned,
+            isMarkdown = markdown,
+            folderId = folderId
+        )
+    )
 
     fun moveNoteToFolder(noteId: Long, folderId: Long) {
         viewModelScope.launch { repository.moveToFolder(noteId, folderId) }

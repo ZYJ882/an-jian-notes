@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -124,6 +125,8 @@ import com.example.anjiannotes.ui.theme.AppearanceMode
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -357,12 +360,10 @@ private fun NotesApp(
             initialFolderId = currentPage.folderId,
             folders = folders,
             onBack = { page = AppPage.List },
-            onSave = { id, title, content, color, pinned, markdown, folderId, createdAt, onSaved ->
-                viewModel.saveNote(id, title, content, color, pinned, markdown, folderId, createdAt, onSaved)
+            onSave = { id, title, content, color, pinned, markdown, folderId, createdAt ->
+                viewModel.saveNote(id, title, content, color, pinned, markdown, folderId, createdAt)
             },
-            onDiscard = viewModel::deleteNote,
-            onDelete = { note -> noteToDelete = note },
-            onMoveFolder = viewModel::moveNoteToFolder
+            onDelete = { note -> noteToDelete = note }
         )
     }
 
@@ -1146,10 +1147,8 @@ private fun NoteDetailPage(
     initialFolderId: Long,
     folders: List<FolderEntity>,
     onBack: () -> Unit,
-    onSave: (Long, String, String, Long, Boolean, Boolean, Long, Long, (Long) -> Unit) -> Unit,
-    onDiscard: (Long) -> Unit,
-    onDelete: (NoteEntity) -> Unit,
-    onMoveFolder: (Long, Long) -> Unit
+    onSave: suspend (Long, String, String, Long, Boolean, Boolean, Long, Long) -> Long,
+    onDelete: (NoteEntity) -> Unit
 ) {
     val context = LocalContext.current
     var title by remember(note?.id, seed) { mutableStateOf(note?.title ?: seed.title) }
@@ -1169,14 +1168,16 @@ private fun NoteDetailPage(
     var requestedContentCursor by remember(note?.id, seed) { mutableStateOf<Int?>(null) }
     var savedNoteId by remember(note?.id, seed) { mutableStateOf(note?.id ?: 0L) }
     val draftCreatedAt = remember(note?.id, seed) { note?.createdAt ?: System.currentTimeMillis() }
-    var editRevision by remember(note?.id, seed) { mutableStateOf(0) }
+    val seedHasContent = note == null && (seed.title.isNotBlank() || seed.content.isNotBlank())
+    var editRevision by remember(note?.id, seed) { mutableStateOf(if (seedHasContent) 1 else 0) }
+    var savedRevision by remember(note?.id, seed) { mutableStateOf(0) }
+    var hasUserEdited by remember(note?.id, seed) { mutableStateOf(seedHasContent) }
     var autoSaveState by remember(note?.id, seed) { mutableStateOf(AutoSaveState.IDLE) }
-    var saveInFlight by remember(note?.id, seed) { mutableStateOf(false) }
-    var persistPending by remember(note?.id, seed) { mutableStateOf(false) }
-    var discardAfterSave by remember(note?.id, seed) { mutableStateOf(false) }
-    var previewRequested by remember(note?.id, seed) { mutableStateOf(false) }
-    var exitRequested by remember(note?.id, seed) { mutableStateOf(false) }
-    var backTransitionInProgress by remember(note?.id, seed) { mutableStateOf(false) }
+    var saveError by remember(note?.id, seed) { mutableStateOf<String?>(null) }
+    var leavingInProgress by remember(note?.id, seed) { mutableStateOf(false) }
+    var saveWorker by remember(note?.id, seed) { mutableStateOf<Job?>(null) }
+    var debounceJob by remember(note?.id, seed) { mutableStateOf<Job?>(null) }
+    val editorScope = rememberCoroutineScope()
     val titleFocus = remember { FocusRequester() }
     val contentFocus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -1216,84 +1217,116 @@ private fun NoteDetailPage(
         detailMode = DetailMode.EDIT
     }
 
-    fun persistNow() {
-        if (title.isBlank() && content.isBlank()) return
-        if (saveInFlight) {
-            persistPending = true
-            return
-        }
-        saveInFlight = true
-        persistPending = false
-        val savedRevision = editRevision
-        autoSaveState = AutoSaveState.SAVING
-        onSave(
-            savedNoteId,
-            title,
-            content,
-            color,
-            pinned,
-            markdownActive,
-            selectedFolderId,
-            draftCreatedAt
-        ) { id ->
-            savedNoteId = id
-            saveInFlight = false
-            if (discardAfterSave) {
-                onDiscard(id)
-                if (exitRequested) onBack()
-            } else {
-                autoSaveState = AutoSaveState.SAVED
-                if (persistPending || editRevision > savedRevision) {
-                    persistNow()
-                } else if (previewRequested) {
-                    previewRequested = false
-                    detailMode = DetailMode.PREVIEW
-                } else if (exitRequested) {
-                    onBack()
+    fun editorLog(message: String) {
+        if (BuildConfig.DEBUG) Log.d("NoteEditor", message)
+    }
+
+    fun startSaveWorker() {
+        if (!hasUserEdited || savedRevision >= editRevision || saveWorker?.isActive == true) return
+        saveWorker = editorScope.launch {
+            while (hasUserEdited && savedRevision < editRevision) {
+                val revisionToSave = editRevision
+                val titleToSave = title
+                val contentToSave = content
+                val colorToSave = color
+                val pinnedToSave = pinned
+                val markdownToSave = formatMode.resolvesToMarkdown(contentToSave)
+                val folderToSave = selectedFolderId
+                autoSaveState = AutoSaveState.SAVING
+                saveError = null
+                editorLog(
+                    "save start revision=$revisionToSave id=$savedNoteId " +
+                        if (savedNoteId == 0L) "creating new note" else "updating note"
+                )
+                try {
+                    val id = onSave(
+                        savedNoteId,
+                        titleToSave,
+                        contentToSave,
+                        colorToSave,
+                        pinnedToSave,
+                        markdownToSave,
+                        folderToSave,
+                        draftCreatedAt
+                    )
+                    savedNoteId = id
+                    savedRevision = revisionToSave
+                    autoSaveState = AutoSaveState.SAVED
+                    editorLog("save completed revision=$revisionToSave id=$id")
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    saveError = error.message ?: "保存失败"
+                    autoSaveState = AutoSaveState.IDLE
+                    editorLog("save failed revision=$revisionToSave message=${saveError}")
+                    return@launch
                 }
             }
         }
     }
 
-    fun finishEditing() {
-        // 同一返回手势可能在系统与界面完成状态更新前重复抵达。第一次返回开始后，
-        // 直到预览态真正绘制一帧之前都忽略后续返回，避免一次手势越过预览直接回列表。
-        if (backTransitionInProgress) return
-
-        if (detailMode == DetailMode.EDIT) {
-            backTransitionInProgress = true
-            previewRequested = true
-            if (title.isBlank() && content.isBlank()) {
-                if (savedNoteId != 0L) onDiscard(savedNoteId)
-                previewRequested = false
-                detailMode = DetailMode.PREVIEW
-            } else {
-                persistNow()
+    fun scheduleAutoSave() {
+        debounceJob?.cancel()
+        if (savedNoteId == 0L) {
+            // 第一处有效编辑立即创建草稿；后续内容全部进入同一个顺序保存队列。
+            startSaveWorker()
+        } else {
+            debounceJob = editorScope.launch {
+                delay(700)
+                editorLog("debounce save")
+                startSaveWorker()
             }
-            return
         }
-
-        // 仅在用户已经看到稳定的预览态后，第二次返回才回到笔记列表。
-        if (exitRequested) return
-        backTransitionInProgress = true
-        exitRequested = true
-        if (title.isBlank() && content.isBlank() && savedNoteId != 0L) onDiscard(savedNoteId)
-        onBack()
     }
 
-    LaunchedEffect(editRevision) {
-        if (editRevision == 0) return@LaunchedEffect
-        if (title.isBlank() && content.isBlank()) {
-            autoSaveState = AutoSaveState.IDLE
-            return@LaunchedEffect
+    fun markEdited() {
+        hasUserEdited = true
+        editRevision++
+        saveError = null
+        editorLog("content changed dirty=true revision=$editRevision")
+        scheduleAutoSave()
+    }
+
+    LaunchedEffect(seedHasContent) {
+        if (seedHasContent) scheduleAutoSave()
+    }
+
+    suspend fun flushPendingChanges(): Boolean {
+        debounceJob?.cancel()
+        editorLog("final save before leave dirty=${hasUserEdited && savedRevision < editRevision}")
+        while (hasUserEdited && savedRevision < editRevision) {
+            startSaveWorker()
+            saveWorker?.join()
+            if (saveError != null) return false
         }
-        if (savedNoteId == 0L) {
-            // 首个字符立即落库，确保新草稿即使意外退出也不会丢失。
-            persistNow()
-        } else {
-            autoSaveState = AutoSaveState.SAVING
-            delay(700)
-            persistNow()
+        return true
+    }
+
+    fun handleBack() {
+        if (leavingInProgress) {
+            editorLog("back ignored while final save is in progress")
+            return
+        }
+        editorLog("back requested mode=$detailMode")
+        leavingInProgress = true
+        keyboard?.hide()
+        editorScope.launch {
+            if (!flushPendingChanges()) {
+                editorLog("back cancelled because final save failed")
+                leavingInProgress = false
+                return@launch
+            }
+            if (detailMode == DetailMode.EDIT) {
+                // 第一次返回仅在最终保存完成后切换预览，页面仍保持在同一篇笔记。
+                detailMode = DetailMode.PREVIEW
+                editorLog("final save confirmed; switched to preview")
+                withFrameNanos { }
+                leavingInProgress = false
+            } else {
+                // 预览态再次返回时也会经过同一最终保存确认，再离开详情页。
+                editorLog("final save confirmed; leaving detail")
+                onBack()
+            }
         }
     }
 
@@ -1305,7 +1338,7 @@ private fun NoteDetailPage(
     }
 
     fun toggleDetailMode() {
-        if (detailMode == DetailMode.PREVIEW) enterEdit(InlineEditTarget.CONTENT) else finishEditing()
+        if (detailMode == DetailMode.PREVIEW) enterEdit(InlineEditTarget.CONTENT) else handleBack()
     }
 
     fun openPreviewLink(link: String) {
@@ -1315,21 +1348,17 @@ private fun NoteDetailPage(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) persistNow()
+            if (event == Lifecycle.Event.ON_STOP) {
+                // 后台切换只催促同一保存队列；离开详情页仍以 handleBack 的最终确认为准。
+                editorLog("lifecycle stop: request pending save")
+                startSaveWorker()
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    LaunchedEffect(detailMode, backTransitionInProgress) {
-        if (detailMode == DetailMode.PREVIEW && backTransitionInProgress) {
-            // 让预览态至少完成一帧绘制后才接受下一次返回。
-            withFrameNanos { }
-            backTransitionInProgress = false
-        }
-    }
-
-    val latestFinishEditing by rememberUpdatedState(::finishEditing)
+    val latestFinishEditing by rememberUpdatedState(::handleBack)
     // BackHandler 通过 AndroidX 回调覆盖物理返回键、三键导航及系统返回手势。
     BackHandler(enabled = true) { latestFinishEditing() }
 
@@ -1346,15 +1375,15 @@ private fun NoteDetailPage(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(if (note == null) "新建笔记" else "笔记详情", fontWeight = FontWeight.SemiBold)
-                        when (autoSaveState) {
-                            AutoSaveState.SAVING -> Text("保存中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            AutoSaveState.SAVED -> Text("已保存 ✓", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                            AutoSaveState.IDLE -> Unit
+                        when {
+                            saveError != null -> Text("保存失败", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                            autoSaveState == AutoSaveState.SAVING -> Text("保存中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            autoSaveState == AutoSaveState.SAVED -> Text("已保存 ✓", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                         }
                     }
                 },
                 navigationIcon = {
-                    TextButton(onClick = ::finishEditing) {
+                    TextButton(onClick = ::handleBack) {
                         Text(if (detailMode == DetailMode.EDIT) "预览" else "返回")
                     }
                 },
@@ -1377,7 +1406,7 @@ private fun NoteDetailPage(
                     value = title,
                     onValueChange = {
                         title = it
-                        editRevision++
+                        markEdited()
                     },
                     modifier = Modifier.fillMaxWidth().focusRequester(titleFocus),
                     textStyle = MaterialTheme.typography.titleLarge.copy(color = MaterialTheme.colorScheme.onBackground),
@@ -1409,7 +1438,7 @@ private fun NoteDetailPage(
                         onClick = {
                             if (detailMode == DetailMode.EDIT) {
                                 formatMode = formatMode.next()
-                                editRevision++
+                                markEdited()
                             }
                         },
                         label = { Text("格式：$formatDetail") }
@@ -1426,7 +1455,7 @@ private fun NoteDetailPage(
                     value = contentValue,
                     onValueChange = { value ->
                         contentValue = value
-                        editRevision++
+                        markEdited()
                     },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp).focusRequester(contentFocus),
                     textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onBackground),
@@ -1435,7 +1464,7 @@ private fun NoteDetailPage(
                 )
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     if (note != null) TextButton(onClick = { onDelete(note) }) { Text("删除", color = MaterialTheme.colorScheme.error) } else Spacer(Modifier.width(1.dp))
-                    TextButton(onClick = { pinned = !pinned; editRevision++ }) { Text(if (pinned) "取消置顶" else "置顶") }
+                    TextButton(onClick = { pinned = !pinned; markEdited() }) { Text(if (pinned) "取消置顶" else "置顶") }
                 }
             } else if (markdownActive) {
                 MarkdownPreview(
@@ -1483,7 +1512,7 @@ private fun NoteDetailPage(
             onDismiss = { showFolderPicker = false },
             onSelected = { folderId ->
                 selectedFolderId = folderId
-                if (note != null) onMoveFolder(note.id, folderId) else editRevision++
+                markEdited()
                 showFolderPicker = false
             }
         )
