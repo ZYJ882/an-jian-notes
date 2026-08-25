@@ -12,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -1580,10 +1581,14 @@ private fun NoteDetailPage(
         }
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
-            Column(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp).verticalScroll(detailScrollState),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
+            Box(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(end = 12.dp)
+                        .verticalScroll(detailScrollState),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
             if (detailMode == DetailMode.EDIT) {
                 BasicTextField(
                     value = title,
@@ -1709,9 +1714,17 @@ private fun NoteDetailPage(
                 )
             }
             Spacer(Modifier.height(48.dp))
+                }
+                DraggableDetailScrollbar(
+                    scrollState = detailScrollState,
+                    thumbColor = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight()
+                )
             }
         }
-        }
+    }
     }
     if (showFolderPicker) {
         FolderPickerDialog(
@@ -1748,6 +1761,64 @@ private fun EmptyNotes(query: String, onCreate: () -> Unit) {
                 if (query.isBlank()) TextButton(onClick = onCreate) { Text("写下第一条") }
             }
         }
+    }
+}
+
+@Composable
+private fun DraggableDetailScrollbar(
+    scrollState: ScrollState,
+    thumbColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val canScroll = scrollState.maxValue > 0
+    var dragging by remember { mutableStateOf(false) }
+    val thumbWidthPx = with(density) { 3.dp.toPx() }
+    val minimumThumbHeightPx = with(density) { 28.dp.toPx() }
+
+    fun scrollToFraction(fraction: Float) {
+        val targetValue = (fraction.coerceIn(0f, 1f) * scrollState.maxValue).roundToInt()
+        scope.launch { scrollState.scrollTo(targetValue) }
+    }
+
+    Canvas(
+        modifier = modifier
+            .width(12.dp)
+            .pointerInput(canScroll, scrollState.maxValue) {
+                if (!canScroll) return@pointerInput
+                fun scrollToPointer(positionY: Float) {
+                    scrollToFraction(positionY / size.height.coerceAtLeast(1))
+                }
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        dragging = true
+                        scrollToPointer(offset.y)
+                    },
+                    onDrag = { change, _ ->
+                        change.consume()
+                        scrollToPointer(change.position.y)
+                    },
+                    onDragEnd = { dragging = false },
+                    onDragCancel = { dragging = false }
+                )
+            }
+    ) {
+        if (!canScroll || (!scrollState.isScrollInProgress && !dragging)) return@Canvas
+
+        val viewportHeight = size.height
+        val estimatedContentHeight = viewportHeight + scrollState.maxValue
+        val thumbHeight = (viewportHeight * (viewportHeight / estimatedContentHeight))
+            .coerceIn(minimumThumbHeightPx, viewportHeight)
+        val scrollFraction = (scrollState.value.toFloat() / scrollState.maxValue).coerceIn(0f, 1f)
+        val thumbY = (viewportHeight - thumbHeight) * scrollFraction
+
+        drawRoundRect(
+            color = thumbColor.copy(alpha = 0.52f),
+            topLeft = Offset(size.width - thumbWidthPx, thumbY),
+            size = Size(thumbWidthPx, thumbHeight),
+            cornerRadius = CornerRadius(thumbWidthPx, thumbWidthPx)
+        )
     }
 }
 
