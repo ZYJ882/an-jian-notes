@@ -138,6 +138,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -404,7 +406,7 @@ private fun NotesApp(
             folders = folders.filterNot { it.id == STARRED_FOLDER_ID },
             onBack = { page = AppPage.List },
             onSave = { id, title, content, color, pinned, markdown, folderId, createdAt ->
-                viewModel.saveNote(id, title, content, color, pinned, markdown, folderId, createdAt)
+                viewModel.queueSaveNote(id, title, content, color, pinned, markdown, folderId, createdAt)
             },
             onDelete = { note -> noteToDelete = note }
         )
@@ -1306,7 +1308,7 @@ private fun NoteDetailPage(
     initialFolderId: Long,
     folders: List<FolderEntity>,
     onBack: () -> Unit,
-    onSave: suspend (Long, String, String, Long, Boolean, Boolean, Long, Long) -> Long,
+    onSave: (Long, String, String, Long, Boolean, Boolean, Long, Long) -> Deferred<Long>,
     onDelete: (NoteEntity) -> Unit
 ) {
     val context = LocalContext.current
@@ -1404,7 +1406,7 @@ private fun NoteDetailPage(
 
     fun startSaveWorker() {
         if (!hasUserEdited || savedRevision >= editRevision || saveWorker?.isActive == true) return
-        saveWorker = editorScope.launch {
+        saveWorker = editorScope.launch(start = CoroutineStart.UNDISPATCHED) {
             while (hasUserEdited && savedRevision < editRevision) {
                 val revisionToSave = editRevision
                 // latestDraft 在 TextField 的 onValueChange 内同步更新，不依赖下一次组合重绘。
@@ -1425,7 +1427,7 @@ private fun NoteDetailPage(
                         draftToSave.isMarkdown,
                         draftToSave.folderId,
                         draftCreatedAt
-                    )
+                    ).await()
                     savedNoteId = id
                     savedRevision = revisionToSave
                     autoSaveState = AutoSaveState.SAVED

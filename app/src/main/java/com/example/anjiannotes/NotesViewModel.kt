@@ -14,6 +14,8 @@ import com.example.anjiannotes.data.STARRED_FOLDER
 import com.example.anjiannotes.data.WebDavBackupClient
 import com.example.anjiannotes.data.WebDavConfig
 import com.example.anjiannotes.data.WebDavConfigStore
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -197,6 +199,31 @@ class NotesViewModel(
             folderId = folderId
         )
     )
+
+    /**
+     * 详情页把一次保存交给 ViewModel 作用域后立即得到可等待结果。
+     * 页面在系统返回期间被提前销毁时，写入任务仍会继续完成；仍在详情页时则可 await 该结果，
+     * 用于确认首次草稿已取得稳定的数据库 ID。
+     */
+    fun queueSaveNote(
+        id: Long,
+        title: String,
+        content: String,
+        color: Long,
+        pinned: Boolean,
+        markdown: Boolean,
+        folderId: Long,
+        createdAt: Long = System.currentTimeMillis()
+    ): Deferred<Long> {
+        val result = CompletableDeferred<Long>()
+        viewModelScope.launch {
+            runCatching {
+                saveNote(id, title, content, color, pinned, markdown, folderId, createdAt)
+            }.onSuccess(result::complete)
+                .onFailure(result::completeExceptionally)
+        }
+        return result
+    }
 
     fun toggleStar(note: NoteEntity) {
         viewModelScope.launch {
