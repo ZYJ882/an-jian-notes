@@ -342,8 +342,7 @@ private fun NotesApp(
         uri ?: return@rememberLauncherForActivityResult
         when (val result = readTextImport(context, uri)) {
             is ImportReadResult.Success -> {
-                val sourceName = uri.lastPathSegment.orEmpty()
-                openImported(EditorSeed(result.note.title, result.note.content, formatForFileName(sourceName)))
+                openImported(EditorSeed(result.note.title, result.note.content, result.note.formatMode))
             }
             is ImportReadResult.Failure -> importError = result.message
         }
@@ -419,7 +418,12 @@ private fun NotesApp(
             seed = currentPage.seed,
             initialFolderId = currentPage.folderId,
             folders = folders.filterNot { it.id == STARRED_FOLDER_ID },
-            onBack = { page = AppPage.List },
+            onBack = { returnedFolderId ->
+                if (activeFolderId == STARRED_FOLDER_ID && returnedFolderId != STARRED_FOLDER_ID) {
+                    viewModel.selectFolder(returnedFolderId)
+                }
+                page = AppPage.List
+            },
             onSave = { id, title, content, color, pinned, markdown, folderId, createdAt ->
                 viewModel.queueSaveNote(id, title, content, color, pinned, markdown, folderId, createdAt)
             },
@@ -1351,7 +1355,7 @@ private fun NoteDetailPage(
     seed: EditorSeed,
     initialFolderId: Long,
     folders: List<FolderEntity>,
-    onBack: () -> Unit,
+    onBack: (Long) -> Unit,
     onSave: (Long, String, String, Long, Boolean, Boolean, Long, Long) -> Deferred<Long>,
     onDelete: (NoteEntity) -> Unit
 ) {
@@ -1558,7 +1562,7 @@ private fun NoteDetailPage(
             } else {
                 // 预览态再次返回时也会经过同一最终保存确认，再离开详情页。
                 editorLog("final save confirmed; leaving detail")
-                onBack()
+                onBack(selectedFolderId)
             }
         }
     }

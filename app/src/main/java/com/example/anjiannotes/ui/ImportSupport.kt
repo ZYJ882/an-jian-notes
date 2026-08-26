@@ -28,7 +28,11 @@ data class EditorSeed(
     val formatMode: NoteFormatMode = NoteFormatMode.AUTO
 )
 
-data class ImportedNoteText(val title: String, val content: String)
+data class ImportedNoteText(
+    val title: String,
+    val content: String,
+    val formatMode: NoteFormatMode
+)
 
 fun formatForFileName(fileName: String): NoteFormatMode = when {
     fileName.endsWith(".md", ignoreCase = true) || fileName.endsWith(".markdown", ignoreCase = true) -> NoteFormatMode.MARKDOWN
@@ -70,7 +74,8 @@ fun readTextImport(context: Context, uri: Uri): ImportReadResult {
         ImportReadResult.Success(
             ImportedNoteText(
                 title = name.substringBeforeLast('.', name),
-                content = content
+                content = content,
+                formatMode = formatForFileName(name)
             )
         )
     } catch (_: Exception) {
