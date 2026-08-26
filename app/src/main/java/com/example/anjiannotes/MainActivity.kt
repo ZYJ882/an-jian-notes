@@ -783,6 +783,10 @@ private fun NotesListPage(
                     },
                     actions = {
                         if (selectionMode) {
+                            TextButton(
+                                onClick = { selectedNoteIds = notes.mapTo(linkedSetOf()) { it.id } },
+                                enabled = notes.isNotEmpty() && selectedNoteIds.size < notes.size
+                            ) { Text("全选") }
                             TextButton(onClick = {
                                 val ids = selectedNoteIds
                                 selectedNoteIds = emptySet()
