@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -132,28 +134,33 @@ private fun MarkdownTable(
         table.rows.forEach { append('\n').append(it.joinToString(" | ")) }
     }
     val link = remember(blockText) { extractFirstLink(blockText) }
-    val modifier = if (enableTextSelection) {
-        Modifier.fillMaxWidth()
-    } else {
+    val surfaceModifier = if (enableTextSelection) {
         Modifier
+    } else {
+        Modifier.combinedClickable(
+            onClick = { link?.let(onLinkClick) ?: onClick() },
+            onDoubleClick = { onDoubleClickAt(table.startOffset) },
+            onLongClick = { link?.let(onLinkLongPress) ?: onLongPress() }
+        )
+    }
+    // 表格使用独立视口：外层固定屏幕宽度，内部按列内容测量后横向滚动。
+    // 避免 Surface 先被压到屏幕宽度，导致后续列溢出且无法拖动查看。
+    Box(
+        modifier = Modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState())
-            .combinedClickable(
-                onClick = { link?.let(onLinkClick) ?: onClick() },
-                onDoubleClick = { onDoubleClickAt(table.startOffset) },
-                onLongClick = { link?.let(onLinkLongPress) ?: onLongPress() }
-            )
-    }
-    Surface(
-        modifier = modifier,
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-        shape = MaterialTheme.shapes.medium
     ) {
-        Column {
-            MarkdownTableRow(table.header, header = true)
-            table.rows.forEach { row ->
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
-                MarkdownTableRow(row, header = false)
+        Surface(
+            modifier = surfaceModifier.wrapContentWidth(unbounded = true),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+            shape = MaterialTheme.shapes.medium
+        ) {
+            Column {
+                MarkdownTableRow(table.header, header = true)
+                table.rows.forEach { row ->
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
+                    MarkdownTableRow(row, header = false)
+                }
             }
         }
     }

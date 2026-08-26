@@ -74,12 +74,8 @@ interface NoteDao {
     @Query("UPDATE notes SET isPinned = 1, updatedAt = :updatedAt WHERE id IN (:ids)")
     suspend fun starByIds(ids: List<Long>, updatedAt: Long = System.currentTimeMillis()): Int
 
-    @Query("UPDATE notes SET folderId = :targetFolderId, updatedAt = :updatedAt WHERE folderId = :sourceFolderId")
-    suspend fun moveAllToFolder(
-        sourceFolderId: Long,
-        targetFolderId: Long,
-        updatedAt: Long = System.currentTimeMillis()
-    )
+    @Query("DELETE FROM notes WHERE folderId = :folderId")
+    suspend fun deleteByFolderId(folderId: Long): Int
 
     @Query("SELECT * FROM notes ORDER BY id ASC")
     suspend fun getAll(): List<NoteEntity>
@@ -198,13 +194,13 @@ class NotesRepository(
     suspend fun save(note: NoteEntity): Long = noteDao.upsert(note)
 
     /**
-     * 删除自定义收藏夹时，先将其中笔记迁回默认收藏夹，再删除收藏夹记录。
+     * 删除自定义收藏夹时，级联删除其中全部笔记。
      * 默认收藏夹与虚拟星标入口均不可删除。
      */
     suspend fun deleteFolder(folderId: Long) {
         require(folderId != DEFAULT_FOLDER_ID && folderId != STARRED_FOLDER_ID) { "该收藏夹不可删除" }
         database.withTransaction {
-            noteDao.moveAllToFolder(folderId, DEFAULT_FOLDER_ID)
+            noteDao.deleteByFolderId(folderId)
             folderDao.deleteById(folderId)
         }
     }

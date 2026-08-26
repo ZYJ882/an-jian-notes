@@ -167,7 +167,8 @@ class MainActivity : ComponentActivity() {
         val factory = NotesViewModelFactory(
             NotesRepository(app.database, app.database.noteDao(), app.database.folderDao()),
             app.webDavConfigStore,
-            app.webDavBackupClient
+            app.webDavBackupClient,
+            app.folderSelectionPreferences
         )
         setContent {
             val appearanceMode by app.appearancePreferences.mode.collectAsStateWithLifecycle()
@@ -901,7 +902,7 @@ private fun FolderDeleteDialog(
         onDismissRequest = onDismiss,
         title = { Text("删除收藏夹？") },
         text = {
-            Text("“${folder.name}”中的笔记会移动到默认收藏夹，星标状态保持不变。此收藏夹随后将被删除。")
+            Text("将删除“${folder.name}”及其中全部笔记。此操作不可恢复。")
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
         confirmButton = { TextButton(onClick = onConfirm) { Text("删除", color = MaterialTheme.colorScheme.error) } }

@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.anjiannotes.data.BackupCodec
 import com.example.anjiannotes.data.DEFAULT_FOLDER_ID
+import com.example.anjiannotes.data.FolderSelectionPreferences
 import com.example.anjiannotes.data.FolderEntity
 import com.example.anjiannotes.data.MarkdownZipBackupCodec
 import com.example.anjiannotes.data.NoteEntity
@@ -33,10 +34,11 @@ import kotlinx.coroutines.launch
 class NotesViewModel(
     private val repository: NotesRepository,
     private val webDavConfigStore: WebDavConfigStore,
-    private val webDavBackupClient: WebDavBackupClient
+    private val webDavBackupClient: WebDavBackupClient,
+    private val folderSelectionPreferences: FolderSelectionPreferences
 ) : ViewModel() {
     private val searchQuery = MutableStateFlow("")
-    private val selectedFolderId = MutableStateFlow(DEFAULT_FOLDER_ID)
+    private val selectedFolderId = MutableStateFlow(folderSelectionPreferences.load())
     private val configuredWebDav = MutableStateFlow(webDavConfigStore.load())
 
     val query: StateFlow<String> = searchQuery.asStateFlow()
@@ -63,13 +65,14 @@ class NotesViewModel(
 
     fun selectFolder(folderId: Long) {
         selectedFolderId.value = folderId
+        folderSelectionPreferences.save(folderId)
     }
 
     fun createFolder(name: String, onSuccess: (String) -> Unit, onFailure: (String) -> Unit) {
         viewModelScope.launch {
             runCatching {
                 val id = repository.createFolder(name)
-                selectedFolderId.value = id
+                selectFolder(id)
                 name.trim()
             }.onSuccess(onSuccess)
                 .onFailure { onFailure(it.message ?: "收藏夹创建失败，请重试") }
@@ -244,8 +247,8 @@ class NotesViewModel(
         viewModelScope.launch {
             runCatching {
                 repository.deleteFolder(folderId)
-                if (selectedFolderId.value == folderId) selectedFolderId.value = DEFAULT_FOLDER_ID
-                "收藏夹已删除，笔记已移动到默认收藏夹"
+                if (selectedFolderId.value == folderId) selectFolder(DEFAULT_FOLDER_ID)
+                "收藏夹和其中笔记已删除"
             }.onSuccess(onSuccess)
                 .onFailure { onFailure(it.message ?: "收藏夹删除失败，请重试") }
         }
@@ -271,11 +274,12 @@ class NotesViewModel(
 class NotesViewModelFactory(
     private val repository: NotesRepository,
     private val webDavConfigStore: WebDavConfigStore,
-    private val webDavBackupClient: WebDavBackupClient
+    private val webDavBackupClient: WebDavBackupClient,
+    private val folderSelectionPreferences: FolderSelectionPreferences
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         require(modelClass.isAssignableFrom(NotesViewModel::class.java))
-        return NotesViewModel(repository, webDavConfigStore, webDavBackupClient) as T
+        return NotesViewModel(repository, webDavConfigStore, webDavBackupClient, folderSelectionPreferences) as T
     }
 }
