@@ -1855,6 +1855,11 @@ private fun NativeNoteTitleEditor(
     )
 }
 
+private class NativeNoteEditText(context: Context) : EditText(context) {
+    var applyingModelText: Boolean = false
+    var lastFocusRequest: Int = -1
+}
+
 @Composable
 private fun NativeNoteEditor(
     value: TextFieldValue,
@@ -1863,12 +1868,11 @@ private fun NativeNoteEditor(
     textColor: Color,
     onValueChange: (TextFieldValue) -> Unit
 ) {
-    val latestValue by rememberUpdatedState(value)
     val latestOnValueChange by rememberUpdatedState(onValueChange)
     AndroidView(
         modifier = modifier,
         factory = { viewContext ->
-            EditText(viewContext).apply {
+            NativeNoteEditText(viewContext).apply {
                 background = null
                 setPadding(0, 0, 0, 0)
                 includeFontPadding = false
@@ -1882,8 +1886,10 @@ private fun NativeNoteEditor(
                 addTextChangedListener(object : TextWatcher {
                     override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
                     override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                        val changed = s?.toString().orEmpty()
-                        if (changed != latestValue.text) {
+                        // 仅忽略 Compose 主动回填的文本。任何真实用户输入都立即回写至
+                        // contentValue，防止切换预览时读取到上一帧的截断内容。
+                        if (!applyingModelText) {
+                            val changed = s?.toString().orEmpty()
                             val selectionStart = selectionStart.coerceIn(0, changed.length)
                             val selectionEnd = selectionEnd.coerceIn(0, changed.length)
                             latestOnValueChange(TextFieldValue(changed, TextRange(selectionStart, selectionEnd)))
@@ -1894,11 +1900,17 @@ private fun NativeNoteEditor(
             }
         },
         update = { view ->
-            if (view.text.toString() != value.text) view.setText(value.text)
+            if (view.text.toString() != value.text) {
+                view.applyingModelText = true
+                try {
+                    view.setText(value.text)
+                } finally {
+                    view.applyingModelText = false
+                }
+            }
             view.setTextColor(textColor.toArgb())
-            val lastRequest = view.getTag() as? Int ?: -1
-            if (focusRequest >= 0 && focusRequest != lastRequest) {
-                view.setTag(focusRequest)
+            if (focusRequest >= 0 && focusRequest != view.lastFocusRequest) {
+                view.lastFocusRequest = focusRequest
                 view.requestFocus()
                 val start = value.selection.start.coerceIn(0, view.length())
                 val end = value.selection.end.coerceIn(0, view.length())
