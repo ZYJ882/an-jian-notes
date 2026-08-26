@@ -7,13 +7,11 @@ import android.content.Intent
 import android.graphics.Typeface
 import android.text.Editable
 import android.text.InputType
-import android.text.Layout
 import android.text.TextWatcher
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
-import android.widget.TextView
 import android.net.Uri
 import android.os.Bundle
 import android.os.Debug
@@ -1723,12 +1721,37 @@ private fun NoteDetailPage(
                     if (note != null) TextButton(onClick = { onDelete(note) }) { Text("删除", color = MaterialTheme.colorScheme.error) } else Spacer(Modifier.width(1.dp))
                     TextButton(onClick = { pinned = !pinned; markEdited() }) { Text(if (pinned) "取消星标" else "加入星标") }
                 }
-            } else {
-                NativeSelectableNotePreview(
-                    text = content,
-                    isMarkdown = markdownActive,
+            } else if (markdownActive) {
+                MarkdownPreview(
+                    content,
                     modifier = Modifier.fillMaxWidth(),
-                    textColor = MaterialTheme.colorScheme.onBackground
+                    onLinkClick = ::openPreviewLink,
+                    onDoubleClickAt = { position -> enterEdit(InlineEditTarget.CONTENT, position) }
+                )
+            } else {
+                var plainTextLayout by remember(content) { mutableStateOf<TextLayoutResult?>(null) }
+                val linkColor = MaterialTheme.colorScheme.primary
+                val previewText = remember(content, linkColor) {
+                    linkifyPlainText(content.ifBlank { "空白笔记" }, linkColor)
+                }
+                Text(
+                    text = previewText,
+                    style = MaterialTheme.typography.bodyLarge,
+                    onTextLayout = { plainTextLayout = it },
+                    modifier = Modifier.fillMaxWidth().pointerInput(content) {
+                        detectTapGestures(
+                            onTap = { offset ->
+                                plainTextLayout?.let { layout ->
+                                    extractLinkAt(content, layout.getOffsetForPosition(offset))?.let(::openPreviewLink)
+                                }
+                            },
+                            onDoubleTap = { offset ->
+                                plainTextLayout?.let { layout ->
+                                    enterEdit(InlineEditTarget.CONTENT, layout.getOffsetForPosition(offset))
+                                }
+                            }
+                        )
+                    }
                 )
             }
             Spacer(Modifier.height(48.dp))
@@ -1757,40 +1780,6 @@ private fun NoteDetailPage(
             }
         )
     }
-}
-
-@Composable
-private fun NativeSelectableNotePreview(
-    text: String,
-    isMarkdown: Boolean,
-    modifier: Modifier = Modifier,
-    textColor: Color
-) {
-    val displayText = remember(text, isMarkdown) {
-        if (isMarkdown) markdownToPlainText(text) else text
-    }.ifBlank { "空白笔记" }
-    AndroidView(
-        modifier = modifier,
-        factory = { viewContext ->
-            TextView(viewContext).apply {
-                setTextIsSelectable(true)
-                isFocusable = true
-                isFocusableInTouchMode = true
-                isLongClickable = true
-                background = null
-                setPadding(0, 0, 0, 0)
-                includeFontPadding = false
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
-                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
-                breakStrategy = Layout.BREAK_STRATEGY_HIGH_QUALITY
-                hyphenationFrequency = Layout.HYPHENATION_FREQUENCY_NORMAL
-            }
-        },
-        update = { view ->
-            if (view.text.toString() != displayText) view.text = displayText
-            view.setTextColor(textColor.toArgb())
-        }
-    )
 }
 
 @Composable
