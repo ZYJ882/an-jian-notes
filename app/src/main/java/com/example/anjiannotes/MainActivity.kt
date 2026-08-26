@@ -1420,6 +1420,7 @@ private fun NoteDetailPage(
     val editorScope = rememberCoroutineScope()
     var nativeTitleFocusRequest by remember(note?.id, seed) { mutableStateOf(-1) }
     var nativeContentFocusRequest by remember(note?.id, seed) { mutableStateOf(-1) }
+    var nativeContentEditor by remember(note?.id, seed) { mutableStateOf<NativeNoteEditText?>(null) }
     val keyboard = LocalSoftwareKeyboardController.current
     val markdownActive = formatMode.resolvesToMarkdown(content)
     val folderName = folders.firstOrNull { it.id == selectedFolderId }?.name ?: "默认收藏夹"
@@ -1538,6 +1539,18 @@ private fun NoteDetailPage(
         if (seedHasContent) scheduleAutoSave()
     }
 
+    fun syncNativeContentBeforePreview() {
+        val editor = nativeContentEditor ?: return
+        val currentText = editor.text?.toString().orEmpty()
+        if (currentText == contentValue.text) return
+        val selectionStart = editor.selectionStart.coerceIn(0, currentText.length)
+        val selectionEnd = editor.selectionEnd.coerceIn(0, currentText.length)
+        contentValue = TextFieldValue(currentText, TextRange(selectionStart, selectionEnd))
+        // AndroidView 的最后一次输入可能尚未触发 Compose 重组；切换预览前以视图
+        // 当前文本作为最终来源，同步更新草稿和保存队列。
+        markEdited(contentOverride = currentText)
+    }
+
     suspend fun flushPendingChanges(): Boolean {
         debounceJob?.cancel()
         editorLog("final save before leave dirty=${hasUserEdited && savedRevision < editRevision}")
@@ -1550,6 +1563,7 @@ private fun NoteDetailPage(
     }
 
     fun handleBack() {
+        if (detailMode == DetailMode.EDIT) syncNativeContentBeforePreview()
         if (leavingInProgress) {
             editorLog("back ignored while final save is in progress")
             return
@@ -1726,6 +1740,7 @@ private fun NoteDetailPage(
                     focusRequest = nativeContentFocusRequest,
                     modifier = Modifier.fillMaxWidth().weight(1f),
                     textColor = MaterialTheme.colorScheme.onBackground,
+                    onViewReady = { nativeContentEditor = it },
                     onValueChange = { value ->
                         contentValue = value
                         markEdited(contentOverride = value.text)
@@ -1858,6 +1873,7 @@ private fun NativeNoteEditor(
     focusRequest: Int,
     modifier: Modifier = Modifier,
     textColor: Color,
+    onViewReady: (NativeNoteEditText) -> Unit = {},
     onValueChange: (TextFieldValue) -> Unit
 ) {
     val latestOnValueChange by rememberUpdatedState(onValueChange)
@@ -1892,6 +1908,7 @@ private fun NativeNoteEditor(
             }
         },
         update = { view ->
+            onViewReady(view)
             if (view.text.toString() != value.text) {
                 view.applyingModelText = true
                 try {

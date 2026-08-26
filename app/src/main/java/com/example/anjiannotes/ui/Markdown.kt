@@ -272,15 +272,21 @@ private fun MarkdownLine(
         line.startsWith("> ") -> Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium) {
             MarkdownLineText(markdownInline(line.removePrefix("> "), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier.padding(horizontal = 12.dp, vertical = 9.dp), onTextLayout = textLayoutCallback)
         }
-        line.matches(Regex("^[-+*]\\s+.*")) -> Row(verticalAlignment = Alignment.Top) {
+        line.matches(Regex("^[-+*]\\s+.*")) -> Row(
+            modifier = lineModifier,
+            verticalAlignment = Alignment.Top
+        ) {
             Text("•", modifier = Modifier.padding(end = 8.dp), color = MaterialTheme.colorScheme.primary)
-            MarkdownLineText(markdownInline(line.replaceFirst(Regex("^[-+*]\\s+"), ""), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = textLayoutCallback)
+            MarkdownLineText(markdownInline(line.replaceFirst(Regex("^[-+*]\\s+"), ""), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, Modifier, onTextLayout = textLayoutCallback)
         }
         line.matches(Regex("^\\d+\\.\\s+.*")) -> {
             val prefix = line.substringBefore(' ')
-            Row(verticalAlignment = Alignment.Top) {
+            Row(
+                modifier = lineModifier,
+                verticalAlignment = Alignment.Top
+            ) {
                 Text(prefix, modifier = Modifier.padding(end = 8.dp), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-                MarkdownLineText(markdownInline(line.removePrefix("$prefix "), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = textLayoutCallback)
+                MarkdownLineText(markdownInline(line.removePrefix("$prefix "), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, Modifier, onTextLayout = textLayoutCallback)
             }
         }
         else -> MarkdownLineText(markdownInline(line, linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = textLayoutCallback)
