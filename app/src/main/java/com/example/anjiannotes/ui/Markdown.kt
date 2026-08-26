@@ -12,7 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.HorizontalDivider
@@ -33,8 +33,10 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -129,11 +131,49 @@ private fun MarkdownTable(
     onLongPress: () -> Unit,
     onClick: () -> Unit
 ) {
+    val columnCount = table.header.size.coerceAtLeast(1)
+    // Markdown 的数据行可能缺少或多出分隔符。先固定为与表头一致的列数，
+    // 防止单独一行改变整张表的宽度和列位置。
+    val rows = remember(table.rows, columnCount) {
+        table.rows.map { row ->
+            List(columnCount) { columnIndex -> row.getOrNull(columnIndex).orEmpty() }
+        }
+    }
+    val header = remember(table.header, columnCount) {
+        List(columnCount) { columnIndex -> table.header.getOrNull(columnIndex).orEmpty() }
+    }
     val blockText = buildString {
-        append(table.header.joinToString(" | "))
-        table.rows.forEach { append('\n').append(it.joinToString(" | ")) }
+        append(header.joinToString(" | "))
+        rows.forEach { append('\n').append(it.joinToString(" | ")) }
     }
     val link = remember(blockText) { extractFirstLink(blockText) }
+    val textMeasurer = rememberTextMeasurer()
+    val bodyStyle = MaterialTheme.typography.bodySmall
+    val headerStyle = bodyStyle.copy(fontWeight = FontWeight.SemiBold)
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val columnWidths = remember(header, rows, bodyStyle, headerStyle, density) {
+        List(columnCount) { columnIndex ->
+            val headerWidth = textMeasurer.measure(
+                text = AnnotatedString(header[columnIndex]),
+                style = headerStyle,
+                maxLines = 1,
+                softWrap = false,
+                constraints = Constraints()
+            ).size.width
+            val bodyWidth = rows.maxOfOrNull { row ->
+                textMeasurer.measure(
+                    text = AnnotatedString(row[columnIndex]),
+                    style = bodyStyle,
+                    maxLines = 1,
+                    softWrap = false,
+                    constraints = Constraints()
+                ).size.width
+            } ?: 0
+            with(density) {
+                (maxOf(headerWidth, bodyWidth).toDp() + 20.dp).coerceIn(116.dp, 280.dp)
+            }
+        }
+    }
     val surfaceModifier = if (enableTextSelection) {
         Modifier
     } else {
@@ -143,8 +183,7 @@ private fun MarkdownTable(
             onLongClick = { link?.let(onLinkLongPress) ?: onLongPress() }
         )
     }
-    // 表格使用独立视口：外层固定屏幕宽度，内部按列内容测量后横向滚动。
-    // 避免 Surface 先被压到屏幕宽度，导致后续列溢出且无法拖动查看。
+    // 外层是固定的屏幕视口；内部各行共享同一组列宽，因此可对齐并可横向查看。
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -156,10 +195,10 @@ private fun MarkdownTable(
             shape = MaterialTheme.shapes.medium
         ) {
             Column {
-                MarkdownTableRow(table.header, header = true)
-                table.rows.forEach { row ->
+                MarkdownTableRow(header, columnWidths, header = true)
+                rows.forEach { row ->
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
-                    MarkdownTableRow(row, header = false)
+                    MarkdownTableRow(row, columnWidths, header = false)
                 }
             }
         }
@@ -167,14 +206,14 @@ private fun MarkdownTable(
 }
 
 @Composable
-private fun MarkdownTableRow(cells: List<String>, header: Boolean) {
+private fun MarkdownTableRow(cells: List<String>, columnWidths: List<androidx.compose.ui.unit.Dp>, header: Boolean) {
     val linkColor = MaterialTheme.colorScheme.primary
     val codeBackground = MaterialTheme.colorScheme.surfaceVariant
     Row(verticalAlignment = Alignment.Top) {
-        cells.forEach { cell ->
+        cells.forEachIndexed { index, cell ->
             Text(
                 text = markdownInline(cell, linkColor, codeBackground),
-                modifier = Modifier.widthIn(min = 104.dp, max = 240.dp).padding(horizontal = 10.dp, vertical = 9.dp),
+                modifier = Modifier.width(columnWidths[index]).padding(horizontal = 10.dp, vertical = 9.dp),
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = if (header) FontWeight.SemiBold else FontWeight.Normal,
                 color = if (header) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
