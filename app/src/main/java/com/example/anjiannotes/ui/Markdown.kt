@@ -192,6 +192,11 @@ private fun MarkdownLine(
     val linkColor = MaterialTheme.colorScheme.primary
     val codeBackground = MaterialTheme.colorScheme.surfaceVariant
     var textLayout by remember(line) { mutableStateOf<TextLayoutResult?>(null) }
+    val textLayoutCallback: (TextLayoutResult) -> Unit = if (enableTextSelection) {
+        {}
+    } else {
+        { layout -> textLayout = layout }
+    }
     val lineModifier = if (enableTextSelection) {
         Modifier
     } else {
@@ -207,25 +212,25 @@ private fun MarkdownLine(
         }
     }
     when {
-        line.startsWith("### ") -> MarkdownLineText(markdownInline(line.removePrefix("### "), linkColor, codeBackground), MaterialTheme.typography.titleMedium, lineModifier, FontWeight.Bold, onTextLayout = { textLayout = it })
-        line.startsWith("## ") -> MarkdownLineText(markdownInline(line.removePrefix("## "), linkColor, codeBackground), MaterialTheme.typography.titleLarge, lineModifier, FontWeight.Bold, onTextLayout = { textLayout = it })
-        line.startsWith("# ") -> MarkdownLineText(markdownInline(line.removePrefix("# "), linkColor, codeBackground), MaterialTheme.typography.headlineSmall, lineModifier, FontWeight.Bold, onTextLayout = { textLayout = it })
+        line.startsWith("### ") -> MarkdownLineText(markdownInline(line.removePrefix("### "), linkColor, codeBackground), MaterialTheme.typography.titleMedium, lineModifier, FontWeight.Bold, onTextLayout = textLayoutCallback)
+        line.startsWith("## ") -> MarkdownLineText(markdownInline(line.removePrefix("## "), linkColor, codeBackground), MaterialTheme.typography.titleLarge, lineModifier, FontWeight.Bold, onTextLayout = textLayoutCallback)
+        line.startsWith("# ") -> MarkdownLineText(markdownInline(line.removePrefix("# "), linkColor, codeBackground), MaterialTheme.typography.headlineSmall, lineModifier, FontWeight.Bold, onTextLayout = textLayoutCallback)
         line.trim() == "---" || line.trim() == "***" -> Spacer(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
         line.startsWith("> ") -> Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium) {
-            MarkdownLineText(markdownInline(line.removePrefix("> "), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier.padding(horizontal = 12.dp, vertical = 9.dp), onTextLayout = { textLayout = it })
+            MarkdownLineText(markdownInline(line.removePrefix("> "), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier.padding(horizontal = 12.dp, vertical = 9.dp), onTextLayout = textLayoutCallback)
         }
         line.matches(Regex("^[-+*]\\s+.*")) -> Row(verticalAlignment = Alignment.Top) {
             Text("•", modifier = Modifier.padding(end = 8.dp), color = MaterialTheme.colorScheme.primary)
-            MarkdownLineText(markdownInline(line.replaceFirst(Regex("^[-+*]\\s+"), ""), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = { textLayout = it })
+            MarkdownLineText(markdownInline(line.replaceFirst(Regex("^[-+*]\\s+"), ""), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = textLayoutCallback)
         }
         line.matches(Regex("^\\d+\\.\\s+.*")) -> {
             val prefix = line.substringBefore(' ')
             Row(verticalAlignment = Alignment.Top) {
                 Text(prefix, modifier = Modifier.padding(end = 8.dp), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-                MarkdownLineText(markdownInline(line.removePrefix("$prefix "), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = { textLayout = it })
+                MarkdownLineText(markdownInline(line.removePrefix("$prefix "), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = textLayoutCallback)
             }
         }
-        else -> MarkdownLineText(markdownInline(line, linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = { textLayout = it })
+        else -> MarkdownLineText(markdownInline(line, linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = textLayoutCallback)
     }
 }
 
