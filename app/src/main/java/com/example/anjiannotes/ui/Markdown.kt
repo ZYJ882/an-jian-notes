@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
+import java.util.concurrent.atomic.AtomicReference
 
 private sealed interface MarkdownBlock {
     data class Line(val content: String, val startOffset: Int) : MarkdownBlock
@@ -175,7 +176,10 @@ private fun MarkdownTable(
         }
     }
     val surfaceModifier = if (enableTextSelection) {
-        Modifier
+        Modifier.nonConsumingTapGestures(
+            onTap = { link?.let(onLinkClick) ?: onClick() },
+            onDoubleTap = { onDoubleClickAt(table.startOffset) }
+        )
     } else {
         Modifier.combinedClickable(
             onClick = { link?.let(onLinkClick) ?: onClick() },
@@ -237,20 +241,23 @@ private fun MarkdownLine(
     val link = remember(line) { extractFirstLink(line) }
     val linkColor = MaterialTheme.colorScheme.primary
     val codeBackground = MaterialTheme.colorScheme.surfaceVariant
-    var textLayout by remember(line) { mutableStateOf<TextLayoutResult?>(null) }
-    val textLayoutCallback: (TextLayoutResult) -> Unit = if (enableTextSelection) {
-        {}
-    } else {
-        { layout -> textLayout = layout }
-    }
+    val textLayout = remember(line) { AtomicReference<TextLayoutResult?>(null) }
+    val textLayoutCallback: (TextLayoutResult) -> Unit = { layout -> textLayout.set(layout) }
     val lineModifier = if (enableTextSelection) {
-        Modifier
+        // 不消费长按与拖动，让父级 SelectionContainer 接管系统选择菜单和手柄。
+        Modifier.nonConsumingTapGestures(
+            onTap = { if (link != null) onLinkClick(link) else onClick() },
+            onDoubleTap = { position ->
+                val localOffset = textLayout.get()?.getOffsetForPosition(position) ?: 0
+                onDoubleClickAt((startOffset + localOffset).coerceIn(startOffset, startOffset + line.length))
+            }
+        )
     } else {
         Modifier.pointerInput(line) {
             detectTapGestures(
                 onTap = { if (link != null) onLinkClick(link) else onClick() },
                 onDoubleTap = { position ->
-                    val localOffset = textLayout?.getOffsetForPosition(position) ?: 0
+                    val localOffset = textLayout.get()?.getOffsetForPosition(position) ?: 0
                     onDoubleClickAt((startOffset + localOffset).coerceIn(startOffset, startOffset + line.length))
                 },
                 onLongPress = { link?.let(onLinkLongPress) ?: onLongPress() }
