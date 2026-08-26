@@ -4,6 +4,16 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Typeface
+import android.text.Editable
+import android.text.InputType
+import android.text.Layout
+import android.text.TextWatcher
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
+import android.widget.TextView
 import android.net.Uri
 import android.os.Bundle
 import android.os.Debug
@@ -25,9 +35,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.selection.LocalTextSelectionColors
-import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -80,7 +87,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.snapshotFlow
@@ -109,9 +115,11 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -1398,8 +1406,8 @@ private fun NoteDetailPage(
     var saveWorker by remember(note?.id, seed) { mutableStateOf<Job?>(null) }
     var debounceJob by remember(note?.id, seed) { mutableStateOf<Job?>(null) }
     val editorScope = rememberCoroutineScope()
-    val titleFocus = remember { FocusRequester() }
-    val contentFocus = remember { FocusRequester() }
+    var nativeTitleFocusRequest by remember(note?.id, seed) { mutableStateOf(-1) }
+    var nativeContentFocusRequest by remember(note?.id, seed) { mutableStateOf(-1) }
     val keyboard = LocalSoftwareKeyboardController.current
     val markdownActive = formatMode.resolvesToMarkdown(content)
     val folderName = folders.firstOrNull { it.id == selectedFolderId }?.name ?: "默认收藏夹"
@@ -1409,13 +1417,13 @@ private fun NoteDetailPage(
     LaunchedEffect(detailMode, focusTarget) {
         if (detailMode == DetailMode.EDIT) {
             when (focusTarget) {
-                InlineEditTarget.TITLE -> titleFocus.requestFocus()
+                InlineEditTarget.TITLE -> nativeTitleFocusRequest += 1
                 InlineEditTarget.CONTENT -> {
                     requestedContentCursor?.let { position ->
                         contentValue = contentValue.copy(selection = TextRange(position.coerceIn(0, contentValue.text.length)))
                         requestedContentCursor = null
                     }
-                    contentFocus.requestFocus()
+                    nativeContentFocusRequest += 1
                 }
             }
             pendingScrollRestore?.let { scrollPosition ->
@@ -1589,13 +1597,7 @@ private fun NoteDetailPage(
     // BackHandler 通过 AndroidX 回调覆盖物理返回键、三键导航及系统返回手势。
     BackHandler(enabled = true) { latestFinishEditing() }
 
-    CompositionLocalProvider(
-        LocalTextSelectionColors provides TextSelectionColors(
-            handleColor = MaterialTheme.colorScheme.primary,
-            backgroundColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.36f)
-        )
-    ) {
-        Scaffold(
+    Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
@@ -1626,23 +1628,23 @@ private fun NoteDetailPage(
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
             Box(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
                 Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(end = 12.dp)
-                        .verticalScroll(detailScrollState),
+                    modifier = if (detailMode == DetailMode.EDIT) {
+                        Modifier.fillMaxSize().padding(end = 12.dp)
+                    } else {
+                        Modifier.fillMaxSize().padding(end = 12.dp).verticalScroll(detailScrollState)
+                    },
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
             if (detailMode == DetailMode.EDIT) {
-                BasicTextField(
+                NativeNoteTitleEditor(
                     value = title,
+                    focusRequest = nativeTitleFocusRequest,
+                    modifier = Modifier.fillMaxWidth(),
+                    textColor = MaterialTheme.colorScheme.onBackground,
                     onValueChange = {
                         title = it
                         markEdited(titleOverride = it)
-                    },
-                    modifier = Modifier.fillMaxWidth().focusRequester(titleFocus),
-                    textStyle = MaterialTheme.typography.titleLarge.copy(color = MaterialTheme.colorScheme.onBackground),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                    singleLine = true
+                    }
                 )
             } else {
                 Text(
@@ -1707,54 +1709,41 @@ private fun NoteDetailPage(
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.38f))
             if (detailMode == DetailMode.EDIT) {
                 if (markdownActive) MarkdownSyntaxHint()
-                BasicTextField(
+                NativeNoteEditor(
                     value = contentValue,
+                    focusRequest = nativeContentFocusRequest,
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    textColor = MaterialTheme.colorScheme.onBackground,
                     onValueChange = { value ->
                         contentValue = value
                         markEdited(contentOverride = value.text)
-                    },
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp).focusRequester(contentFocus),
-                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onBackground),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                    minLines = 6
+                    }
                 )
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     if (note != null) TextButton(onClick = { onDelete(note) }) { Text("删除", color = MaterialTheme.colorScheme.error) } else Spacer(Modifier.width(1.dp))
                     TextButton(onClick = { pinned = !pinned; markEdited() }) { Text(if (pinned) "取消星标" else "加入星标") }
                 }
-            } else if (markdownActive) {
-                SelectionContainer {
-                    MarkdownPreview(
-                        content,
-                        modifier = Modifier.fillMaxWidth(),
-                        enableTextSelection = true
-                    )
-                }
             } else {
-                val linkColor = MaterialTheme.colorScheme.primary
-                val previewText = remember(content, linkColor) {
-                    linkifyPlainText(content.ifBlank { "空白笔记" }, linkColor)
-                }
-                SelectionContainer {
-                    Text(
-                        text = previewText,
-                        style = MaterialTheme.typography.bodyLarge,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
+                NativeSelectableNotePreview(
+                    text = content,
+                    isMarkdown = markdownActive,
+                    modifier = Modifier.fillMaxWidth(),
+                    textColor = MaterialTheme.colorScheme.onBackground
+                )
             }
             Spacer(Modifier.height(48.dp))
                 }
-                DraggableDetailScrollbar(
-                    scrollState = detailScrollState,
-                    thumbColor = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .fillMaxHeight()
-                )
+                if (detailMode == DetailMode.PREVIEW) {
+                    DraggableDetailScrollbar(
+                        scrollState = detailScrollState,
+                        thumbColor = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .fillMaxHeight()
+                    )
+                }
             }
         }
-    }
     }
     if (showFolderPicker) {
         FolderPickerDialog(
@@ -1768,6 +1757,148 @@ private fun NoteDetailPage(
             }
         )
     }
+}
+
+@Composable
+private fun NativeSelectableNotePreview(
+    text: String,
+    isMarkdown: Boolean,
+    modifier: Modifier = Modifier,
+    textColor: Color
+) {
+    val displayText = remember(text, isMarkdown) {
+        if (isMarkdown) markdownToPlainText(text) else text
+    }.ifBlank { "空白笔记" }
+    AndroidView(
+        modifier = modifier,
+        factory = { viewContext ->
+            TextView(viewContext).apply {
+                setTextIsSelectable(true)
+                isFocusable = true
+                isFocusableInTouchMode = true
+                isLongClickable = true
+                background = null
+                setPadding(0, 0, 0, 0)
+                includeFontPadding = false
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+                breakStrategy = Layout.BREAK_STRATEGY_HIGH_QUALITY
+                hyphenationFrequency = Layout.HYPHENATION_FREQUENCY_NORMAL
+            }
+        },
+        update = { view ->
+            if (view.text.toString() != displayText) view.text = displayText
+            view.setTextColor(textColor.toArgb())
+        }
+    )
+}
+
+@Composable
+private fun NativeNoteTitleEditor(
+    value: String,
+    focusRequest: Int,
+    modifier: Modifier = Modifier,
+    textColor: Color,
+    onValueChange: (String) -> Unit
+) {
+    val latestValue by rememberUpdatedState(value)
+    val latestOnValueChange by rememberUpdatedState(onValueChange)
+    AndroidView(
+        modifier = modifier,
+        factory = { viewContext ->
+            EditText(viewContext).apply {
+                background = null
+                setPadding(0, 0, 0, 0)
+                includeFontPadding = false
+                gravity = Gravity.CENTER_VERTICAL or Gravity.START
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+                setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD))
+                isSingleLine = true
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                addTextChangedListener(object : TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                        val changed = s?.toString().orEmpty()
+                        if (changed != latestValue) latestOnValueChange(changed)
+                    }
+                    override fun afterTextChanged(s: Editable?) = Unit
+                })
+            }
+        },
+        update = { view ->
+            if (view.text.toString() != value) {
+                view.setText(value)
+                view.setSelection(value.length)
+            }
+            view.setTextColor(textColor.toArgb())
+            val lastRequest = view.getTag() as? Int ?: -1
+            if (focusRequest >= 0 && focusRequest != lastRequest) {
+                view.setTag(focusRequest)
+                view.requestFocus()
+                view.post {
+                    (view.context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
+                        ?.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
+                }
+            }
+        }
+    )
+}
+
+@Composable
+private fun NativeNoteEditor(
+    value: TextFieldValue,
+    focusRequest: Int,
+    modifier: Modifier = Modifier,
+    textColor: Color,
+    onValueChange: (TextFieldValue) -> Unit
+) {
+    val latestValue by rememberUpdatedState(value)
+    val latestOnValueChange by rememberUpdatedState(onValueChange)
+    AndroidView(
+        modifier = modifier,
+        factory = { viewContext ->
+            EditText(viewContext).apply {
+                background = null
+                setPadding(0, 0, 0, 0)
+                includeFontPadding = false
+                gravity = Gravity.TOP or Gravity.START
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+                minLines = 6
+                maxLines = Int.MAX_VALUE
+                isSingleLine = false
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                addTextChangedListener(object : TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                        val changed = s?.toString().orEmpty()
+                        if (changed != latestValue.text) {
+                            val selectionStart = selectionStart.coerceIn(0, changed.length)
+                            val selectionEnd = selectionEnd.coerceIn(0, changed.length)
+                            latestOnValueChange(TextFieldValue(changed, TextRange(selectionStart, selectionEnd)))
+                        }
+                    }
+                    override fun afterTextChanged(s: Editable?) = Unit
+                })
+            }
+        },
+        update = { view ->
+            if (view.text.toString() != value.text) view.setText(value.text)
+            view.setTextColor(textColor.toArgb())
+            val lastRequest = view.getTag() as? Int ?: -1
+            if (focusRequest >= 0 && focusRequest != lastRequest) {
+                view.setTag(focusRequest)
+                view.requestFocus()
+                val start = value.selection.start.coerceIn(0, view.length())
+                val end = value.selection.end.coerceIn(0, view.length())
+                view.setSelection(start, end)
+                view.post {
+                    (view.context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
+                        ?.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
+                }
+            }
+        }
+    )
 }
 
 @Composable
