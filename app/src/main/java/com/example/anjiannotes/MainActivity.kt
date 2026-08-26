@@ -26,6 +26,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.LocalTextSelectionColors
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -135,7 +136,9 @@ import com.example.anjiannotes.ui.extractFirstLink
 import com.example.anjiannotes.ui.extractLinkAt
 import com.example.anjiannotes.ui.formatForFileName
 import com.example.anjiannotes.ui.linkifyPlainText
+import com.example.anjiannotes.ui.markdownToListPreview
 import com.example.anjiannotes.ui.markdownToPlainText
+import com.example.anjiannotes.ui.plainTextToListPreview
 import com.example.anjiannotes.ui.readTextImport
 import com.example.anjiannotes.ui.theme.AnJianTheme
 import com.example.anjiannotes.ui.theme.AppearanceMode
@@ -1354,8 +1357,6 @@ private fun NoteDetailPage(
     var pinned by remember(note?.id) { mutableStateOf(note?.isPinned ?: false) }
     var selectedFolderId by remember(note?.id, initialFolderId) { mutableStateOf(note?.folderId ?: initialFolderId) }
     var showFolderPicker by remember { mutableStateOf(false) }
-    var showPreviewCopyMenu by remember(note?.id, seed) { mutableStateOf(false) }
-    var previewMenuLink by remember(note?.id, seed) { mutableStateOf<String?>(null) }
     var formatMode by remember(note?.id, seed) {
         mutableStateOf(
             if (note != null) {
@@ -1571,19 +1572,6 @@ private fun NoteDetailPage(
         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }
     }
 
-    fun showPreviewActions(link: String? = null) {
-        previewMenuLink = link
-        showPreviewCopyMenu = true
-    }
-
-    fun copyPreviewContent() {
-        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val textToCopy = if (markdownActive) markdownToPlainText(content) else content
-        clipboard.setPrimaryClip(ClipData.newPlainText(title.ifBlank { "笔记" }, textToCopy))
-        showPreviewCopyMenu = false
-        previewMenuLink = null
-    }
-
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -1735,46 +1723,25 @@ private fun NoteDetailPage(
                     TextButton(onClick = { pinned = !pinned; markEdited() }) { Text(if (pinned) "取消星标" else "加入星标") }
                 }
             } else if (markdownActive) {
-                MarkdownPreview(
-                    content,
-                    modifier = Modifier.fillMaxWidth(),
-                    onLinkLongPress = { link -> showPreviewActions(link) },
-                    onLinkClick = ::openPreviewLink,
-                    onDoubleClickAt = { position -> enterEdit(InlineEditTarget.CONTENT, position) },
-                    onLongPress = { showPreviewActions() },
-                    onClick = {}
-                )
+                SelectionContainer {
+                    MarkdownPreview(
+                        content,
+                        modifier = Modifier.fillMaxWidth(),
+                        enableTextSelection = true
+                    )
+                }
             } else {
-                var plainTextLayout by remember(content) { mutableStateOf<TextLayoutResult?>(null) }
                 val linkColor = MaterialTheme.colorScheme.primary
                 val previewText = remember(content, linkColor) {
                     linkifyPlainText(content.ifBlank { "空白笔记" }, linkColor)
                 }
-                Text(
-                    text = previewText,
-                    style = MaterialTheme.typography.bodyLarge,
-                    onTextLayout = { plainTextLayout = it },
-                    modifier = Modifier.fillMaxWidth().pointerInput(content) {
-                        detectTapGestures(
-                            onTap = { offset ->
-                                plainTextLayout?.let { layout ->
-                                    extractLinkAt(content, layout.getOffsetForPosition(offset))?.let(::openPreviewLink)
-                                }
-                            },
-                            onDoubleTap = { offset ->
-                                plainTextLayout?.let { layout ->
-                                    enterEdit(InlineEditTarget.CONTENT, layout.getOffsetForPosition(offset))
-                                }
-                            },
-                            onLongPress = { offset ->
-                                val link = plainTextLayout?.let { layout ->
-                                    extractLinkAt(content, layout.getOffsetForPosition(offset))
-                                }
-                                showPreviewActions(link)
-                            }
-                        )
-                    }
-                )
+                SelectionContainer {
+                    Text(
+                        text = previewText,
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
             Spacer(Modifier.height(48.dp))
                 }
@@ -1785,38 +1752,6 @@ private fun NoteDetailPage(
                         .align(Alignment.CenterEnd)
                         .fillMaxHeight()
                 )
-                if (showPreviewCopyMenu && detailMode == DetailMode.PREVIEW) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(top = 8.dp)
-                            .width(1.dp)
-                            .height(1.dp)
-                    ) {
-                        DropdownMenu(
-                            expanded = true,
-                            onDismissRequest = {
-                                showPreviewCopyMenu = false
-                                previewMenuLink = null
-                            }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("复制正文") },
-                                onClick = ::copyPreviewContent
-                            )
-                            previewMenuLink?.let { link ->
-                                DropdownMenuItem(
-                                    text = { Text("打开链接") },
-                                    onClick = {
-                                        openPreviewLink(link)
-                                        showPreviewCopyMenu = false
-                                        previewMenuLink = null
-                                    }
-                                )
-                            }
-                        }
-                    }
-                }
             }
         }
     }
@@ -2123,7 +2058,7 @@ private fun NoteCard(
 ) {
     val summary = remember(note.id, note.content, note.isMarkdown) {
         val startNanos = if (BuildConfig.DEBUG) SystemClock.elapsedRealtimeNanos() else 0L
-        val value = if (note.isMarkdown) markdownToPlainText(note.content) else note.content
+        val value = if (note.isMarkdown) markdownToListPreview(note.content) else plainTextToListPreview(note.content)
         if (BuildConfig.DEBUG) diagnostics?.summaryBuilt(SystemClock.elapsedRealtimeNanos() - startNanos)
         value
     }

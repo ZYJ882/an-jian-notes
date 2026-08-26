@@ -46,6 +46,7 @@ private sealed interface MarkdownBlock {
 fun MarkdownPreview(
     markdown: String,
     modifier: Modifier = Modifier,
+    enableTextSelection: Boolean = false,
     onLinkLongPress: (String) -> Unit = {},
     onLinkClick: (String) -> Unit = {},
     onDoubleClickAt: (Int) -> Unit = {},
@@ -65,8 +66,8 @@ fun MarkdownPreview(
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(7.dp)) {
         blocks.forEach { block ->
             when (block) {
-                is MarkdownBlock.Line -> MarkdownLine(block.content, block.startOffset, onLinkLongPress, onLinkClick, onDoubleClickAt, onLongPress, onClick)
-                is MarkdownBlock.Table -> MarkdownTable(block, onLinkLongPress, onLinkClick, onDoubleClickAt, onLongPress, onClick)
+                is MarkdownBlock.Line -> MarkdownLine(block.content, block.startOffset, enableTextSelection, onLinkLongPress, onLinkClick, onDoubleClickAt, onLongPress, onClick)
+                is MarkdownBlock.Table -> MarkdownTable(block, enableTextSelection, onLinkLongPress, onLinkClick, onDoubleClickAt, onLongPress, onClick)
             }
         }
     }
@@ -119,6 +120,7 @@ private fun parseTableRow(line: String): List<String> = line
 @Composable
 private fun MarkdownTable(
     table: MarkdownBlock.Table,
+    enableTextSelection: Boolean,
     onLinkLongPress: (String) -> Unit,
     onLinkClick: (String) -> Unit,
     onDoubleClickAt: (Int) -> Unit,
@@ -130,14 +132,18 @@ private fun MarkdownTable(
         table.rows.forEach { append('\n').append(it.joinToString(" | ")) }
     }
     val link = remember(blockText) { extractFirstLink(blockText) }
-    val modifier = Modifier
-        .fillMaxWidth()
-        .horizontalScroll(rememberScrollState())
-        .combinedClickable(
-            onClick = { link?.let(onLinkClick) ?: onClick() },
-            onDoubleClick = { onDoubleClickAt(table.startOffset) },
-            onLongClick = { link?.let(onLinkLongPress) ?: onLongPress() }
-        )
+    val modifier = if (enableTextSelection) {
+        Modifier.fillMaxWidth()
+    } else {
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .combinedClickable(
+                onClick = { link?.let(onLinkClick) ?: onClick() },
+                onDoubleClick = { onDoubleClickAt(table.startOffset) },
+                onLongClick = { link?.let(onLinkLongPress) ?: onLongPress() }
+            )
+    }
     Surface(
         modifier = modifier,
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
@@ -175,6 +181,7 @@ private fun MarkdownTableRow(cells: List<String>, header: Boolean) {
 private fun MarkdownLine(
     line: String,
     startOffset: Int,
+    enableTextSelection: Boolean,
     onLinkLongPress: (String) -> Unit,
     onLinkClick: (String) -> Unit,
     onDoubleClickAt: (Int) -> Unit,
@@ -185,15 +192,19 @@ private fun MarkdownLine(
     val linkColor = MaterialTheme.colorScheme.primary
     val codeBackground = MaterialTheme.colorScheme.surfaceVariant
     var textLayout by remember(line) { mutableStateOf<TextLayoutResult?>(null) }
-    val lineModifier = Modifier.pointerInput(line) {
-        detectTapGestures(
-            onTap = { if (link != null) onLinkClick(link) else onClick() },
-            onDoubleTap = { position ->
-                val localOffset = textLayout?.getOffsetForPosition(position) ?: 0
-                onDoubleClickAt((startOffset + localOffset).coerceIn(startOffset, startOffset + line.length))
-            },
-            onLongPress = { link?.let(onLinkLongPress) ?: onLongPress() }
-        )
+    val lineModifier = if (enableTextSelection) {
+        Modifier
+    } else {
+        Modifier.pointerInput(line) {
+            detectTapGestures(
+                onTap = { if (link != null) onLinkClick(link) else onClick() },
+                onDoubleTap = { position ->
+                    val localOffset = textLayout?.getOffsetForPosition(position) ?: 0
+                    onDoubleClickAt((startOffset + localOffset).coerceIn(startOffset, startOffset + line.length))
+                },
+                onLongPress = { link?.let(onLinkLongPress) ?: onLongPress() }
+            )
+        }
     }
     when {
         line.startsWith("### ") -> MarkdownLineText(markdownInline(line.removePrefix("### "), linkColor, codeBackground), MaterialTheme.typography.titleMedium, lineModifier, FontWeight.Bold, onTextLayout = { textLayout = it })
@@ -325,6 +336,41 @@ fun markdownToPlainText(markdown: String): String = markdown
     }
     .replace(Regex("\\s+"), " ")
     .trim()
+
+/*
+ * 主页列表只展示两行摘要：限制输入并复用预编译规则，避免新卡片进入可视区时
+ * 对整篇 Markdown 做全文解析。详情页的 Markdown 编辑与预览路径不使用此函数。
+ */
+private const val ListPreviewSourceLimit = 640
+private const val ListPreviewOutputLimit = 360
+private val ListPreviewLinePrefixPattern = Regex("^\\s{0,3}(?:#{1,6}|>|[-+*]|\\d+\\.)\\s+")
+private val ListPreviewStrongPattern = Regex("\\*\\*(.*?)\\*\\*")
+private val ListPreviewStrikePattern = Regex("~~(.*?)~~")
+private val ListPreviewCodePattern = Regex("`(.*?)`")
+private val ListPreviewEmphasisPattern = Regex("\\*(.*?)\\*")
+private val ListPreviewWhitespacePattern = Regex("\\s+")
+
+fun markdownToListPreview(markdown: String): String = buildListPreview(markdown) { line ->
+    line.replace(ListPreviewLinePrefixPattern, "")
+        .replace(MarkdownLinkPattern, "${'$'}1")
+        .replace(ListPreviewStrongPattern, "${'$'}1")
+        .replace(ListPreviewStrikePattern, "${'$'}1")
+        .replace(ListPreviewCodePattern, "${'$'}1")
+        .replace(ListPreviewEmphasisPattern, "${'$'}1")
+}
+
+fun plainTextToListPreview(text: String): String = buildListPreview(text) { it }
+
+private fun buildListPreview(text: String, lineTransform: (String) -> String): String {
+    if (text.isEmpty()) return ""
+    return text
+        .take(ListPreviewSourceLimit)
+        .lineSequence()
+        .joinToString(" ") { lineTransform(it) }
+        .replace(ListPreviewWhitespacePattern, " ")
+        .trim()
+        .take(ListPreviewOutputLimit)
+}
 
 @Composable
 fun MarkdownSyntaxHint(modifier: Modifier = Modifier) {
