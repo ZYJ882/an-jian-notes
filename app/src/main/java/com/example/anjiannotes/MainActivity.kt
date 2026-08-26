@@ -33,7 +33,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -145,7 +144,6 @@ import com.example.anjiannotes.ui.formatForFileName
 import com.example.anjiannotes.ui.linkifyPlainText
 import com.example.anjiannotes.ui.markdownToListPreview
 import com.example.anjiannotes.ui.markdownToPlainText
-import com.example.anjiannotes.ui.nonConsumingTapGestures
 import com.example.anjiannotes.ui.plainTextToListPreview
 import com.example.anjiannotes.ui.readTextImport
 import com.example.anjiannotes.ui.theme.AnJianTheme
@@ -153,7 +151,6 @@ import com.example.anjiannotes.ui.theme.AppearanceMode
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
@@ -1739,42 +1736,37 @@ private fun NoteDetailPage(
                     TextButton(onClick = { pinned = !pinned; markEdited() }) { Text(if (pinned) "取消星标" else "加入星标") }
                 }
             } else if (markdownActive) {
-                // 系统 SelectionContainer 负责长按、选择手柄与上下文菜单；
-                // MarkdownPreview 在选择模式下只保留不消费事件的短按与双击识别。
-                SelectionContainer {
-                    MarkdownPreview(
-                        content,
-                        modifier = Modifier.fillMaxWidth(),
-                        enableTextSelection = true,
-                        onLinkClick = ::openPreviewLink,
-                        onDoubleClickAt = { position -> enterEdit(InlineEditTarget.CONTENT, position) }
-                    )
-                }
+                MarkdownPreview(
+                    content,
+                    modifier = Modifier.fillMaxWidth(),
+                    onLinkClick = ::openPreviewLink,
+                    onDoubleClickAt = { position -> enterEdit(InlineEditTarget.CONTENT, position) }
+                )
             } else {
-                val plainTextLayout = remember(content) { AtomicReference<TextLayoutResult?>(null) }
+                var plainTextLayout by remember(content) { mutableStateOf<TextLayoutResult?>(null) }
                 val linkColor = MaterialTheme.colorScheme.primary
                 val previewText = remember(content, linkColor) {
                     linkifyPlainText(content.ifBlank { "空白笔记" }, linkColor)
                 }
-                SelectionContainer {
-                    Text(
-                        text = previewText,
-                        style = MaterialTheme.typography.bodyLarge,
-                        onTextLayout = { plainTextLayout.set(it) },
-                        modifier = Modifier.fillMaxWidth().nonConsumingTapGestures(
+                Text(
+                    text = previewText,
+                    style = MaterialTheme.typography.bodyLarge,
+                    onTextLayout = { plainTextLayout = it },
+                    modifier = Modifier.fillMaxWidth().pointerInput(content) {
+                        detectTapGestures(
                             onTap = { offset ->
-                                plainTextLayout.get()?.let { layout ->
+                                plainTextLayout?.let { layout ->
                                     extractLinkAt(content, layout.getOffsetForPosition(offset))?.let(::openPreviewLink)
                                 }
                             },
                             onDoubleTap = { offset ->
-                                plainTextLayout.get()?.let { layout ->
+                                plainTextLayout?.let { layout ->
                                     enterEdit(InlineEditTarget.CONTENT, layout.getOffsetForPosition(offset))
                                 }
                             }
                         )
-                    )
-                }
+                    }
+                )
             }
             Spacer(Modifier.height(48.dp))
                 }
