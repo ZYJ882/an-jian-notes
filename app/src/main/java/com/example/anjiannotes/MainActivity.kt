@@ -418,8 +418,13 @@ private fun NotesApp(
             seed = currentPage.seed,
             initialFolderId = currentPage.folderId,
             folders = folders.filterNot { it.id == STARRED_FOLDER_ID },
-            onBack = { returnedFolderId ->
-                if (activeFolderId == STARRED_FOLDER_ID && returnedFolderId != STARRED_FOLDER_ID) {
+            onBack = { returnedFolderId, returnedNoteId ->
+                if (currentPage.note == null && returnedNoteId > 0L) {
+                    // “已保存”仅会在 Room 写入完成后显示；返回时定位到新笔记所在收藏夹，
+                    // 并清除旧搜索条件，避免首个草稿因列表筛选而看似消失。
+                    if (activeFolderId != returnedFolderId) viewModel.selectFolder(returnedFolderId)
+                    if (query.isNotBlank()) viewModel.setSearchQuery("")
+                } else if (activeFolderId == STARRED_FOLDER_ID && returnedFolderId != STARRED_FOLDER_ID) {
                     viewModel.selectFolder(returnedFolderId)
                 }
                 page = AppPage.List
@@ -1355,7 +1360,7 @@ private fun NoteDetailPage(
     seed: EditorSeed,
     initialFolderId: Long,
     folders: List<FolderEntity>,
-    onBack: (Long) -> Unit,
+    onBack: (Long, Long) -> Unit,
     onSave: (Long, String, String, Long, Boolean, Boolean, Long, Long) -> Deferred<Long>,
     onDelete: (NoteEntity) -> Unit
 ) {
@@ -1562,7 +1567,7 @@ private fun NoteDetailPage(
             } else {
                 // 预览态再次返回时也会经过同一最终保存确认，再离开详情页。
                 editorLog("final save confirmed; leaving detail")
-                onBack(selectedFolderId)
+                onBack(selectedFolderId, savedNoteId)
             }
         }
     }
