@@ -21,6 +21,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -44,6 +45,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 private sealed interface MarkdownBlock {
     data class Line(val content: String, val startOffset: Int) : MarkdownBlock
+    data class Code(val content: String, val language: String, val startOffset: Int) : MarkdownBlock
     data class Table(val header: List<String>, val rows: List<List<String>>, val startOffset: Int) : MarkdownBlock
 }
 
@@ -68,11 +70,20 @@ fun MarkdownPreview(
         )
         return
     }
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(7.dp)) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         blocks.forEach { block ->
-            when (block) {
-                is MarkdownBlock.Line -> MarkdownLine(block.content, block.startOffset, enableTextSelection, onLinkLongPress, onLinkClick, onDoubleClickAt, onLongPress, onClick)
-                is MarkdownBlock.Table -> MarkdownTable(block, enableTextSelection, onLinkLongPress, onLinkClick, onDoubleClickAt, onLongPress, onClick)
+            key(
+                when (block) {
+                    is MarkdownBlock.Line -> block.startOffset
+                    is MarkdownBlock.Code -> block.startOffset
+                    is MarkdownBlock.Table -> block.startOffset
+                }
+            ) {
+                when (block) {
+                    is MarkdownBlock.Line -> MarkdownLine(block.content, block.startOffset, enableTextSelection, onLinkLongPress, onLinkClick, onDoubleClickAt, onLongPress, onClick)
+                    is MarkdownBlock.Code -> MarkdownCodeBlock(block, enableTextSelection, onLinkLongPress, onLinkClick, onDoubleClickAt, onLongPress, onClick)
+                    is MarkdownBlock.Table -> MarkdownTable(block, enableTextSelection, onLinkLongPress, onLinkClick, onDoubleClickAt, onLongPress, onClick)
+                }
             }
         }
     }
@@ -88,7 +99,23 @@ private fun parseMarkdownBlocks(markdown: String): List<MarkdownBlock> {
     while (index < lines.size) {
         val current = lines[index]
         val blockStart = offset
-        if (index + 1 < lines.size && isTableRow(current) && isTableSeparator(lines[index + 1])) {
+        if (current.startsWith("```") || current.startsWith("~~~")) {
+            val fence = current.take(3)
+            val language = current.drop(3).trim()
+            val codeLines = mutableListOf<String>()
+            offset += current.length + 1
+            index++
+            while (index < lines.size && !lines[index].startsWith(fence)) {
+                codeLines += lines[index]
+                offset += lines[index].length + 1
+                index++
+            }
+            if (index < lines.size) {
+                offset += lines[index].length + 1
+                index++
+            }
+            result += MarkdownBlock.Code(codeLines.joinToString("\n"), language, blockStart)
+        } else if (index + 1 < lines.size && isTableRow(current) && isTableSeparator(lines[index + 1])) {
             val header = parseTableRow(current)
             val rows = mutableListOf<List<String>>()
             offset += current.length + 1
@@ -122,6 +149,56 @@ private fun parseTableRow(line: String): List<String> = line
     .removeSuffix("|")
     .split('|')
     .map { it.trim() }
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MarkdownCodeBlock(
+    block: MarkdownBlock.Code,
+    enableTextSelection: Boolean,
+    onLinkLongPress: (String) -> Unit,
+    onLinkClick: (String) -> Unit,
+    onDoubleClickAt: (Int) -> Unit,
+    onLongPress: () -> Unit,
+    onClick: () -> Unit
+) {
+    val interactionModifier = if (enableTextSelection) {
+        Modifier.nonConsumingTapGestures(
+            onTap = { onClick() },
+            onDoubleTap = { onDoubleClickAt(block.startOffset) }
+        )
+    } else {
+        Modifier.combinedClickable(
+            onClick = onClick,
+            onDoubleClick = { onDoubleClickAt(block.startOffset) },
+            onLongClick = onLongPress
+        )
+    }
+    Surface(
+        modifier = interactionModifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+        shape = MaterialTheme.shapes.medium
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+            if (block.language.isNotBlank()) {
+                Text(
+                    text = block.language.uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(bottom = 7.dp)
+                )
+            }
+            Text(
+                text = block.content.ifEmpty { " " },
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                softWrap = false
+            )
+        }
+    }
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -373,7 +450,13 @@ private fun markdownInline(text: String, linkColor: Color, codeBackground: Color
             cursor = url.range.last + 1
             continue
         }
-        val marker = listOf("**", "~~", "`", "*").firstOrNull { text.startsWith(it, cursor) }
+        val marker = when {
+            text.startsWith("**", cursor) -> "**"
+            text.startsWith("~~", cursor) -> "~~"
+            text.startsWith("`", cursor) -> "`"
+            text.startsWith("*", cursor) -> "*"
+            else -> null
+        }
         if (marker == null) {
             append(text[cursor])
             cursor++

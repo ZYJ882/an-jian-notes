@@ -40,6 +40,19 @@ class MarkdownTest {
     }
 
     @Test
+    fun markdownPreview_keepsListItemsAfterFencedCodeBlock() {
+        val markdown = """
+            ```kotlin
+            val message = \"安笺\"
+            ```
+            1. 第一条
+            2. 第二条
+        """.trimIndent()
+
+        assertEquals(3, markdownPreviewBlockCount(markdown))
+    }
+
+    @Test
     fun extractFirstLink_recognizesOnlyTheTargetForLongPressConfirmation() {
         assertEquals("https://example.com/a", extractFirstLink("请访问 https://example.com/a 查看"))
         assertEquals("https://example.com/b", extractFirstLink("[帮助页面](https://example.com/b)"))
