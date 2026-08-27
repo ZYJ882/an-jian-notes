@@ -20,6 +20,7 @@ class MarkdownZipBackupCodecTest {
                     createdAt = 101,
                     updatedAt = 202,
                     isPinned = true,
+                    isTopPinned = true,
                     isMarkdown = true,
                     folderId = 7
                 )
@@ -34,6 +35,7 @@ class MarkdownZipBackupCodecTest {
         val markdown = MarkdownZipBackupCodec.encodeNote(snapshot.notes.single())
         assertTrue(markdown.startsWith("---\n"))
         assertTrue(markdown.contains("folderId: 7"))
+        assertTrue(markdown.contains("topPinned: true"))
         assertTrue(markdown.endsWith("- 保留最后换行\n"))
     }
 }

@@ -213,6 +213,7 @@ private data class NoteDraftSnapshot(
     val content: String,
     val color: Long,
     val isPinned: Boolean,
+    val isTopPinned: Boolean,
     val isMarkdown: Boolean,
     val folderId: Long
 )
@@ -442,6 +443,7 @@ private fun NotesApp(
             },
             onOpenNote = { note -> page = AppPage.Detail(note = note, folderId = note.folderId) },
             onToggleStar = viewModel::toggleStar,
+            onToggleTopPin = viewModel::toggleTopPin,
             onDeleteFolder = { folderToDelete = it },
             onBatchDelete = { ids ->
                 viewModel.deleteNotes(ids) { deletedCount ->
@@ -451,6 +453,11 @@ private fun NotesApp(
             onBatchStar = { ids ->
                 viewModel.starNotes(ids) { starredCount ->
                     feedbackMessage = "已加入星标 $starredCount 条笔记"
+                }
+            },
+            onBatchTopPin = { ids, topPinned ->
+                viewModel.setTopPinnedNotes(ids, topPinned) { changedCount ->
+                    feedbackMessage = if (topPinned) "已置顶 $changedCount 条笔记" else "已取消置顶 $changedCount 条笔记"
                 }
             }
         )
@@ -483,8 +490,8 @@ private fun NotesApp(
                 }
                 page = AppPage.List
             },
-            onSave = { id, title, content, color, pinned, markdown, folderId, createdAt ->
-                viewModel.queueSaveNote(id, title, content, color, pinned, markdown, folderId, createdAt)
+            onSave = { id, title, content, color, pinned, topPinned, markdown, folderId, createdAt ->
+                viewModel.queueSaveNote(id, title, content, color, pinned, topPinned, markdown, folderId, createdAt)
             },
             onDelete = { note -> noteToDelete = note }
         )
@@ -673,9 +680,11 @@ private fun NotesListPage(
     onImportClipboard: () -> Unit,
     onOpenNote: (NoteEntity) -> Unit,
     onToggleStar: (NoteEntity) -> Unit,
+    onToggleTopPin: (NoteEntity) -> Unit,
     onDeleteFolder: (FolderEntity) -> Unit,
     onBatchDelete: (Set<Long>) -> Unit,
-    onBatchStar: (Set<Long>) -> Unit
+    onBatchStar: (Set<Long>) -> Unit,
+    onBatchTopPin: (Set<Long>, Boolean) -> Unit
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -684,6 +693,8 @@ private fun NotesListPage(
     var selectedNoteIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var pendingBatchDeleteIds by remember { mutableStateOf<Set<Long>?>(null) }
     val selectionMode = selectedNoteIds.isNotEmpty()
+    val allSelectedNotesAreTopPinned = selectedNoteIds.isNotEmpty() &&
+        notes.filter { it.id in selectedNoteIds }.all { it.isTopPinned }
 
     fun toggleSelection(noteId: Long) {
         selectedNoteIds = if (noteId in selectedNoteIds) selectedNoteIds - noteId else selectedNoteIds + noteId
@@ -815,6 +826,11 @@ private fun NotesListPage(
                                 selectedNoteIds = emptySet()
                                 onBatchStar(ids)
                             }) { Text("星标") }
+                            TextButton(onClick = {
+                                val ids = selectedNoteIds
+                                selectedNoteIds = emptySet()
+                                onBatchTopPin(ids, !allSelectedNotesAreTopPinned)
+                            }) { Text(if (allSelectedNotesAreTopPinned) "取消置顶" else "置顶") }
                             TextButton(onClick = { pendingBatchDeleteIds = selectedNoteIds }) {
                                 Text("删除", color = MaterialTheme.colorScheme.error)
                             }
@@ -874,7 +890,8 @@ private fun NotesListPage(
                                         if (selectionMode) toggleSelection(note.id) else onOpenNote(note)
                                     },
                                     onLongPress = { toggleSelection(note.id) },
-                                    onToggleStar = { onToggleStar(note) }
+                                    onToggleStar = { onToggleStar(note) },
+                                    onToggleTopPin = { onToggleTopPin(note) }
                                 )
                             }
                             item { Spacer(Modifier.height(20.dp)) }
@@ -1387,7 +1404,7 @@ private fun NoteDetailPage(
     initialFolderId: Long,
     folders: List<FolderEntity>,
     onBack: (Long, Long) -> Unit,
-    onSave: (Long, String, String, Long, Boolean, Boolean, Long, Long) -> Deferred<Long>,
+    onSave: (Long, String, String, Long, Boolean, Boolean, Boolean, Long, Long) -> Deferred<Long>,
     onDelete: (NoteEntity) -> Unit
 ) {
     val context = LocalContext.current
@@ -1397,6 +1414,7 @@ private fun NoteDetailPage(
     val content = contentValue.text
     var color by remember(note?.id) { mutableStateOf(note?.color ?: NoteColors.first()) }
     var pinned by remember(note?.id) { mutableStateOf(note?.isPinned ?: false) }
+    var topPinned by remember(note?.id) { mutableStateOf(note?.isTopPinned ?: false) }
     var selectedFolderId by remember(note?.id, initialFolderId) { mutableStateOf(note?.folderId ?: initialFolderId) }
     var showFolderPicker by remember { mutableStateOf(false) }
     var formatMode by remember(note?.id, seed) {
@@ -1416,6 +1434,7 @@ private fun NoteDetailPage(
                 content = initialContent,
                 color = note?.color ?: NoteColors.first(),
                 isPinned = note?.isPinned ?: false,
+                isTopPinned = note?.isTopPinned ?: false,
                 isMarkdown = formatMode.resolvesToMarkdown(initialContent),
                 folderId = note?.folderId ?: initialFolderId
             )
@@ -1503,6 +1522,7 @@ private fun NoteDetailPage(
                         draftToSave.content,
                         draftToSave.color,
                         draftToSave.isPinned,
+                        draftToSave.isTopPinned,
                         draftToSave.isMarkdown,
                         draftToSave.folderId,
                         draftCreatedAt
@@ -1547,6 +1567,7 @@ private fun NoteDetailPage(
             content = contentOverride,
             color = color,
             isPinned = pinned,
+            isTopPinned = topPinned,
             isMarkdown = formatMode.resolvesToMarkdown(contentOverride),
             folderId = selectedFolderId
         )
@@ -1583,6 +1604,7 @@ private fun NoteDetailPage(
                 content = nativeContentEditor?.text?.toString() ?: contentValue.text,
                 color = color,
                 isPinned = pinned,
+                isTopPinned = topPinned,
                 isMarkdown = formatMode.resolvesToMarkdown(nativeContentEditor?.text?.toString() ?: contentValue.text),
                 folderId = selectedFolderId
             )
@@ -1772,6 +1794,13 @@ private fun NoteDetailPage(
                                 .padding(vertical = 4.dp)
                         )
                     }
+                    if (topPinned) {
+                        Text(
+                            text = " · 已置顶",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
                 Text(
                     formatDate(note?.updatedAt ?: System.currentTimeMillis()),
@@ -1798,7 +1827,10 @@ private fun NoteDetailPage(
                 )
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     if (note != null) TextButton(onClick = { onDelete(note) }) { Text("删除", color = MaterialTheme.colorScheme.error) } else Spacer(Modifier.width(1.dp))
-                    TextButton(onClick = { pinned = !pinned; markEdited() }) { Text(if (pinned) "取消星标" else "加入星标") }
+                    Row {
+                        TextButton(onClick = { topPinned = !topPinned; markEdited() }) { Text(if (topPinned) "取消置顶" else "置顶") }
+                        TextButton(onClick = { pinned = !pinned; markEdited() }) { Text(if (pinned) "取消星标" else "加入星标") }
+                    }
                 }
             } else if (markdownActive) {
                 MarkdownPreview(
@@ -2193,7 +2225,8 @@ private fun NoteCard(
     selectionMode: Boolean,
     onOpen: () -> Unit,
     onLongPress: () -> Unit,
-    onToggleStar: () -> Unit
+    onToggleStar: () -> Unit,
+    onToggleTopPin: () -> Unit
 ) {
     val summary = remember(note.id, note.updatedAt, note.isMarkdown) {
         NoteListPreviewCache.get(note)
@@ -2253,6 +2286,15 @@ private fun NoteCard(
                         modifier = Modifier.padding(6.dp)
                     )
                 } else {
+                    Text(
+                        if (note.isTopPinned) "已置顶" else "置顶",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (note.isTopPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                        modifier = Modifier
+                            .clip(MaterialTheme.shapes.small)
+                            .clickable(onClick = onToggleTopPin)
+                            .padding(horizontal = 6.dp, vertical = 7.dp)
+                    )
                     Text(
                         if (note.isPinned) "★" else "☆",
                         fontSize = 22.sp,

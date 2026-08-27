@@ -22,6 +22,7 @@ class BackupCodecTest {
                     createdAt = 1_700_000_000_000,
                     updatedAt = 1_700_000_001_000,
                     isPinned = true,
+                    isTopPinned = true,
                     isMarkdown = true,
                     folderId = 6
                 )
@@ -33,6 +34,7 @@ class BackupCodecTest {
         assertEquals(snapshot.folders, restored.folders)
         assertEquals(snapshot.notes, restored.notes)
         assertTrue(restored.notes.single().isPinned)
+        assertTrue(restored.notes.single().isTopPinned)
         assertFalse(restored.notes.single().content.isBlank())
     }
 

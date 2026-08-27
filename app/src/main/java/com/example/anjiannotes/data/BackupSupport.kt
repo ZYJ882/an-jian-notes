@@ -59,6 +59,7 @@ object BackupCodec {
                         put("createdAt", note.createdAt)
                         put("updatedAt", note.updatedAt)
                         put("isPinned", note.isPinned)
+                        put("isTopPinned", note.isTopPinned)
                         put("isMarkdown", note.isMarkdown)
                         put("folderId", note.folderId)
                     })
@@ -86,6 +87,7 @@ object BackupCodec {
                         createdAt = item.optLong("createdAt", System.currentTimeMillis()),
                         updatedAt = item.optLong("updatedAt", System.currentTimeMillis()),
                         isPinned = item.optBoolean("isPinned", false),
+                        isTopPinned = item.optBoolean("isTopPinned", false),
                         isMarkdown = item.optBoolean("isMarkdown", false),
                         folderId = item.optLong("folderId", DEFAULT_FOLDER_ID)
                     )
@@ -121,6 +123,7 @@ object PlainTextBackupCodec {
             appendLine("createdAt=${note.createdAt}")
             appendLine("updatedAt=${note.updatedAt}")
             appendLine("isPinned=${note.isPinned}")
+            appendLine("isTopPinned=${note.isTopPinned}")
             appendLine("isMarkdown=${note.isMarkdown}")
             appendLine("[[CONTENT]]")
             append(note.content)
@@ -179,6 +182,7 @@ object PlainTextBackupCodec {
                         createdAt = values.longOr("createdAt", System.currentTimeMillis()),
                         updatedAt = values.longOr("updatedAt", System.currentTimeMillis()),
                         isPinned = values["isPinned"].toBoolean(),
+                        isTopPinned = values["isTopPinned"].toBoolean(),
                         isMarkdown = values["isMarkdown"].toBoolean(),
                         folderId = values.longOr("folderId", DEFAULT_FOLDER_ID)
                     )
@@ -278,6 +282,7 @@ object MarkdownZipBackupCodec {
         appendLine("createdAt: ${note.createdAt}")
         appendLine("updatedAt: ${note.updatedAt}")
         appendLine("pinned: ${note.isPinned}")
+        appendLine("topPinned: ${note.isTopPinned}")
         appendLine("markdown: ${note.isMarkdown}")
         appendLine("folderId: ${note.folderId}")
         appendLine("color: ${note.color}")
@@ -311,6 +316,7 @@ object MarkdownZipBackupCodec {
             createdAt = values.longOr("createdAt", System.currentTimeMillis()),
             updatedAt = values.longOr("updatedAt", System.currentTimeMillis()),
             isPinned = values["pinned"].toBoolean(),
+            isTopPinned = values["topPinned"].toBoolean(),
             isMarkdown = values["markdown"].toBoolean(),
             folderId = values.longOr("folderId", DEFAULT_FOLDER_ID)
         )

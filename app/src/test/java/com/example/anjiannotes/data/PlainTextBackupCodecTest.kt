@@ -16,6 +16,7 @@ class PlainTextBackupCodecTest {
                     id = 7,
                     title = "会议记录",
                     content = "第一行\n第二行",
+                    isTopPinned = true,
                     isMarkdown = true,
                     folderId = 2
                 )
@@ -28,5 +29,6 @@ class PlainTextBackupCodecTest {
         assertEquals(snapshot.notes.single().title, restored.notes.single().title)
         assertEquals(snapshot.notes.single().content, restored.notes.single().content)
         assertEquals(snapshot.notes.single().folderId, restored.notes.single().folderId)
+        assertEquals(snapshot.notes.single().isTopPinned, restored.notes.single().isTopPinned)
     }
 }

@@ -205,6 +205,7 @@ class NotesViewModel(
         content: String,
         color: Long,
         pinned: Boolean,
+        topPinned: Boolean,
         markdown: Boolean,
         folderId: Long,
         createdAt: Long = System.currentTimeMillis()
@@ -217,6 +218,7 @@ class NotesViewModel(
             createdAt = createdAt,
             updatedAt = System.currentTimeMillis(),
             isPinned = pinned,
+            isTopPinned = topPinned,
             isMarkdown = markdown,
             folderId = folderId
         )
@@ -233,11 +235,12 @@ class NotesViewModel(
         content: String,
         color: Long,
         pinned: Boolean,
+        topPinned: Boolean,
         markdown: Boolean,
         folderId: Long,
         createdAt: Long = System.currentTimeMillis()
     ): Deferred<Long> = launchDeferred {
-        saveNote(id, title, content, color, pinned, markdown, folderId, createdAt)
+        saveNote(id, title, content, color, pinned, topPinned, markdown, folderId, createdAt)
     }
 
     fun toggleStar(note: NoteEntity) {
@@ -249,6 +252,16 @@ class NotesViewModel(
                 )
             )
         }
+    }
+
+    fun toggleTopPin(note: NoteEntity) {
+        viewModelScope.launch {
+            repository.save(note.copy(isTopPinned = !note.isTopPinned))
+        }
+    }
+
+    fun setTopPinnedNotes(ids: Collection<Long>, isTopPinned: Boolean, onComplete: (Int) -> Unit) {
+        runBulkNoteAction(ids, onComplete) { repository.setTopPinnedMany(it, isTopPinned) }
     }
 
     fun deleteFolder(

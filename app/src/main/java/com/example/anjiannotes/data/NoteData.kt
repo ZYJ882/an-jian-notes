@@ -48,6 +48,7 @@ data class NoteEntity(
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
     val isPinned: Boolean = false,
+    val isTopPinned: Boolean = false,
     val isMarkdown: Boolean = false,
     val folderId: Long = DEFAULT_FOLDER_ID
 )
@@ -64,7 +65,7 @@ interface NoteDao {
           AND (:query = ''
             OR title LIKE '%' || :query || '%'
             OR content LIKE '%' || :query || '%')
-        ORDER BY isPinned DESC, updatedAt DESC
+        ORDER BY isTopPinned DESC, updatedAt DESC
         """
     )
     fun observeNotes(query: String, folderId: Long, showStarred: Boolean): Flow<List<NoteEntity>>
@@ -80,6 +81,9 @@ interface NoteDao {
 
     @Query("UPDATE notes SET isPinned = 1, updatedAt = :updatedAt WHERE id IN (:ids)")
     suspend fun starByIds(ids: List<Long>, updatedAt: Long = System.currentTimeMillis()): Int
+
+    @Query("UPDATE notes SET isTopPinned = :isTopPinned WHERE id IN (:ids)")
+    suspend fun setTopPinnedByIds(ids: List<Long>, isTopPinned: Boolean): Int
 
     @Query("DELETE FROM notes WHERE folderId = :folderId")
     suspend fun deleteByFolderId(folderId: Long): Int
@@ -118,7 +122,7 @@ interface FolderDao {
     suspend fun deleteById(id: Long)
 }
 
-@Database(entities = [NoteEntity::class, FolderEntity::class], version = 4, exportSchema = false)
+@Database(entities = [NoteEntity::class, FolderEntity::class], version = 5, exportSchema = false)
 abstract class NotesDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao
     abstract fun folderDao(): FolderDao
@@ -144,6 +148,12 @@ abstract class NotesDatabase : RoomDatabase() {
                 db.execSQL("INSERT INTO notes_clean (id, title, content, color, createdAt, updatedAt, isPinned, isMarkdown, folderId) SELECT id, title, content, color, createdAt, updatedAt, isPinned, isMarkdown, folderId FROM notes")
                 db.execSQL("DROP TABLE notes")
                 db.execSQL("ALTER TABLE notes_clean RENAME TO notes")
+            }
+        }
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE notes ADD COLUMN isTopPinned INTEGER NOT NULL DEFAULT 0")
             }
         }
     }
@@ -222,4 +232,7 @@ class NotesRepository(
     suspend fun deleteMany(ids: Collection<Long>): Int = applyToDistinctNoteIds(ids, noteDao::deleteByIds)
 
     suspend fun starMany(ids: Collection<Long>): Int = applyToDistinctNoteIds(ids, noteDao::starByIds)
+
+    suspend fun setTopPinnedMany(ids: Collection<Long>, isTopPinned: Boolean): Int =
+        applyToDistinctNoteIds(ids) { noteDao.setTopPinnedByIds(it, isTopPinned) }
 }
