@@ -245,12 +245,7 @@ class NotesViewModel(
 
     fun toggleStar(note: NoteEntity) {
         viewModelScope.launch {
-            repository.save(
-                note.copy(
-                    isPinned = !note.isPinned,
-                    updatedAt = System.currentTimeMillis()
-                )
-            )
+            repository.save(note.copy(isPinned = !note.isPinned))
         }
     }
 

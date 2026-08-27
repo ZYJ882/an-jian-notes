@@ -79,8 +79,8 @@ interface NoteDao {
     @Query("DELETE FROM notes WHERE id IN (:ids)")
     suspend fun deleteByIds(ids: List<Long>): Int
 
-    @Query("UPDATE notes SET isPinned = 1, updatedAt = :updatedAt WHERE id IN (:ids)")
-    suspend fun starByIds(ids: List<Long>, updatedAt: Long = System.currentTimeMillis()): Int
+    @Query("UPDATE notes SET isPinned = 1 WHERE id IN (:ids)")
+    suspend fun starByIds(ids: List<Long>): Int
 
     @Query("UPDATE notes SET isTopPinned = :isTopPinned WHERE id IN (:ids)")
     suspend fun setTopPinnedByIds(ids: List<Long>, isTopPinned: Boolean): Int
