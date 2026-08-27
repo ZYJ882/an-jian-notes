@@ -1331,7 +1331,7 @@ private fun QuickCaptureBar(
                     .weight(1f)
                     .height(56.dp)
                     .shadow(
-                        elevation = 8.dp,
+                        elevation = 6.dp,
                         shape = pillShape,
                         ambientColor = shadowColor,
                         spotColor = shadowColor
@@ -1360,7 +1360,7 @@ private fun QuickCaptureBar(
                     modifier = Modifier
                         .size(56.dp)
                         .shadow(
-                            elevation = 7.dp,
+                            elevation = 5.dp,
                             shape = CircleShape,
                             ambientColor = shadowColor,
                             spotColor = shadowColor
@@ -1785,7 +1785,7 @@ private fun NoteDetailPage(
                     )
                     if (pinned) {
                         Text(
-                            text = " · 已星标",
+                            text = " · ★",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier
@@ -1796,7 +1796,7 @@ private fun NoteDetailPage(
                     }
                     if (topPinned) {
                         Text(
-                            text = " · 已置顶",
+                            text = " · ↑",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -1827,9 +1827,13 @@ private fun NoteDetailPage(
                 )
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     if (note != null) TextButton(onClick = { onDelete(note) }) { Text("删除", color = MaterialTheme.colorScheme.error) } else Spacer(Modifier.width(1.dp))
-                    Row {
-                        TextButton(onClick = { topPinned = !topPinned; markEdited() }) { Text(if (topPinned) "取消置顶" else "置顶") }
-                        TextButton(onClick = { pinned = !pinned; markEdited() }) { Text(if (pinned) "取消星标" else "加入星标") }
+                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        TextButton(onClick = { topPinned = !topPinned; markEdited() }) {
+                            Text("置顶", color = if (topPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        TextButton(onClick = { pinned = !pinned; markEdited() }) {
+                            Text("星标", color = if (pinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
             } else if (markdownActive) {
@@ -2249,13 +2253,13 @@ private fun NoteCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 17.dp, vertical = 16.dp).heightIn(min = 112.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp).heightIn(min = 104.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             Text(
                 note.title.ifBlank { "未命名笔记" },
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -2287,13 +2291,13 @@ private fun NoteCard(
                     )
                 } else {
                     Text(
-                        if (note.isTopPinned) "已置顶" else "置顶",
-                        style = MaterialTheme.typography.labelMedium,
+                        "↑",
+                        style = MaterialTheme.typography.titleMedium,
                         color = if (note.isTopPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
                         modifier = Modifier
-                            .clip(MaterialTheme.shapes.small)
+                            .clip(CircleShape)
                             .clickable(onClick = onToggleTopPin)
-                            .padding(horizontal = 6.dp, vertical = 7.dp)
+                            .padding(horizontal = 7.dp, vertical = 5.dp)
                     )
                     Text(
                         if (note.isPinned) "★" else "☆",
@@ -2302,7 +2306,7 @@ private fun NoteCard(
                         modifier = Modifier
                             .clip(CircleShape)
                             .clickable(onClick = onToggleStar)
-                            .padding(6.dp)
+                            .padding(horizontal = 7.dp, vertical = 5.dp)
                     )
                 }
             }
