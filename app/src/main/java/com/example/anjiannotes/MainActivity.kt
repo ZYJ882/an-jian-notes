@@ -203,6 +203,10 @@ private enum class InlineEditTarget { TITLE, CONTENT }
 private enum class DetailMode { PREVIEW, EDIT }
 private enum class AutoSaveState { IDLE, SAVING, SAVED }
 
+/** 新建草稿离开详情页时必须至少写入一次；已有笔记仍沿用原有的脏数据判断。 */
+internal fun shouldForceFinalDraftSave(isNewNote: Boolean, savedNoteId: Long): Boolean =
+    isNewNote && savedNoteId == 0L
+
 /** 每次编辑事件同步生成的不可变保存快照，避免组合重绘前读取到旧文本。 */
 private data class NoteDraftSnapshot(
     val title: String,
@@ -1387,6 +1391,7 @@ private fun NoteDetailPage(
     onDelete: (NoteEntity) -> Unit
 ) {
     val context = LocalContext.current
+    val isNewNote = note == null
     var title by remember(note?.id, seed) { mutableStateOf(note?.title ?: seed.title) }
     var contentValue by remember(note?.id, seed) { mutableStateOf(TextFieldValue(note?.content ?: seed.content)) }
     val content = contentValue.text
@@ -1425,7 +1430,7 @@ private fun NoteDetailPage(
     var requestedContentCursor by remember(note?.id, seed) { mutableStateOf<Int?>(null) }
     var savedNoteId by remember(note?.id, seed) { mutableStateOf(note?.id ?: 0L) }
     val draftCreatedAt = remember(note?.id, seed) { note?.createdAt ?: System.currentTimeMillis() }
-    val seedHasContent = note == null && (seed.title.isNotBlank() || seed.content.isNotBlank())
+    val seedHasContent = isNewNote && (seed.title.isNotBlank() || seed.content.isNotBlank())
     var editRevision by remember(note?.id, seed) { mutableStateOf(if (seedHasContent) 1 else 0) }
     var savedRevision by remember(note?.id, seed) { mutableStateOf(0) }
     var hasUserEdited by remember(note?.id, seed) { mutableStateOf(seedHasContent) }
@@ -1568,8 +1573,22 @@ private fun NoteDetailPage(
         markEdited(contentOverride = currentText)
     }
 
-    suspend fun flushPendingChanges(): Boolean {
+    suspend fun finalizePendingChanges(): Boolean {
         debounceJob?.cancel()
+        // 无论是否输入过，新建页离开前都必须经由已有单一保存队列写入一次 Room。
+        // 这里不创建第二套保存机制，仅让现有 worker 获得一个需要保存的最终 revision。
+        if (shouldForceFinalDraftSave(isNewNote, savedNoteId) && savedRevision >= editRevision) {
+            latestDraft = NoteDraftSnapshot(
+                title = title,
+                content = nativeContentEditor?.text?.toString() ?: contentValue.text,
+                color = color,
+                isPinned = pinned,
+                isMarkdown = formatMode.resolvesToMarkdown(nativeContentEditor?.text?.toString() ?: contentValue.text),
+                folderId = selectedFolderId
+            )
+            hasUserEdited = true
+            editRevision = savedRevision + 1
+        }
         editorLog("final save before leave dirty=${hasUserEdited && savedRevision < editRevision}")
         while (hasUserEdited && savedRevision < editRevision) {
             startSaveWorker()
@@ -1579,29 +1598,33 @@ private fun NoteDetailPage(
         return true
     }
 
-    fun handleBack() {
+    fun finalizeAndLeave() {
+        // 返回时始终从原生 EditText 同步最后一帧用户输入，不依赖下一次 Compose 重组或 debounce。
         if (detailMode == DetailMode.EDIT) syncNativeContentBeforePreview()
         if (leavingInProgress) {
             editorLog("back ignored while final save is in progress")
             return
         }
-        editorLog("back requested mode=$detailMode")
+        editorLog("back requested mode=$detailMode isNew=$isNewNote")
         leavingInProgress = true
         keyboard?.hide()
         editorScope.launch {
-            if (!flushPendingChanges()) {
+            if (!finalizePendingChanges()) {
                 editorLog("back cancelled because final save failed")
                 leavingInProgress = false
                 return@launch
             }
-            if (detailMode == DetailMode.EDIT) {
-                // 第一次返回仅在最终保存完成后切换预览，页面仍保持在同一篇笔记。
+            if (isNewNote) {
+                // 新建笔记第一次返回即在 Room 写入确认后回到主页，不再中转预览页。
+                editorLog("new draft saved; leaving detail")
+                onBack(selectedFolderId, savedNoteId)
+            } else if (detailMode == DetailMode.EDIT) {
+                // 已有笔记保留原有交互：第一次返回仅结束编辑，第二次返回离开详情。
                 detailMode = DetailMode.PREVIEW
                 editorLog("final save confirmed; switched to preview")
                 withFrameNanos { }
                 leavingInProgress = false
             } else {
-                // 预览态再次返回时也会经过同一最终保存确认，再离开详情页。
                 editorLog("final save confirmed; leaving detail")
                 onBack(selectedFolderId, savedNoteId)
             }
@@ -1645,9 +1668,9 @@ private fun NoteDetailPage(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    val latestFinishEditing by rememberUpdatedState(::handleBack)
+    val latestFinalizeAndLeave by rememberUpdatedState(::finalizeAndLeave)
     // BackHandler 通过 AndroidX 回调覆盖物理返回键、三键导航及系统返回手势。
-    BackHandler(enabled = true) { latestFinishEditing() }
+    BackHandler(enabled = true) { latestFinalizeAndLeave() }
 
     Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
@@ -1664,7 +1687,7 @@ private fun NoteDetailPage(
                     }
                 },
                 navigationIcon = {
-                    TextButton(onClick = ::handleBack) {
+                    TextButton(onClick = ::finalizeAndLeave) {
                         Text("返回")
                     }
                 },
