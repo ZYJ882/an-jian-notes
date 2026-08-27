@@ -894,7 +894,7 @@ private fun NotesListPage(
                     Box(modifier = Modifier.fillMaxSize()) {
                         androidx.compose.foundation.lazy.LazyColumn(
                             state = noteListState,
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp),
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(end = 12.dp)
@@ -2270,7 +2270,7 @@ private fun NoteCard(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(onClick = onOpen, onLongClick = onLongPress),
-        shape = MaterialTheme.shapes.medium,
+        shape = RoundedCornerShape(6.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.52f) else MaterialTheme.colorScheme.surface,
             contentColor = MaterialTheme.colorScheme.onSurface
@@ -2278,7 +2278,7 @@ private fun NoteCard(
         border = BorderStroke(
             1.dp,
             if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.58f)
-            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.18f)
+            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.12f)
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
