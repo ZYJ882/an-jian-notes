@@ -34,11 +34,14 @@ data class ImportedNoteText(
     val formatMode: NoteFormatMode
 )
 
-fun formatForFileName(fileName: String): NoteFormatMode = when {
-    fileName.endsWith(".md", ignoreCase = true) || fileName.endsWith(".markdown", ignoreCase = true) -> NoteFormatMode.MARKDOWN
+fun formatForFileName(fileName: String): NoteFormatMode = if (
+    fileName.endsWith(".md", ignoreCase = true) || fileName.endsWith(".markdown", ignoreCase = true)
+) {
+    NoteFormatMode.MARKDOWN
+} else {
     // `.txt` 与无扩展名文本也可能实际采用 Markdown；交给内容识别，
     // 普通文本仍会自然解析为纯文本，用户也始终可以手动切换格式。
-    else -> NoteFormatMode.AUTO
+    NoteFormatMode.AUTO
 }
 
 sealed interface ImportReadResult {

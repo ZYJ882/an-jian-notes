@@ -1403,7 +1403,7 @@ private fun NoteDetailPage(
         mutableStateOf(if (note == null) DetailMode.EDIT else DetailMode.PREVIEW)
     }
     var focusTarget by remember(note?.id, seed) {
-        mutableStateOf(if (note == null) InlineEditTarget.CONTENT else InlineEditTarget.CONTENT)
+        mutableStateOf(InlineEditTarget.CONTENT)
     }
     var requestedContentCursor by remember(note?.id, seed) { mutableStateOf<Int?>(null) }
     var savedNoteId by remember(note?.id, seed) { mutableStateOf(note?.id ?: 0L) }

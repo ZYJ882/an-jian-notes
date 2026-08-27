@@ -207,13 +207,15 @@ class NotesRepository(
 
     suspend fun delete(id: Long) = noteDao.deleteById(id)
 
-    suspend fun deleteMany(ids: Collection<Long>): Int {
-        val normalizedIds = ids.distinct()
-        return if (normalizedIds.isEmpty()) 0 else noteDao.deleteByIds(normalizedIds)
+    private suspend fun applyToDistinctNoteIds(
+        ids: Collection<Long>,
+        action: suspend (List<Long>) -> Int
+    ): Int {
+        val distinctIds = ids.distinct()
+        return if (distinctIds.isEmpty()) 0 else action(distinctIds)
     }
 
-    suspend fun starMany(ids: Collection<Long>): Int {
-        val normalizedIds = ids.distinct()
-        return if (normalizedIds.isEmpty()) 0 else noteDao.starByIds(normalizedIds)
-    }
+    suspend fun deleteMany(ids: Collection<Long>): Int = applyToDistinctNoteIds(ids, noteDao::deleteByIds)
+
+    suspend fun starMany(ids: Collection<Long>): Int = applyToDistinctNoteIds(ids, noteDao::starByIds)
 }

@@ -10,20 +10,34 @@ data class BackupSnapshot(
     val notes: List<NoteEntity>
 )
 
+private fun FolderEntity.toBackupJson(): JSONObject = JSONObject().apply {
+    put("id", id)
+    put("name", name)
+    put("createdAt", createdAt)
+    put("sortOrder", sortOrder)
+}
+
+private fun decodeBackupFolders(values: JSONArray): List<FolderEntity> = buildList {
+    for (index in 0 until values.length()) {
+        val item = values.getJSONObject(index)
+        add(
+            FolderEntity(
+                id = item.getLong("id"),
+                name = item.getString("name"),
+                createdAt = item.optLong("createdAt", 0L),
+                sortOrder = item.optLong("sortOrder", index.toLong())
+            )
+        )
+    }
+}
+
 object BackupCodec {
     fun encode(snapshot: BackupSnapshot): String {
         val root = JSONObject().apply {
             put("schemaVersion", BACKUP_SCHEMA_VERSION)
             put("exportedAt", System.currentTimeMillis())
             put("folders", JSONArray().apply {
-                snapshot.folders.forEach { folder ->
-                    put(JSONObject().apply {
-                        put("id", folder.id)
-                        put("name", folder.name)
-                        put("createdAt", folder.createdAt)
-                        put("sortOrder", folder.sortOrder)
-                    })
-                }
+                snapshot.folders.forEach { folder -> put(folder.toBackupJson()) }
             })
             put("notes", JSONArray().apply {
                 snapshot.notes.forEach { note ->
@@ -49,19 +63,7 @@ object BackupCodec {
         require(root.optInt("schemaVersion") == BACKUP_SCHEMA_VERSION) { "不支持的备份版本" }
         val foldersJson = root.optJSONArray("folders") ?: throw IllegalArgumentException("备份中缺少收藏夹数据")
         val notesJson = root.optJSONArray("notes") ?: throw IllegalArgumentException("备份中缺少笔记数据")
-        val folders = buildList {
-            for (index in 0 until foldersJson.length()) {
-                val item = foldersJson.getJSONObject(index)
-                add(
-                    FolderEntity(
-                        id = item.getLong("id"),
-                        name = item.getString("name"),
-                        createdAt = item.optLong("createdAt", 0L),
-                        sortOrder = item.optLong("sortOrder", index.toLong())
-                    )
-                )
-            }
-        }
+        val folders = decodeBackupFolders(foldersJson)
         val validFolderIds = folders.mapTo(mutableSetOf()) { it.id }.apply { add(DEFAULT_FOLDER_ID) }
         val notes = buildList {
             for (index in 0 until notesJson.length()) {
@@ -260,14 +262,7 @@ object MarkdownZipBackupCodec {
     fun foldersJson(folders: List<FolderEntity>): String = JSONObject().apply {
         put("schemaVersion", SCHEMA_VERSION)
         put("folders", JSONArray().apply {
-            folders.forEach { folder ->
-                put(JSONObject().apply {
-                    put("id", folder.id)
-                    put("name", folder.name)
-                    put("createdAt", folder.createdAt)
-                    put("sortOrder", folder.sortOrder)
-                })
-            }
+            folders.forEach { folder -> put(folder.toBackupJson()) }
         })
     }.toString(2)
 
@@ -287,23 +282,10 @@ object MarkdownZipBackupCodec {
         append(note.content)
     }
 
-    private fun decodeFolders(raw: String): List<FolderEntity> {
-        val root = JSONObject(raw)
-        val values = root.optJSONArray("folders") ?: throw IllegalArgumentException("folders.json 缺少收藏夹列表")
-        return buildList {
-            for (index in 0 until values.length()) {
-                val item = values.getJSONObject(index)
-                add(
-                    FolderEntity(
-                        id = item.getLong("id"),
-                        name = item.getString("name"),
-                        createdAt = item.optLong("createdAt", 0L),
-                        sortOrder = item.optLong("sortOrder", index.toLong())
-                    )
-                )
-            }
-        }
-    }
+    private fun decodeFolders(raw: String): List<FolderEntity> = decodeBackupFolders(
+        JSONObject(raw).optJSONArray("folders")
+            ?: throw IllegalArgumentException("folders.json 缺少收藏夹列表")
+    )
 
     private fun decodeNote(raw: String): NoteEntity {
         val normalized = raw.replace("\r\n", "\n")

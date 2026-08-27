@@ -59,6 +59,42 @@ class NotesViewModel(
         viewModelScope.launch { repository.ensureDefaultFolder() }
     }
 
+    private fun <T> launchResult(
+        fallbackMessage: String,
+        onSuccess: (T) -> Unit,
+        onFailure: (String) -> Unit,
+        action: suspend () -> T
+    ) {
+        viewModelScope.launch {
+            runCatching { action() }
+                .onSuccess(onSuccess)
+                .onFailure { onFailure(it.message ?: fallbackMessage) }
+        }
+    }
+
+    private fun <T> launchDeferred(action: suspend () -> T): Deferred<T> {
+        val result = CompletableDeferred<T>()
+        viewModelScope.launch {
+            runCatching { action() }
+                .onSuccess(result::complete)
+                .onFailure(result::completeExceptionally)
+        }
+        return result
+    }
+
+    private fun persistWebDavConfig(config: WebDavConfig): WebDavConfig = config.normalized().also { normalized ->
+        webDavConfigStore.save(normalized)
+        configuredWebDav.value = normalized
+    }
+
+    private fun runBulkNoteAction(
+        ids: Collection<Long>,
+        onComplete: (Int) -> Unit,
+        action: suspend (Collection<Long>) -> Int
+    ) {
+        viewModelScope.launch { onComplete(action(ids)) }
+    }
+
     fun setSearchQuery(value: String) {
         searchQuery.value = value
     }
@@ -69,22 +105,16 @@ class NotesViewModel(
     }
 
     fun createFolder(name: String, onSuccess: (String) -> Unit, onFailure: (String) -> Unit) {
-        viewModelScope.launch {
-            runCatching {
-                val id = repository.createFolder(name)
-                selectFolder(id)
-                name.trim()
-            }.onSuccess(onSuccess)
-                .onFailure { onFailure(it.message ?: "收藏夹创建失败，请重试") }
+        launchResult("收藏夹创建失败，请重试", onSuccess, onFailure) {
+            val id = repository.createFolder(name)
+            selectFolder(id)
+            name.trim()
         }
     }
 
     fun saveWebDavConfig(config: WebDavConfig, onSuccess: () -> Unit, onFailure: (String) -> Unit) {
-        runCatching {
-            val normalized = config.normalized()
-            webDavConfigStore.save(normalized)
-            configuredWebDav.value = normalized
-        }.onSuccess { onSuccess() }
+        runCatching { persistWebDavConfig(config) }
+            .onSuccess { onSuccess() }
             .onFailure { onFailure(it.message ?: "WebDAV 配置保存失败") }
     }
 
@@ -93,36 +123,26 @@ class NotesViewModel(
         onSuccess: (String) -> Unit,
         onFailure: (String) -> Unit
     ) {
-        viewModelScope.launch {
-            runCatching {
-                val normalized = config.normalized()
-                webDavConfigStore.save(normalized)
-                configuredWebDav.value = normalized
-                val result = webDavBackupClient.syncIncremental(
-                    config = normalized,
-                    snapshot = repository.exportSnapshot(),
-                    appVersion = BuildConfig.VERSION_NAME
-                )
-                "WebDAV 备份完成：上传 ${result.uploadedNotes} 条，跳过 ${result.skippedNotes} 条未变化笔记"
-            }.onSuccess(onSuccess)
-                .onFailure { onFailure(it.message ?: "WebDAV 备份失败") }
+        launchResult("WebDAV 备份失败", onSuccess, onFailure) {
+            val normalized = persistWebDavConfig(config)
+            val result = webDavBackupClient.syncIncremental(
+                config = normalized,
+                snapshot = repository.exportSnapshot(),
+                appVersion = BuildConfig.VERSION_NAME
+            )
+            "WebDAV 备份完成：上传 ${result.uploadedNotes} 条，跳过 ${result.skippedNotes} 条未变化笔记"
         }
     }
 
     fun createBackup(onSuccess: (String) -> Unit, onFailure: (String) -> Unit) {
-        viewModelScope.launch {
-            runCatching { BackupCodec.encode(repository.exportSnapshot()) }
-                .onSuccess(onSuccess)
-                .onFailure { onFailure(it.message ?: "备份导出失败") }
+        launchResult("备份导出失败", onSuccess, onFailure) {
+            BackupCodec.encode(repository.exportSnapshot())
         }
     }
 
     fun createMarkdownZipBackup(onSuccess: (ByteArray) -> Unit, onFailure: (String) -> Unit) {
-        viewModelScope.launch {
-            runCatching {
-                MarkdownZipBackupCodec.encode(repository.exportSnapshot(), BuildConfig.VERSION_NAME)
-            }.onSuccess(onSuccess)
-                .onFailure { onFailure(it.message ?: "Markdown ZIP 备份导出失败") }
+        launchResult("Markdown ZIP 备份导出失败", onSuccess, onFailure) {
+            MarkdownZipBackupCodec.encode(repository.exportSnapshot(), BuildConfig.VERSION_NAME)
         }
     }
 
@@ -135,10 +155,8 @@ class NotesViewModel(
     }
 
     fun createTextBackup(onSuccess: (String) -> Unit, onFailure: (String) -> Unit) {
-        viewModelScope.launch {
-            runCatching { PlainTextBackupCodec.encode(repository.exportSnapshot()) }
-                .onSuccess(onSuccess)
-                .onFailure { onFailure(it.message ?: "TXT 备份导出失败") }
+        launchResult("TXT 备份导出失败", onSuccess, onFailure) {
+            PlainTextBackupCodec.encode(repository.exportSnapshot())
         }
     }
 
@@ -163,15 +181,12 @@ class NotesViewModel(
         onSuccess: (String) -> Unit,
         onFailure: (String) -> Unit
     ) {
-        viewModelScope.launch {
-            runCatching {
-                val snapshot = decode()
-                repository.restoreSnapshot(snapshot)
-                selectedFolderId.value = DEFAULT_FOLDER_ID
-                searchQuery.value = ""
-                "已恢复 ${snapshot.folders.size} 个收藏夹和 ${snapshot.notes.size} 条笔记"
-            }.onSuccess(onSuccess)
-                .onFailure { onFailure(it.message ?: "备份导入失败，请确认文件完整") }
+        launchResult("备份导入失败，请确认文件完整", onSuccess, onFailure) {
+            val snapshot = decode()
+            repository.restoreSnapshot(snapshot)
+            selectedFolderId.value = DEFAULT_FOLDER_ID
+            searchQuery.value = ""
+            "已恢复 ${snapshot.folders.size} 个收藏夹和 ${snapshot.notes.size} 条笔记"
         }
     }
 
@@ -217,15 +232,8 @@ class NotesViewModel(
         markdown: Boolean,
         folderId: Long,
         createdAt: Long = System.currentTimeMillis()
-    ): Deferred<Long> {
-        val result = CompletableDeferred<Long>()
-        viewModelScope.launch {
-            runCatching {
-                saveNote(id, title, content, color, pinned, markdown, folderId, createdAt)
-            }.onSuccess(result::complete)
-                .onFailure(result::completeExceptionally)
-        }
-        return result
+    ): Deferred<Long> = launchDeferred {
+        saveNote(id, title, content, color, pinned, markdown, folderId, createdAt)
     }
 
     fun toggleStar(note: NoteEntity) {
@@ -244,13 +252,10 @@ class NotesViewModel(
         onSuccess: (String) -> Unit,
         onFailure: (String) -> Unit
     ) {
-        viewModelScope.launch {
-            runCatching {
-                repository.deleteFolder(folderId)
-                if (selectedFolderId.value == folderId) selectFolder(DEFAULT_FOLDER_ID)
-                "收藏夹和其中笔记已删除"
-            }.onSuccess(onSuccess)
-                .onFailure { onFailure(it.message ?: "收藏夹删除失败，请重试") }
+        launchResult("收藏夹删除失败，请重试", onSuccess, onFailure) {
+            repository.deleteFolder(folderId)
+            if (selectedFolderId.value == folderId) selectFolder(DEFAULT_FOLDER_ID)
+            "收藏夹和其中笔记已删除"
         }
     }
 
@@ -259,15 +264,11 @@ class NotesViewModel(
     }
 
     fun deleteNotes(ids: Collection<Long>, onComplete: (Int) -> Unit) {
-        viewModelScope.launch {
-            onComplete(repository.deleteMany(ids))
-        }
+        runBulkNoteAction(ids, onComplete, repository::deleteMany)
     }
 
     fun starNotes(ids: Collection<Long>, onComplete: (Int) -> Unit) {
-        viewModelScope.launch {
-            onComplete(repository.starMany(ids))
-        }
+        runBulkNoteAction(ids, onComplete, repository::starMany)
     }
 }
 
