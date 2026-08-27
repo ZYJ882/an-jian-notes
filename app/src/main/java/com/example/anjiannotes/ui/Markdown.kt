@@ -78,6 +78,8 @@ fun MarkdownPreview(
     }
 }
 
+internal fun markdownPreviewBlockCount(markdown: String): Int = parseMarkdownBlocks(markdown).size
+
 private fun parseMarkdownBlocks(markdown: String): List<MarkdownBlock> {
     val lines = markdown.lineSequence().toList()
     val result = mutableListOf<MarkdownBlock>()
@@ -273,20 +275,30 @@ private fun MarkdownLine(
             MarkdownLineText(markdownInline(line.removePrefix("> "), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier.padding(horizontal = 12.dp, vertical = 9.dp), onTextLayout = textLayoutCallback)
         }
         line.matches(MarkdownUnorderedListPattern) -> Row(
-            modifier = lineModifier,
+            modifier = lineModifier.fillMaxWidth(),
             verticalAlignment = Alignment.Top
         ) {
             Text("•", modifier = Modifier.padding(end = 8.dp), color = MaterialTheme.colorScheme.primary)
-            MarkdownLineText(markdownInline(line.replaceFirst(MarkdownUnorderedListPrefixPattern, ""), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, Modifier, onTextLayout = textLayoutCallback)
+            MarkdownLineText(
+                markdownInline(line.replaceFirst(MarkdownUnorderedListPrefixPattern, ""), linkColor, codeBackground),
+                MaterialTheme.typography.bodyMedium,
+                Modifier.weight(1f),
+                onTextLayout = textLayoutCallback
+            )
         }
         line.matches(MarkdownOrderedListPattern) -> {
             val prefix = line.substringBefore(' ')
             Row(
-                modifier = lineModifier,
+                modifier = lineModifier.fillMaxWidth(),
                 verticalAlignment = Alignment.Top
             ) {
                 Text(prefix, modifier = Modifier.padding(end = 8.dp), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-                MarkdownLineText(markdownInline(line.removePrefix("$prefix "), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, Modifier, onTextLayout = textLayoutCallback)
+                MarkdownLineText(
+                    markdownInline(line.removePrefix("$prefix "), linkColor, codeBackground),
+                    MaterialTheme.typography.bodyMedium,
+                    Modifier.weight(1f),
+                    onTextLayout = textLayoutCallback
+                )
             }
         }
         else -> MarkdownLineText(markdownInline(line, linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = textLayoutCallback)

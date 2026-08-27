@@ -24,6 +24,22 @@ class MarkdownTest {
     }
 
     @Test
+    fun markdownPreview_keepsEveryLineOfLongOrderedList() {
+        val markdown = """
+            本次做性能优化
+            1. 改善冷启动：把主线程阻塞的初始化逻辑延迟到首帧绘制完成之后放到后台执行；不要在启动阶段执行大量 IO、解析工作。
+            2. 提升页面运行流畅度：Compose 层面优化，减少不必要重组，耗时计算使用 remember 缓存，懒列表补充稳定 key，避免滑动卡顿。
+            3. 优化动画：解决动画卡顿、丢帧问题。
+        """.trimIndent()
+
+        assertEquals(4, markdownPreviewBlockCount(markdown))
+        assertEquals(
+            "本次做性能优化 改善冷启动：把主线程阻塞的初始化逻辑延迟到首帧绘制完成之后放到后台执行；不要在启动阶段执行大量 IO、解析工作。 提升页面运行流畅度：Compose 层面优化，减少不必要重组，耗时计算使用 remember 缓存，懒列表补充稳定 key，避免滑动卡顿。 优化动画：解决动画卡顿、丢帧问题。",
+            markdownToPlainText(markdown)
+        )
+    }
+
+    @Test
     fun extractFirstLink_recognizesOnlyTheTargetForLongPressConfirmation() {
         assertEquals("https://example.com/a", extractFirstLink("请访问 https://example.com/a 查看"))
         assertEquals("https://example.com/b", extractFirstLink("[帮助页面](https://example.com/b)"))
