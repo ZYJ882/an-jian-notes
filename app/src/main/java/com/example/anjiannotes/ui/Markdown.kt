@@ -274,32 +274,32 @@ private fun MarkdownLine(
         line.startsWith("> ") -> Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium) {
             MarkdownLineText(markdownInline(line.removePrefix("> "), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier.padding(horizontal = 12.dp, vertical = 9.dp), onTextLayout = textLayoutCallback)
         }
-        line.matches(MarkdownUnorderedListPattern) -> Row(
-            modifier = lineModifier.fillMaxWidth(),
-            verticalAlignment = Alignment.Top
-        ) {
-            Text("•", modifier = Modifier.padding(end = 8.dp), color = MaterialTheme.colorScheme.primary)
+        line.matches(MarkdownUnorderedListPattern) -> MarkdownLineText(
+            markdownListItem(
+                marker = "•",
+                content = line.replaceFirst(MarkdownUnorderedListPrefixPattern, ""),
+                markerStyle = SpanStyle(color = MaterialTheme.colorScheme.primary),
+                linkColor = linkColor,
+                codeBackground = codeBackground
+            ),
+            MaterialTheme.typography.bodyMedium,
+            lineModifier.fillMaxWidth(),
+            onTextLayout = textLayoutCallback
+        )
+        line.matches(MarkdownOrderedListPattern) -> {
+            val prefixMatch = MarkdownOrderedListPrefixPattern.find(line) ?: return
             MarkdownLineText(
-                markdownInline(line.replaceFirst(MarkdownUnorderedListPrefixPattern, ""), linkColor, codeBackground),
+                markdownListItem(
+                    marker = prefixMatch.groupValues[1],
+                    content = line.removeRange(prefixMatch.range),
+                    markerStyle = SpanStyle(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold),
+                    linkColor = linkColor,
+                    codeBackground = codeBackground
+                ),
                 MaterialTheme.typography.bodyMedium,
-                Modifier.weight(1f),
+                lineModifier.fillMaxWidth(),
                 onTextLayout = textLayoutCallback
             )
-        }
-        line.matches(MarkdownOrderedListPattern) -> {
-            val prefix = line.substringBefore(' ')
-            Row(
-                modifier = lineModifier.fillMaxWidth(),
-                verticalAlignment = Alignment.Top
-            ) {
-                Text(prefix, modifier = Modifier.padding(end = 8.dp), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-                MarkdownLineText(
-                    markdownInline(line.removePrefix("$prefix "), linkColor, codeBackground),
-                    MaterialTheme.typography.bodyMedium,
-                    Modifier.weight(1f),
-                    onTextLayout = textLayoutCallback
-                )
-            }
         }
         else -> MarkdownLineText(markdownInline(line, linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = textLayoutCallback)
     }
@@ -320,6 +320,7 @@ private val MarkdownTableSeparatorPattern = Regex("^:?-{3,}:?$")
 private val MarkdownUnorderedListPattern = Regex("^[-+*]\\s+.*")
 private val MarkdownUnorderedListPrefixPattern = Regex("^[-+*]\\s+")
 private val MarkdownOrderedListPattern = Regex("^\\d+\\.\\s+.*")
+private val MarkdownOrderedListPrefixPattern = Regex("^(\\d+\\.)\\s+")
 private val MarkdownLinkPattern = Regex("\\[([^\\]]+)\\]\\((https?://[^\\s)]+)\\)", RegexOption.IGNORE_CASE)
 private val UrlPattern = Regex("https?://[^\\s)]+", RegexOption.IGNORE_CASE)
 private val PreviewLinkBlueLight = Color(0xFF765F82)
@@ -337,6 +338,20 @@ fun linkifyPlainText(text: String, linkColor: Color): AnnotatedString = buildAnn
         cursor = url.range.last + 1
     }
     append(text, cursor, text.length)
+}
+
+private fun markdownListItem(
+    marker: String,
+    content: String,
+    markerStyle: SpanStyle,
+    linkColor: Color,
+    codeBackground: Color
+): AnnotatedString = buildAnnotatedString {
+    pushStyle(markerStyle)
+    append(marker)
+    pop()
+    append(" ")
+    append(markdownInline(content, linkColor, codeBackground))
 }
 
 private fun markdownInline(text: String, linkColor: Color, codeBackground: Color): AnnotatedString = buildAnnotatedString {
