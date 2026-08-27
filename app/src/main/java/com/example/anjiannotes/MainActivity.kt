@@ -1763,6 +1763,7 @@ private fun NoteDetailPage(
                 if (markdownActive) MarkdownSyntaxHint()
                 NativeNoteEditor(
                     value = contentValue,
+                    externalModelKey = note?.let { it.id to it.updatedAt } ?: seed,
                     focusRequest = nativeContentFocusRequest,
                     modifier = Modifier.fillMaxWidth().weight(1f),
                     textColor = MaterialTheme.colorScheme.onBackground,
@@ -1888,14 +1889,36 @@ private fun NativeNoteTitleEditor(
     )
 }
 
+/**
+ * 编辑期间 Compose 文本可能暂时落后于原生输入；仅在明确切换笔记或导入种子时允许模型回写。
+ */
+internal fun shouldApplyExternalModelText(
+    appliedExternalModelKey: Any?,
+    externalModelKey: Any?
+): Boolean = appliedExternalModelKey != externalModelKey
+
 private class NativeNoteEditText(context: Context) : EditText(context) {
+    /** 仅在外部模型主动替换编辑内容时为 true，防止 TextWatcher 把回填误判为用户输入。 */
     var applyingModelText: Boolean = false
+    /** 当前 View 已接收的外部模型身份；普通 Compose 重组不会改变它。 */
+    var appliedExternalModelKey: Any? = null
     var lastFocusRequest: Int = -1
+
+    fun applyExternalModelText(modelText: String, modelKey: Any?) {
+        applyingModelText = true
+        try {
+            setText(modelText)
+            appliedExternalModelKey = modelKey
+        } finally {
+            applyingModelText = false
+        }
+    }
 }
 
 @Composable
 private fun NativeNoteEditor(
     value: TextFieldValue,
+    externalModelKey: Any?,
     focusRequest: Int,
     modifier: Modifier = Modifier,
     textColor: Color,
@@ -1917,17 +1940,20 @@ private fun NativeNoteEditor(
                 maxLines = Int.MAX_VALUE
                 isSingleLine = false
                 inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                // 初始文本属于明确的外部模型装配；之后用户输入始终以 view.text 为实时来源。
+                applyExternalModelText(value.text, externalModelKey)
                 addTextChangedListener(object : TextWatcher {
                     override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
                     override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                        // 仅忽略 Compose 主动回填的文本。任何真实用户输入都立即回写至
-                        // contentValue，防止切换预览时读取到上一帧的截断内容。
-                        if (!applyingModelText) {
-                            val changed = s?.toString().orEmpty()
-                            val selectionStart = selectionStart.coerceIn(0, changed.length)
-                            val selectionEnd = selectionEnd.coerceIn(0, changed.length)
-                            latestOnValueChange(TextFieldValue(changed, TextRange(selectionStart, selectionEnd)))
+                        if (applyingModelText) return
+                        val changed = s?.toString().orEmpty()
+                        if (BuildConfig.DEBUG) {
+                            Log.d("NativeNoteEditor", "user TextWatcher nativeTextLength=${changed.length}")
                         }
+                        val selectionStart = selectionStart.coerceIn(0, changed.length)
+                        val selectionEnd = selectionEnd.coerceIn(0, changed.length)
+                        // 用户输入、粘贴与输入法提交均从这里同步到 Compose，再进入既有保存流程。
+                        latestOnValueChange(TextFieldValue(changed, TextRange(selectionStart, selectionEnd)))
                     }
                     override fun afterTextChanged(s: Editable?) = Unit
                 })
@@ -1935,13 +1961,20 @@ private fun NativeNoteEditor(
         },
         update = { view ->
             onViewReady(view)
-            if (view.text.toString() != value.text) {
-                view.applyingModelText = true
-                try {
-                    view.setText(value.text)
-                } finally {
-                    view.applyingModelText = false
-                }
+            val viewText = view.text?.toString().orEmpty()
+            if (BuildConfig.DEBUG) {
+                Log.d(
+                    "NativeNoteEditor",
+                    "update viewTextLength=${viewText.length} modelTextLength=${value.text.length} " +
+                        "externalChanged=${view.appliedExternalModelKey != externalModelKey}"
+                )
+            }
+            // value.text 在编辑期间只来自 TextWatcher 的异步 Compose 回调，可能暂时落后于
+            // 原生输入。只有笔记/导入种子确实切换时，才允许模型主动回填 View。
+            if (shouldApplyExternalModelText(view.appliedExternalModelKey, externalModelKey)) {
+                view.applyExternalModelText(value.text, externalModelKey)
+            } else if (BuildConfig.DEBUG && viewText.length > value.text.length) {
+                Log.d("NativeNoteEditor", "skip stale model write: native text is newer")
             }
             view.setTextColor(textColor.toArgb())
             if (focusRequest >= 0 && focusRequest != view.lastFocusRequest) {
