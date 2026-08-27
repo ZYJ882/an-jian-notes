@@ -12,6 +12,7 @@ import androidx.room.withTransaction
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 
 const val DEFAULT_FOLDER_ID = 1L
 /** 仅用于界面筛选的内置收藏夹，不会写入 folders 表或改变笔记原有 folderId。 */
@@ -54,6 +55,17 @@ data class NoteEntity(
     val isMarkdown: Boolean = false,
     val folderId: Long = DEFAULT_FOLDER_ID
 )
+
+/** 将空格、逗号和常见中文分隔符视为多个独立关键词。 */
+internal fun parseSearchTerms(query: String): List<String> =
+    query.trim().split(Regex("[\\s,，;；、]+"))
+        .filter(String::isNotBlank)
+
+/** 每个关键词可出现在标题或正文中；所有关键词都命中才保留该笔记。 */
+internal fun NoteEntity.matchesSearchTerms(terms: List<String>): Boolean =
+    terms.all { term ->
+        title.contains(term, ignoreCase = true) || content.contains(term, ignoreCase = true)
+    }
 
 @Dao
 interface NoteDao {
@@ -167,13 +179,17 @@ class NotesRepository(
     private val noteDao: NoteDao,
     private val folderDao: FolderDao
 ) {
-    fun observeNotes(query: String, folderId: Long): Flow<List<NoteEntity>> =
-        noteDao.observeNotes(
-            query = query.trim(),
+    fun observeNotes(query: String, folderId: Long): Flow<List<NoteEntity>> {
+        val terms = parseSearchTerms(query)
+        return noteDao.observeNotes(
+            query = terms.firstOrNull().orEmpty(),
             folderId = folderId,
             showStarred = folderId == STARRED_FOLDER_ID,
             showAll = folderId == ALL_FOLDERS_ID
-        )
+        ).map { notes ->
+            if (terms.size < 2) notes else notes.filter { it.matchesSearchTerms(terms) }
+        }
+    }
     fun observeFolders(): Flow<List<FolderEntity>> = folderDao.observeFolders()
 
     suspend fun ensureDefaultFolder() {
