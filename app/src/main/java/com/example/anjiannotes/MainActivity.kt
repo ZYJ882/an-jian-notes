@@ -2321,13 +2321,22 @@ private fun NoteCard(
                     )
                 } else {
                     Text(
-                        "↑",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = if (note.isTopPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                        text = if (note.isTopPinned) "↑ 置顶" else "↑",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = if (note.isTopPinned) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (note.isTopPinned) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
                         modifier = Modifier
-                            .clip(CircleShape)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(
+                                if (note.isTopPinned) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                                else Color.Transparent
+                            )
                             .clickable(onClick = onToggleTopPin)
-                            .padding(horizontal = 7.dp, vertical = 5.dp)
+                            .padding(
+                                horizontal = if (note.isTopPinned) 9.dp else 7.dp,
+                                vertical = 5.dp
+                            )
                     )
                     Text(
                         if (note.isPinned) "★" else "☆",
