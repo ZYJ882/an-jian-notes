@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.Flow
 const val DEFAULT_FOLDER_ID = 1L
 /** 仅用于界面筛选的内置收藏夹，不会写入 folders 表或改变笔记原有 folderId。 */
 const val STARRED_FOLDER_ID = -1L
+/** 仅用于全局检索的界面筛选值，不写入 notes 表。 */
+const val ALL_FOLDERS_ID = -2L
 
 val STARRED_FOLDER = FolderEntity(
     id = STARRED_FOLDER_ID,
@@ -60,7 +62,8 @@ interface NoteDao {
         SELECT * FROM notes
         WHERE (
             (:showStarred = 1 AND isPinned = 1)
-            OR (:showStarred = 0 AND folderId = :folderId)
+            OR (:showAll = 1)
+            OR (:showStarred = 0 AND :showAll = 0 AND folderId = :folderId)
         )
           AND (:query = ''
             OR title LIKE '%' || :query || '%'
@@ -68,7 +71,7 @@ interface NoteDao {
         ORDER BY isTopPinned DESC, updatedAt DESC
         """
     )
-    fun observeNotes(query: String, folderId: Long, showStarred: Boolean): Flow<List<NoteEntity>>
+    fun observeNotes(query: String, folderId: Long, showStarred: Boolean, showAll: Boolean): Flow<List<NoteEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(note: NoteEntity): Long
@@ -168,7 +171,8 @@ class NotesRepository(
         noteDao.observeNotes(
             query = query.trim(),
             folderId = folderId,
-            showStarred = folderId == STARRED_FOLDER_ID
+            showStarred = folderId == STARRED_FOLDER_ID,
+            showAll = folderId == ALL_FOLDERS_ID
         )
     fun observeFolders(): Flow<List<FolderEntity>> = folderDao.observeFolders()
 

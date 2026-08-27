@@ -122,6 +122,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.anjiannotes.data.ALL_FOLDERS_ID
 import com.example.anjiannotes.data.DEFAULT_FOLDER_ID
 import com.example.anjiannotes.data.FolderEntity
 import com.example.anjiannotes.data.NoteEntity
@@ -274,6 +275,7 @@ private fun NotesApp(
     val query by viewModel.query.collectAsStateWithLifecycle()
     val folders by viewModel.folders.collectAsStateWithLifecycle()
     val activeFolderId by viewModel.activeFolderId.collectAsStateWithLifecycle()
+    val isGlobalSearch by viewModel.isGlobalSearch.collectAsStateWithLifecycle()
     val webDavConfig by viewModel.webDavConfig.collectAsStateWithLifecycle()
     var page by remember { mutableStateOf<AppPage>(AppPage.List) }
     var showSearch by remember { mutableStateOf(false) }
@@ -305,8 +307,10 @@ private fun NotesApp(
         }
     }
 
-    fun writableFolderId(): Long =
-        activeFolderId.takeUnless { it == STARRED_FOLDER_ID } ?: DEFAULT_FOLDER_ID
+    fun writableFolderId(): Long = when (activeFolderId) {
+        STARRED_FOLDER_ID, ALL_FOLDERS_ID -> DEFAULT_FOLDER_ID
+        else -> activeFolderId
+    }
 
     fun openImported(note: EditorSeed) {
         page = AppPage.Detail(note = null, seed = note, folderId = writableFolderId())
@@ -415,12 +419,20 @@ private fun NotesApp(
             activeFolderId = activeFolderId,
             query = query,
             showSearch = showSearch,
+            globalSearch = isGlobalSearch,
             onSearchToggle = {
                 showSearch = !showSearch
-                if (!showSearch) viewModel.setSearchQuery("")
+                if (!showSearch) {
+                    viewModel.setSearchQuery("")
+                    if (isGlobalSearch) viewModel.closeGlobalSearch()
+                }
             },
             onSearchChange = viewModel::setSearchQuery,
             onFolderSelected = viewModel::selectFolder,
+            onOpenGlobalSearch = {
+                viewModel.openGlobalSearch()
+                showSearch = true
+            },
             onCreateFolder = { showNewFolderDialog = true },
             onOpenSettings = { page = AppPage.Settings },
             createMenuExpanded = showCreateMenu,
@@ -668,9 +680,11 @@ private fun NotesListPage(
     activeFolderId: Long,
     query: String,
     showSearch: Boolean,
+    globalSearch: Boolean,
     onSearchToggle: () -> Unit,
     onSearchChange: (String) -> Unit,
     onFolderSelected: (Long) -> Unit,
+    onOpenGlobalSearch: () -> Unit,
     onCreateFolder: () -> Unit,
     onOpenSettings: () -> Unit,
     createMenuExpanded: Boolean,
@@ -688,7 +702,7 @@ private fun NotesListPage(
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    val activeFolderName = folders.firstOrNull { it.id == activeFolderId }?.name ?: "全部笔记"
+    val activeFolderName = if (globalSearch) "全局搜索" else folders.firstOrNull { it.id == activeFolderId }?.name ?: "全部笔记"
     val noteListState = rememberLazyListState()
     var selectedNoteIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var pendingBatchDeleteIds by remember { mutableStateOf<Set<Long>?>(null) }
@@ -717,9 +731,18 @@ private fun NotesListPage(
                                 Text("安", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
                             }
                         }
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text("我的收藏夹", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                             Text("安笺 · 离线笔记", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        TextButton(
+                            onClick = {
+                                onOpenGlobalSearch()
+                                scope.launch { drawerState.close() }
+                            },
+                            modifier = Modifier.size(44.dp)
+                        ) {
+                            Text("⌕", fontSize = 25.sp, color = MaterialTheme.colorScheme.onSurface)
                         }
                     }
                     Spacer(Modifier.height(14.dp))
@@ -876,7 +899,14 @@ private fun NotesListPage(
                                 .fillMaxSize()
                                 .padding(end = 12.dp)
                         ) {
-                            item { Text("共 ${notes.size} 条笔记", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 2.dp)) }
+                            item {
+                                Text(
+                                    text = if (globalSearch && query.isNotBlank()) "全局匹配 ${notes.size} 条" else "共 ${notes.size} 条笔记",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(bottom = 2.dp)
+                                )
+                            }
                             items(
                                 items = notes,
                                 key = { it.id },

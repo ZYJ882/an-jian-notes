@@ -3,6 +3,7 @@ package com.example.anjiannotes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.anjiannotes.data.ALL_FOLDERS_ID
 import com.example.anjiannotes.data.BackupCodec
 import com.example.anjiannotes.data.DEFAULT_FOLDER_ID
 import com.example.anjiannotes.data.FolderSelectionPreferences
@@ -45,6 +46,9 @@ class NotesViewModel(
 
     val query: StateFlow<String> = searchQuery.asStateFlow()
     val activeFolderId: StateFlow<Long> = selectedFolderId.asStateFlow()
+    val isGlobalSearch: StateFlow<Boolean> = selectedFolderId
+        .map { it == ALL_FOLDERS_ID }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), selectedFolderId.value == ALL_FOLDERS_ID)
     val webDavConfig: StateFlow<WebDavConfig?> = configuredWebDav.asStateFlow()
     val folders: StateFlow<List<FolderEntity>> = repository.observeFolders()
         .map { folders -> listOf(STARRED_FOLDER) + folders }
@@ -105,7 +109,18 @@ class NotesViewModel(
 
     fun selectFolder(folderId: Long) {
         selectedFolderId.value = folderId
-        folderSelectionPreferences.save(folderId)
+        if (folderId != ALL_FOLDERS_ID) folderSelectionPreferences.save(folderId)
+    }
+
+    fun openGlobalSearch() {
+        selectedFolderId.value = ALL_FOLDERS_ID
+        searchQuery.value = ""
+    }
+
+    fun closeGlobalSearch() {
+        if (selectedFolderId.value == ALL_FOLDERS_ID) {
+            selectedFolderId.value = folderSelectionPreferences.load()
+        }
     }
 
     fun createFolder(name: String, onSuccess: (String) -> Unit, onFailure: (String) -> Unit) {
