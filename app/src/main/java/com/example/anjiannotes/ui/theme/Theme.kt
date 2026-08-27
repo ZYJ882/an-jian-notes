@@ -1,6 +1,6 @@
 package com.example.anjiannotes.ui.theme
 
-import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
@@ -80,8 +81,7 @@ fun AnJianTheme(
         AppearanceMode.DARK -> true
         AppearanceMode.SYSTEM -> systemDarkTheme
     }
-    val targetScheme = if (useDarkTheme) ComfortableDarkColors else ComfortableLightColors
-    val colorScheme = targetScheme.animatedColorScheme()
+    val colorScheme = animatedColorScheme(useDarkTheme)
     val view = LocalView.current
     val window = (view.context as? Activity)?.window
     SideEffect {
@@ -103,40 +103,52 @@ fun AnJianTheme(
     )
 }
 
-/** 统一用 240ms 的颜色插值完成主题切换，页面结构和导航状态保持不动。 */
+/** 统一用一个 240ms 进度动画完成主题切换，避免为每种颜色分别调度动画。 */
 @Composable
-private fun ColorScheme.animatedColorScheme(): ColorScheme {
-    val spec = tween<Color>(durationMillis = 240, easing = FastOutSlowInEasing)
-    @Composable
-    fun animated(target: Color): Color {
-        val value by animateColorAsState(targetValue = target, animationSpec = spec, label = "theme-color")
-        return value
-    }
-    return copy(
-        primary = animated(primary),
-        onPrimary = animated(onPrimary),
-        primaryContainer = animated(primaryContainer),
-        onPrimaryContainer = animated(onPrimaryContainer),
-        secondary = animated(secondary),
-        onSecondary = animated(onSecondary),
-        secondaryContainer = animated(secondaryContainer),
-        onSecondaryContainer = animated(onSecondaryContainer),
-        background = animated(background),
-        onBackground = animated(onBackground),
-        surface = animated(surface),
-        onSurface = animated(onSurface),
-        surfaceVariant = animated(surfaceVariant),
-        onSurfaceVariant = animated(onSurfaceVariant),
-        surfaceTint = animated(surfaceTint),
-        inverseSurface = animated(inverseSurface),
-        inverseOnSurface = animated(inverseOnSurface),
-        inversePrimary = animated(inversePrimary),
-        error = animated(error),
-        onError = animated(onError),
-        errorContainer = animated(errorContainer),
-        onErrorContainer = animated(onErrorContainer),
-        outline = animated(outline),
-        outlineVariant = animated(outlineVariant),
-        scrim = animated(scrim)
+private fun animatedColorScheme(useDarkTheme: Boolean): ColorScheme {
+    val progress by animateFloatAsState(
+        targetValue = if (useDarkTheme) 1f else 0f,
+        animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
+        label = "theme-color-progress"
     )
+    return ComfortableLightColors.blendTo(ComfortableDarkColors, progress)
 }
+
+private fun ColorScheme.blendTo(target: ColorScheme, progress: Float): ColorScheme = copy(
+    primary = lerp(primary, target.primary, progress),
+    onPrimary = lerp(onPrimary, target.onPrimary, progress),
+    primaryContainer = lerp(primaryContainer, target.primaryContainer, progress),
+    onPrimaryContainer = lerp(onPrimaryContainer, target.onPrimaryContainer, progress),
+    secondary = lerp(secondary, target.secondary, progress),
+    onSecondary = lerp(onSecondary, target.onSecondary, progress),
+    secondaryContainer = lerp(secondaryContainer, target.secondaryContainer, progress),
+    onSecondaryContainer = lerp(onSecondaryContainer, target.onSecondaryContainer, progress),
+    tertiary = lerp(tertiary, target.tertiary, progress),
+    onTertiary = lerp(onTertiary, target.onTertiary, progress),
+    tertiaryContainer = lerp(tertiaryContainer, target.tertiaryContainer, progress),
+    onTertiaryContainer = lerp(onTertiaryContainer, target.onTertiaryContainer, progress),
+    background = lerp(background, target.background, progress),
+    onBackground = lerp(onBackground, target.onBackground, progress),
+    surface = lerp(surface, target.surface, progress),
+    onSurface = lerp(onSurface, target.onSurface, progress),
+    surfaceVariant = lerp(surfaceVariant, target.surfaceVariant, progress),
+    onSurfaceVariant = lerp(onSurfaceVariant, target.onSurfaceVariant, progress),
+    surfaceTint = lerp(surfaceTint, target.surfaceTint, progress),
+    inverseSurface = lerp(inverseSurface, target.inverseSurface, progress),
+    inverseOnSurface = lerp(inverseOnSurface, target.inverseOnSurface, progress),
+    inversePrimary = lerp(inversePrimary, target.inversePrimary, progress),
+    error = lerp(error, target.error, progress),
+    onError = lerp(onError, target.onError, progress),
+    errorContainer = lerp(errorContainer, target.errorContainer, progress),
+    onErrorContainer = lerp(onErrorContainer, target.onErrorContainer, progress),
+    outline = lerp(outline, target.outline, progress),
+    outlineVariant = lerp(outlineVariant, target.outlineVariant, progress),
+    scrim = lerp(scrim, target.scrim, progress),
+    surfaceBright = lerp(surfaceBright, target.surfaceBright, progress),
+    surfaceDim = lerp(surfaceDim, target.surfaceDim, progress),
+    surfaceContainer = lerp(surfaceContainer, target.surfaceContainer, progress),
+    surfaceContainerHigh = lerp(surfaceContainerHigh, target.surfaceContainerHigh, progress),
+    surfaceContainerHighest = lerp(surfaceContainerHighest, target.surfaceContainerHighest, progress),
+    surfaceContainerLow = lerp(surfaceContainerLow, target.surfaceContainerLow, progress),
+    surfaceContainerLowest = lerp(surfaceContainerLowest, target.surfaceContainerLowest, progress)
+)

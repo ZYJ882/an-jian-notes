@@ -14,12 +14,8 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.net.Uri
 import android.os.Bundle
-import android.os.Debug
-import android.os.SystemClock
 import android.util.Log
 import androidx.activity.ComponentActivity
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -56,6 +52,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -86,8 +83,6 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.mutableStateOf
@@ -100,7 +95,6 @@ import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
@@ -113,6 +107,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -150,38 +145,55 @@ import com.example.anjiannotes.ui.theme.AnJianTheme
 import com.example.anjiannotes.ui.theme.AppearanceMode
 import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.LinkedHashMap
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val app = application as AnJianApplication
-        val factory = NotesViewModelFactory(
-            NotesRepository(app.database, app.database.noteDao(), app.database.folderDao()),
-            app.webDavConfigStore,
-            app.webDavBackupClient,
-            app.folderSelectionPreferences
-        )
         setContent {
             val appearanceMode by app.appearancePreferences.mode.collectAsStateWithLifecycle()
+            var factory by remember { mutableStateOf<NotesViewModelFactory?>(null) }
+
+            // 让 Activity 尽快交出主线程以绘制首帧；Room 与依赖组装在后台完成后再进入首页。
+            LaunchedEffect(app) {
+                factory = withContext(Dispatchers.Default) {
+                    val database = app.database
+                    NotesViewModelFactory(
+                        NotesRepository(database, database.noteDao(), database.folderDao()),
+                        app.webDavConfigStore,
+                        app.webDavBackupClient,
+                        app.folderSelectionPreferences
+                    )
+                }
+            }
+
             AnJianTheme(
                 appearanceMode = appearanceMode,
                 systemDarkTheme = isSystemInDarkTheme()
             ) {
-                val notesViewModel: NotesViewModel = viewModel(factory = factory)
-                NotesApp(
-                    viewModel = notesViewModel,
-                    appearanceMode = appearanceMode,
-                    onAppearanceChange = app.appearancePreferences::setMode
-                )
+                val viewModelFactory = factory
+                if (viewModelFactory == null) {
+                    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {}
+                } else {
+                    val notesViewModel: NotesViewModel = viewModel(factory = viewModelFactory)
+                    NotesApp(
+                        viewModel = notesViewModel,
+                        appearanceMode = appearanceMode,
+                        onAppearanceChange = app.appearancePreferences::setMode
+                    )
+                }
             }
         }
     }
@@ -200,6 +212,39 @@ private data class NoteDraftSnapshot(
     val isMarkdown: Boolean,
     val folderId: Long
 )
+
+private data class NoteListPreviewKey(
+    val id: Long,
+    val updatedAt: Long,
+    val isMarkdown: Boolean
+)
+
+/**
+ * 列表项离开并重新进入可视区时，Compose 可能需要重新组合该项。
+ * 缓存已生成的轻量摘要，避免再次执行多轮 Markdown 正则替换。
+ */
+private object NoteListPreviewCache {
+    private const val MAX_ENTRIES = 128
+    private val values = object : LinkedHashMap<NoteListPreviewKey, String>(MAX_ENTRIES, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<NoteListPreviewKey, String>?): Boolean =
+            size > MAX_ENTRIES
+    }
+
+    fun get(note: NoteEntity): String {
+        val key = NoteListPreviewKey(note.id, note.updatedAt, note.isMarkdown)
+        return values[key] ?: createPreview(note).also { values[key] = it }
+    }
+
+    private fun createPreview(note: NoteEntity): String = if (note.isMarkdown) {
+        markdownToListPreview(note.content)
+    } else {
+        plainTextToListPreview(note.content)
+    }
+}
+
+private val NoteDateFormatter = ThreadLocal.withInitial {
+    SimpleDateFormat("yyyy年M月d日 HH:mm", Locale.CHINA)
+}
 
 private sealed interface AppPage {
     data object List : AppPage
@@ -628,7 +673,6 @@ private fun NotesListPage(
     val scope = rememberCoroutineScope()
     val activeFolderName = folders.firstOrNull { it.id == activeFolderId }?.name ?: "全部笔记"
     val noteListState = rememberLazyListState()
-    val listDiagnostics = remember { NoteListScrollDiagnostics() }
     var selectedNoteIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var pendingBatchDeleteIds by remember { mutableStateOf<Set<Long>?>(null) }
     val selectionMode = selectedNoteIds.isNotEmpty()
@@ -638,32 +682,6 @@ private fun NotesListPage(
     }
 
     BackHandler(enabled = selectionMode) { selectedNoteIds = emptySet() }
-
-    if (BuildConfig.DEBUG) {
-        SideEffect { listDiagnostics.pageComposed() }
-        LaunchedEffect(noteListState) {
-            var scrolling = false
-            snapshotFlow {
-                ListScrollSample(
-                    scrolling = noteListState.isScrollInProgress,
-                    index = noteListState.firstVisibleItemIndex,
-                    offset = noteListState.firstVisibleItemScrollOffset
-                )
-            }.collect { sample ->
-                if (sample.scrolling && !scrolling) listDiagnostics.begin(sample)
-                if (sample.scrolling) listDiagnostics.sample(sample)
-                if (!sample.scrolling && scrolling) listDiagnostics.end(sample)
-                scrolling = sample.scrolling
-            }
-        }
-        LaunchedEffect(noteListState) {
-            snapshotFlow { noteListState.isScrollInProgress }.collect { scrolling ->
-                while (scrolling && noteListState.isScrollInProgress) {
-                    withFrameNanos { frameTime -> listDiagnostics.frame(frameTime) }
-                }
-            }
-        }
-    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -835,17 +853,20 @@ private fun NotesListPage(
                                 .padding(end = 12.dp)
                         ) {
                             item { Text("共 ${notes.size} 条笔记", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 2.dp)) }
-                            items(notes.size, key = { notes[it].id }) { index ->
+                            items(
+                                items = notes,
+                                key = { it.id },
+                                contentType = { "note" }
+                            ) { note ->
                                 NoteCard(
-                                    note = notes[index],
-                                    selected = notes[index].id in selectedNoteIds,
+                                    note = note,
+                                    selected = note.id in selectedNoteIds,
                                     selectionMode = selectionMode,
                                     onOpen = {
-                                        if (selectionMode) toggleSelection(notes[index].id) else onOpenNote(notes[index])
+                                        if (selectionMode) toggleSelection(note.id) else onOpenNote(note)
                                     },
-                                    onLongPress = { toggleSelection(notes[index].id) },
-                                    onToggleStar = { onToggleStar(notes[index]) },
-                                    diagnostics = listDiagnostics
+                                    onLongPress = { toggleSelection(note.id) },
+                                    onToggleStar = { onToggleStar(note) }
                                 )
                             }
                             item { Spacer(Modifier.height(20.dp)) }
@@ -853,7 +874,6 @@ private fun NotesListPage(
                         DraggableNoteListScrollbar(
                             listState = noteListState,
                             thumbColor = MaterialTheme.colorScheme.primary,
-                            diagnostics = listDiagnostics,
                             modifier = Modifier
                                 .align(Alignment.CenterEnd)
                                 .fillMaxHeight()
@@ -2022,112 +2042,12 @@ private fun DraggableDetailScrollbar(
     }
 }
 
-private data class ListScrollSample(val scrolling: Boolean, val index: Int, val offset: Int)
-
-private class NoteListScrollDiagnostics {
-    private var active = false
-    private var startedAt = 0L
-    private var lastSampleAt = 0L
-    private var samples = 0
-    private var slowSamples = 0
-    private var pageRecompositions = 0
-    private var cardCompositions = 0
-    private var summaryBuilds = 0
-    private var summaryNanos = 0L
-    private var scrollbarCompositions = 0
-    private var frameSamples = 0
-    private var slowFrames = 0
-    private var lastFrameNanos = 0L
-    private var gcAtStart: String? = null
-
-    fun begin(sample: ListScrollSample) {
-        if (!BuildConfig.DEBUG) return
-        active = true
-        startedAt = SystemClock.uptimeMillis()
-        lastSampleAt = startedAt
-        samples = 0
-        slowSamples = 0
-        pageRecompositions = 0
-        cardCompositions = 0
-        summaryBuilds = 0
-        summaryNanos = 0L
-        scrollbarCompositions = 0
-        frameSamples = 0
-        slowFrames = 0
-        lastFrameNanos = 0L
-        gcAtStart = Debug.getRuntimeStat("art.gc.gc-count")
-        Log.d("ListPerf", "scroll start index=${sample.index} offset=${sample.offset}")
-    }
-
-    fun sample(sample: ListScrollSample) {
-        if (!BuildConfig.DEBUG || !active) return
-        samples += 1
-        val now = SystemClock.uptimeMillis()
-        val gap = now - lastSampleAt
-        lastSampleAt = now
-        if (gap > 24L) {
-            slowSamples += 1
-            Log.w("ListPerf", "scroll gapMs=$gap index=${sample.index} offset=${sample.offset}")
-        }
-    }
-
-    fun pageComposed() {
-        if (BuildConfig.DEBUG && active) pageRecompositions += 1
-    }
-
-    fun cardComposed() {
-        if (BuildConfig.DEBUG && active) cardCompositions += 1
-    }
-
-    fun summaryBuilt(durationNanos: Long) {
-        if (BuildConfig.DEBUG && active) {
-            summaryBuilds += 1
-            summaryNanos += durationNanos
-        }
-    }
-
-    fun scrollbarComposed() {
-        if (BuildConfig.DEBUG && active) scrollbarCompositions += 1
-    }
-
-    fun frame(frameNanos: Long) {
-        if (!BuildConfig.DEBUG || !active) return
-        if (lastFrameNanos != 0L) {
-            val gap = frameNanos - lastFrameNanos
-            if (gap > 24_000_000L) {
-                slowFrames += 1
-                Log.w("ListPerf", "frame gapMs=${gap / 1_000_000f}")
-            }
-        }
-        lastFrameNanos = frameNanos
-        frameSamples += 1
-    }
-
-    fun end(sample: ListScrollSample) {
-        if (!BuildConfig.DEBUG || !active) return
-        val duration = SystemClock.uptimeMillis() - startedAt
-        val summaryMillis = summaryNanos / 1_000_000f
-        val gcAtEnd = Debug.getRuntimeStat("art.gc.gc-count")
-        Log.d(
-            "ListPerf",
-            "scroll end durationMs=$duration samples=$samples slowSamples=$slowSamples " +
-                "pageRecompositions=$pageRecompositions cardCompositions=$cardCompositions " +
-                "scrollbarCompositions=$scrollbarCompositions frames=$frameSamples slowFrames=$slowFrames " +
-                "summaryBuilds=$summaryBuilds summaryMs=$summaryMillis gc=$gcAtStart->$gcAtEnd " +
-                "index=${sample.index} offset=${sample.offset}"
-        )
-        active = false
-    }
-}
-
 @Composable
 private fun DraggableNoteListScrollbar(
     listState: LazyListState,
     thumbColor: Color,
-    diagnostics: NoteListScrollDiagnostics? = null,
     modifier: Modifier = Modifier
 ) {
-    if (BuildConfig.DEBUG) SideEffect { diagnostics?.scrollbarComposed() }
     val density = LocalDensity.current
     val canScroll by remember(listState) {
         derivedStateOf { listState.canScrollBackward || listState.canScrollForward }
@@ -2140,17 +2060,12 @@ private fun DraggableNoteListScrollbar(
     val thumbWidthPx = with(density) { 4.dp.toPx() }
     val thumbHeightPx = with(density) { 42.dp.toPx() }
     val itemSpacingPx = with(density) { 10.dp.toPx() }
-    val targetAlpha = if (canScroll && (scrolling || dragging)) 0.58f else 0f
-    val thumbAlpha = animateFloatAsState(
-        targetValue = targetAlpha,
-        animationSpec = tween(durationMillis = if (targetAlpha > 0f) 90 else 180),
-        label = "noteListScrollbarAlpha"
-    )
+    val thumbAlpha = if (canScroll && (scrolling || dragging)) 0.58f else 0f
 
     Canvas(
         modifier = modifier
             .width(12.dp)
-            .graphicsLayer { alpha = thumbAlpha.value }
+            .graphicsLayer { alpha = thumbAlpha }
             .pointerInput(listState) {
                 detectDragGestures(
                     onDragStart = onDragStart@{
@@ -2225,16 +2140,12 @@ private fun NoteCard(
     selectionMode: Boolean,
     onOpen: () -> Unit,
     onLongPress: () -> Unit,
-    onToggleStar: () -> Unit,
-    diagnostics: NoteListScrollDiagnostics? = null
+    onToggleStar: () -> Unit
 ) {
-    val summary = remember(note.id, note.content, note.isMarkdown) {
-        val startNanos = if (BuildConfig.DEBUG) SystemClock.elapsedRealtimeNanos() else 0L
-        val value = if (note.isMarkdown) markdownToListPreview(note.content) else plainTextToListPreview(note.content)
-        if (BuildConfig.DEBUG) diagnostics?.summaryBuilt(SystemClock.elapsedRealtimeNanos() - startNanos)
-        value
+    val summary = remember(note.id, note.updatedAt, note.isMarkdown) {
+        NoteListPreviewCache.get(note)
     }
-    if (BuildConfig.DEBUG) SideEffect { diagnostics?.cardComposed() }
+    val formattedDate = remember(note.updatedAt) { formatDate(note.updatedAt) }
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -2273,7 +2184,7 @@ private fun NoteCard(
             }
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    formatDate(note.updatedAt),
+                    formattedDate,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
                     modifier = Modifier.weight(1f)
@@ -2343,4 +2254,4 @@ private fun ImportErrorDialog(message: String, onDismiss: () -> Unit) {
 private val NoteColors = listOf(0xFFF5F0E8, 0xFFF5ECEB, 0xFFEDF3F5, 0xFFEEF5F0, 0xFFF5F1E3)
 
 
-private fun formatDate(time: Long): String = SimpleDateFormat("yyyy年M月d日 HH:mm", Locale.CHINA).format(Date(time))
+private fun formatDate(time: Long): String = requireNotNull(NoteDateFormatter.get()).format(Date(time))
