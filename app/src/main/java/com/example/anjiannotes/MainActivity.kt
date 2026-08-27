@@ -1599,7 +1599,16 @@ private fun NoteDetailPage(
     }
 
     fun toggleDetailMode() {
-        if (detailMode == DetailMode.PREVIEW) enterEdit(InlineEditTarget.CONTENT) else handleBack()
+        if (detailMode == DetailMode.PREVIEW) {
+            enterEdit(InlineEditTarget.CONTENT)
+        } else {
+            // 右上角“预览”不会经过系统返回逻辑，必须在此同步 AndroidView
+            // 内尚未完成 Compose 重组的最后输入，避免预览读取旧草稿。
+            syncNativeContentBeforePreview()
+            startSaveWorker()
+            detailMode = DetailMode.PREVIEW
+            keyboard?.hide()
+        }
     }
 
     fun openPreviewLink(link: String) {
