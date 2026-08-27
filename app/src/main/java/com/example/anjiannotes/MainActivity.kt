@@ -895,9 +895,7 @@ private fun NotesListPage(
                         androidx.compose.foundation.lazy.LazyColumn(
                             state = noteListState,
                             verticalArrangement = Arrangement.spacedBy(5.dp),
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(end = 12.dp)
+                            modifier = Modifier.fillMaxSize()
                         ) {
                             item {
                                 Text(
@@ -2178,7 +2176,7 @@ private fun DraggableNoteListScrollbar(
     var dragPixelsToScroll by remember { mutableStateOf(0f) }
     val thumbWidthPx = with(density) { 4.dp.toPx() }
     val thumbHeightPx = with(density) { 42.dp.toPx() }
-    val itemSpacingPx = with(density) { 10.dp.toPx() }
+    val itemSpacingPx = with(density) { 5.dp.toPx() }
     val thumbAlpha = if (canScroll && (scrolling || dragging)) 0.58f else 0f
 
     Canvas(
