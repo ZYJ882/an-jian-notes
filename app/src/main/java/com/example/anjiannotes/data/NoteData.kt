@@ -32,6 +32,13 @@ data class FolderEntity(
     val sortOrder: Long = System.currentTimeMillis()
 )
 
+val DEFAULT_FOLDER = FolderEntity(
+    id = DEFAULT_FOLDER_ID,
+    name = "默认收藏夹",
+    createdAt = 0,
+    sortOrder = 0
+)
+
 @Entity(tableName = "notes")
 data class NoteEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -156,7 +163,7 @@ class NotesRepository(
     fun observeFolders(): Flow<List<FolderEntity>> = folderDao.observeFolders()
 
     suspend fun ensureDefaultFolder() {
-        folderDao.insert(FolderEntity(id = DEFAULT_FOLDER_ID, name = "默认收藏夹", createdAt = 0, sortOrder = 0))
+        folderDao.insert(DEFAULT_FOLDER)
     }
 
     suspend fun createFolder(name: String): Long {
@@ -174,11 +181,8 @@ class NotesRepository(
 
     suspend fun restoreSnapshot(snapshot: BackupSnapshot) {
         database.withTransaction {
-            val folders = snapshot.folders.ifEmpty {
-                listOf(FolderEntity(id = DEFAULT_FOLDER_ID, name = "默认收藏夹", createdAt = 0, sortOrder = 0))
-            }.let { imported ->
-                if (imported.any { it.id == DEFAULT_FOLDER_ID }) imported
-                else listOf(FolderEntity(id = DEFAULT_FOLDER_ID, name = "默认收藏夹", createdAt = 0, sortOrder = 0)) + imported
+            val folders = snapshot.folders.ifEmpty { listOf(DEFAULT_FOLDER) }.let { imported ->
+                if (imported.any { it.id == DEFAULT_FOLDER_ID }) imported else listOf(DEFAULT_FOLDER) + imported
             }
             val validFolderIds = folders.map { it.id }.toSet()
             val notes = snapshot.notes.map { note ->

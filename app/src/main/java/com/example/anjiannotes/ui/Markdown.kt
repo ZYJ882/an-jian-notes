@@ -111,7 +111,7 @@ private fun isTableRow(line: String): Boolean = line.count { it == '|' } >= 2
 
 private fun isTableSeparator(line: String): Boolean {
     val cells = parseTableRow(line)
-    return cells.isNotEmpty() && cells.all { cell -> cell.matches(Regex("^:?-{3,}:?$")) }
+    return cells.isNotEmpty() && cells.all(MarkdownTableSeparatorPattern::matches)
 }
 
 private fun parseTableRow(line: String): List<String> = line
@@ -272,14 +272,14 @@ private fun MarkdownLine(
         line.startsWith("> ") -> Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium) {
             MarkdownLineText(markdownInline(line.removePrefix("> "), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier.padding(horizontal = 12.dp, vertical = 9.dp), onTextLayout = textLayoutCallback)
         }
-        line.matches(Regex("^[-+*]\\s+.*")) -> Row(
+        line.matches(MarkdownUnorderedListPattern) -> Row(
             modifier = lineModifier,
             verticalAlignment = Alignment.Top
         ) {
             Text("•", modifier = Modifier.padding(end = 8.dp), color = MaterialTheme.colorScheme.primary)
-            MarkdownLineText(markdownInline(line.replaceFirst(Regex("^[-+*]\\s+"), ""), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, Modifier, onTextLayout = textLayoutCallback)
+            MarkdownLineText(markdownInline(line.replaceFirst(MarkdownUnorderedListPrefixPattern, ""), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, Modifier, onTextLayout = textLayoutCallback)
         }
-        line.matches(Regex("^\\d+\\.\\s+.*")) -> {
+        line.matches(MarkdownOrderedListPattern) -> {
             val prefix = line.substringBefore(' ')
             Row(
                 modifier = lineModifier,
@@ -304,6 +304,10 @@ private fun MarkdownLineText(
     Text(text = text, style = style, fontWeight = weight, onTextLayout = onTextLayout, modifier = modifier)
 }
 
+private val MarkdownTableSeparatorPattern = Regex("^:?-{3,}:?$")
+private val MarkdownUnorderedListPattern = Regex("^[-+*]\\s+.*")
+private val MarkdownUnorderedListPrefixPattern = Regex("^[-+*]\\s+")
+private val MarkdownOrderedListPattern = Regex("^\\d+\\.\\s+.*")
 private val MarkdownLinkPattern = Regex("\\[([^\\]]+)\\]\\((https?://[^\\s)]+)\\)", RegexOption.IGNORE_CASE)
 private val UrlPattern = Regex("https?://[^\\s)]+", RegexOption.IGNORE_CASE)
 private val PreviewLinkBlueLight = Color(0xFF765F82)
@@ -313,33 +317,29 @@ private val PreviewLinkBlueDark = Color(0xFFC7B1CF)
 fun previewLinkColor(darkTheme: Boolean): Color = if (darkTheme) PreviewLinkBlueDark else PreviewLinkBlueLight
 fun linkifyPlainText(text: String, linkColor: Color): AnnotatedString = buildAnnotatedString {
     var cursor = 0
-    while (cursor < text.length) {
-        val url = UrlPattern.find(text, cursor)
-        if (url != null && url.range.first == cursor) {
-            pushStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline))
-            append(url.value)
-            pop()
-            cursor = url.range.last + 1
-        } else {
-            append(text[cursor])
-            cursor++
-        }
+    UrlPattern.findAll(text).forEach { url ->
+        append(text, cursor, url.range.first)
+        pushStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline))
+        append(url.value)
+        pop()
+        cursor = url.range.last + 1
     }
+    append(text, cursor, text.length)
 }
 
 private fun markdownInline(text: String, linkColor: Color, codeBackground: Color): AnnotatedString = buildAnnotatedString {
     var cursor = 0
     while (cursor < text.length) {
-        val markdownLink = MarkdownLinkPattern.find(text, cursor)
-        if (markdownLink != null && markdownLink.range.first == cursor) {
+        val markdownLink = if (text[cursor] == '[') MarkdownLinkPattern.matchAt(text, cursor) else null
+        if (markdownLink != null) {
             pushStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline))
             append(markdownLink.groupValues[1])
             pop()
             cursor = markdownLink.range.last + 1
             continue
         }
-        val url = UrlPattern.find(text, cursor)
-        if (url != null && url.range.first == cursor) {
+        val url = if (text[cursor].lowercaseChar() == 'h') UrlPattern.matchAt(text, cursor) else null
+        if (url != null) {
             pushStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline))
             append(url.value)
             pop()

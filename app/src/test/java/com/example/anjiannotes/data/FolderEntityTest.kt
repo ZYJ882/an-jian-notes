@@ -11,7 +11,10 @@ class FolderEntityTest {
 
     @Test
     fun defaultFolder_keepsDedicatedStableId() {
-        assertEquals(DEFAULT_FOLDER_ID, FolderEntity(id = DEFAULT_FOLDER_ID, name = "默认收藏夹").id)
+        assertEquals(DEFAULT_FOLDER_ID, DEFAULT_FOLDER.id)
+        assertEquals("默认收藏夹", DEFAULT_FOLDER.name)
+        assertEquals(0L, DEFAULT_FOLDER.createdAt)
+        assertEquals(0L, DEFAULT_FOLDER.sortOrder)
     }
 
     @Test

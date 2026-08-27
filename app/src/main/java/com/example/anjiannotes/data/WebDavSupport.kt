@@ -114,11 +114,13 @@ class WebDavBackupClient(context: Context) {
         appVersion: String
     ): WebDavSyncResult = withContext(Dispatchers.IO) {
         val connection = config.normalized().also { it.validate() }
+        val authorization = connection.basicAuthorization()
         val root = "${connection.endpoint}/${connection.remoteDirectory}"
-        ensureCollection(root, connection)
-        ensureCollection("$root/notes", connection)
+        ensureCollection(root, authorization)
+        ensureCollection("$root/notes", authorization)
 
         val scope = digest("${connection.endpoint}|${connection.username}|${connection.remoteDirectory}")
+        val pendingState = preferences.edit()
         var uploadedNotes = 0
         var skippedNotes = 0
         snapshot.notes.forEach { note ->
@@ -128,8 +130,8 @@ class WebDavBackupClient(context: Context) {
             if (preferences.getString(key, null) == hash) {
                 skippedNotes++
             } else {
-                put("$root/${MarkdownZipBackupCodec.noteFileName(note)}", content, connection)
-                preferences.edit().putString(key, hash).apply()
+                put("$root/${MarkdownZipBackupCodec.noteFileName(note)}", content, authorization)
+                pendingState.putString(key, hash)
                 uploadedNotes++
             }
         }
@@ -139,22 +141,23 @@ class WebDavBackupClient(context: Context) {
         val folderKey = "$scope.folders"
         val foldersUploaded = preferences.getString(folderKey, null) != folderHash
         if (foldersUploaded) {
-            put("$root/folders.json", folders, connection)
-            preferences.edit().putString(folderKey, folderHash).apply()
+            put("$root/folders.json", folders, authorization)
+            pendingState.putString(folderKey, folderHash)
         }
-        put("$root/metadata.json", MarkdownZipBackupCodec.metadataJson(snapshot, appVersion).toByteArray(Charsets.UTF_8), connection)
+        put("$root/metadata.json", MarkdownZipBackupCodec.metadataJson(snapshot, appVersion).toByteArray(Charsets.UTF_8), authorization)
+        pendingState.apply()
         WebDavSyncResult(uploadedNotes, skippedNotes, foldersUploaded)
     }
 
-    private fun ensureCollection(url: String, config: WebDavConfig) {
-        val response = connection(url, "MKCOL", config).useAndCode()
+    private fun ensureCollection(url: String, authorization: String) {
+        val response = connection(url, "MKCOL", authorization).useAndCode()
         require(response == HttpURLConnection.HTTP_CREATED || response == HttpURLConnection.HTTP_BAD_METHOD) {
             "无法创建 WebDAV 目录（HTTP $response）"
         }
     }
 
-    private fun put(url: String, bytes: ByteArray, config: WebDavConfig) {
-        val connection = connection(url, "PUT", config).apply {
+    private fun put(url: String, bytes: ByteArray, authorization: String) {
+        val connection = connection(url, "PUT", authorization).apply {
             doOutput = true
             setFixedLengthStreamingMode(bytes.size)
             setRequestProperty("Content-Type", if (url.endsWith(".md")) "text/markdown; charset=utf-8" else "application/json; charset=utf-8")
@@ -165,14 +168,18 @@ class WebDavBackupClient(context: Context) {
         require(code in 200..299) { "WebDAV 上传失败（HTTP $code）" }
     }
 
-    private fun connection(url: String, method: String, config: WebDavConfig): HttpURLConnection {
+    private fun connection(url: String, method: String, authorization: String): HttpURLConnection {
         return (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 15_000
             readTimeout = 30_000
-            val credential = "${config.username}:${config.password}".toByteArray(Charsets.UTF_8)
-            setRequestProperty("Authorization", "Basic ${Base64.encodeToString(credential, Base64.NO_WRAP)}")
+            setRequestProperty("Authorization", authorization)
         }
+    }
+
+    private fun WebDavConfig.basicAuthorization(): String {
+        val credential = "$username:$password".toByteArray(Charsets.UTF_8)
+        return "Basic ${Base64.encodeToString(credential, Base64.NO_WRAP)}"
     }
 
     private fun HttpURLConnection.useAndCode(): Int = try {

@@ -35,4 +35,33 @@ class BackupCodecTest {
         assertTrue(restored.notes.single().isPinned)
         assertFalse(restored.notes.single().content.isBlank())
     }
+
+    @Test
+    fun jsonBackup_movesNotesWithUnknownFoldersToDefaultFolder() {
+        val rawBackup = """
+            {
+              "schemaVersion": 1,
+              "folders": [
+                {"id": 1, "name": "默认收藏夹", "createdAt": 0, "sortOrder": 0}
+              ],
+              "notes": [
+                {
+                  "id": 9,
+                  "title": "待整理",
+                  "content": "内容",
+                  "color": 4294301928,
+                  "createdAt": 1,
+                  "updatedAt": 2,
+                  "isPinned": false,
+                  "isMarkdown": false,
+                  "folderId": 999
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val restored = BackupCodec.decode(rawBackup)
+
+        assertEquals(DEFAULT_FOLDER_ID, restored.notes.single().folderId)
+    }
 }

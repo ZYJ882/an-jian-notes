@@ -17,6 +17,7 @@ import com.example.anjiannotes.data.WebDavConfig
 import com.example.anjiannotes.data.WebDavConfigStore
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,6 +30,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class NotesViewModel(
@@ -66,8 +68,8 @@ class NotesViewModel(
         action: suspend () -> T
     ) {
         viewModelScope.launch {
-            runCatching { action() }
-                .onSuccess(onSuccess)
+            val result = withContext(Dispatchers.Default) { runCatching { action() } }
+            result.onSuccess(onSuccess)
                 .onFailure { onFailure(it.message ?: fallbackMessage) }
         }
     }
@@ -75,7 +77,7 @@ class NotesViewModel(
     private fun <T> launchDeferred(action: suspend () -> T): Deferred<T> {
         val result = CompletableDeferred<T>()
         viewModelScope.launch {
-            runCatching { action() }
+            withContext(Dispatchers.Default) { runCatching { action() } }
                 .onSuccess(result::complete)
                 .onFailure(result::completeExceptionally)
         }
@@ -92,7 +94,9 @@ class NotesViewModel(
         onComplete: (Int) -> Unit,
         action: suspend (Collection<Long>) -> Int
     ) {
-        viewModelScope.launch { onComplete(action(ids)) }
+        viewModelScope.launch {
+            onComplete(withContext(Dispatchers.Default) { action(ids) })
+        }
     }
 
     fun setSearchQuery(value: String) {
@@ -113,9 +117,9 @@ class NotesViewModel(
     }
 
     fun saveWebDavConfig(config: WebDavConfig, onSuccess: () -> Unit, onFailure: (String) -> Unit) {
-        runCatching { persistWebDavConfig(config) }
-            .onSuccess { onSuccess() }
-            .onFailure { onFailure(it.message ?: "WebDAV 配置保存失败") }
+        launchResult("WebDAV 配置保存失败", { onSuccess() }, onFailure) {
+            persistWebDavConfig(config)
+        }
     }
 
     fun syncWebDav(

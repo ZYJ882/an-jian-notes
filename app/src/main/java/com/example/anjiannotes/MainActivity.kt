@@ -286,6 +286,19 @@ private fun NotesApp(
     var pendingMarkdownZipPayload by remember { mutableStateOf<ByteArray?>(null) }
     var pendingMarkdownZipRestorePayload by remember { mutableStateOf<ByteArray?>(null) }
     var showWebDavDialog by remember { mutableStateOf(false) }
+    val fileIoScope = rememberCoroutineScope()
+
+    fun <T> runFileOperation(
+        failurePrefix: String,
+        operation: () -> T,
+        onSuccess: (T) -> Unit
+    ) {
+        fileIoScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching(operation) }
+            result.onSuccess(onSuccess)
+                .onFailure { feedbackMessage = "$failurePrefix：${it.message ?: "无法读写文件"}" }
+        }
+    }
 
     fun writableFolderId(): Long =
         activeFolderId.takeUnless { it == STARRED_FOLDER_ID } ?: DEFAULT_FOLDER_ID
@@ -298,58 +311,50 @@ private fun NotesApp(
         ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
         val payload = pendingBackupPayload
+        pendingBackupPayload = null
         if (uri != null && payload != null) {
-            runCatching {
-                context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { writer -> writer.write(payload) }
+            runFileOperation("备份导出失败", {
+                context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(payload) }
                     ?: error("无法写入所选位置")
-            }.onSuccess {
+            }) {
                 feedbackMessage = "备份已导出"
-            }.onFailure {
-                feedbackMessage = "备份导出失败：${it.message ?: "无法写入文件"}"
             }
         }
-        pendingBackupPayload = null
     }
 
     val textBackupSaveLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/plain")
     ) { uri ->
         val payload = pendingTextBackupPayload
+        pendingTextBackupPayload = null
         if (uri != null && payload != null) {
-            runCatching {
-                context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { writer -> writer.write(payload) }
+            runFileOperation("TXT 备份导出失败", {
+                context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(payload) }
                     ?: error("无法写入所选位置")
-            }.onSuccess {
+            }) {
                 feedbackMessage = "TXT 明文备份已导出"
-            }.onFailure {
-                feedbackMessage = "TXT 备份导出失败：${it.message ?: "无法写入文件"}"
             }
         }
-        pendingTextBackupPayload = null
     }
 
     val backupOpenLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            runCatching {
-                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+        uri?.let { selectedUri ->
+            runFileOperation("备份文件读取失败", {
+                context.contentResolver.openInputStream(selectedUri)?.bufferedReader()?.use { it.readText() }
                     ?: error("无法读取所选文件")
-            }.onSuccess { raw ->
+            }) { raw ->
                 pendingRestorePayload = raw
-            }.onFailure {
-                feedbackMessage = "备份文件读取失败：${it.message ?: "无法读取文件"}"
             }
         }
     }
 
     val textBackupOpenLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            runCatching {
-                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+        uri?.let { selectedUri ->
+            runFileOperation("TXT 备份文件读取失败", {
+                context.contentResolver.openInputStream(selectedUri)?.bufferedReader()?.use { it.readText() }
                     ?: error("无法读取所选文件")
-            }.onSuccess { raw ->
+            }) { raw ->
                 pendingTextRestorePayload = raw
-            }.onFailure {
-                feedbackMessage = "TXT 备份文件读取失败：${it.message ?: "无法读取文件"}"
             }
         }
     }
@@ -358,39 +363,38 @@ private fun NotesApp(
         ActivityResultContracts.CreateDocument("application/zip")
     ) { uri ->
         val payload = pendingMarkdownZipPayload
+        pendingMarkdownZipPayload = null
         if (uri != null && payload != null) {
-            runCatching {
-                context.contentResolver.openOutputStream(uri)?.use { stream -> stream.write(payload) }
+            runFileOperation("ZIP 备份导出失败", {
+                context.contentResolver.openOutputStream(uri)?.use { it.write(payload) }
                     ?: error("无法写入所选位置")
-            }.onSuccess {
+            }) {
                 feedbackMessage = "Markdown ZIP 备份已导出"
-            }.onFailure {
-                feedbackMessage = "ZIP 备份导出失败：${it.message ?: "无法写入文件"}"
             }
         }
-        pendingMarkdownZipPayload = null
     }
 
     val markdownZipOpenLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            runCatching {
-                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        uri?.let { selectedUri ->
+            runFileOperation("ZIP 备份读取失败", {
+                context.contentResolver.openInputStream(selectedUri)?.use { it.readBytes() }
                     ?: error("无法读取所选文件")
-            }.onSuccess { payload ->
+            }) { payload ->
                 pendingMarkdownZipRestorePayload = payload
-            }.onFailure {
-                feedbackMessage = "ZIP 备份读取失败：${it.message ?: "无法读取文件"}"
             }
         }
     }
 
     val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri ?: return@rememberLauncherForActivityResult
-        when (val result = readTextImport(context, uri)) {
-            is ImportReadResult.Success -> {
-                openImported(EditorSeed(result.note.title, result.note.content, result.note.formatMode))
+        uri?.let { selectedUri ->
+            runFileOperation("导入失败", { readTextImport(context, selectedUri) }) { result ->
+                when (result) {
+                    is ImportReadResult.Success -> {
+                        openImported(EditorSeed(result.note.title, result.note.content, result.note.formatMode))
+                    }
+                    is ImportReadResult.Failure -> importError = result.message
+                }
             }
-            is ImportReadResult.Failure -> importError = result.message
         }
     }
 
@@ -921,17 +925,14 @@ private fun FolderDeleteDialog(
     folder: FolderEntity,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("删除收藏夹？") },
-        text = {
-            Text("将删除“${folder.name}”及其中全部笔记。此操作不可恢复。")
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("删除", color = MaterialTheme.colorScheme.error) } }
-    )
-}
+) = ConfirmationDialog(
+    title = "删除收藏夹？",
+    message = "将删除“${folder.name}”及其中全部笔记。此操作不可恢复。",
+    confirmLabel = "删除",
+    destructive = true,
+    onDismiss = onDismiss,
+    onConfirm = onConfirm
+)
 
 @Composable
 private fun FolderPickerDialog(
@@ -1256,26 +1257,22 @@ private fun BackupMenuDialog(
 }
 
 @Composable
-private fun RestoreTextBackupDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("恢复 TXT 明文备份？") },
-        text = { Text("恢复会以 TXT 备份中的收藏夹和笔记替换当前本地数据，此操作无法撤销。") },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("确认恢复") } }
-    )
-}
+private fun RestoreTextBackupDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) = ConfirmationDialog(
+    title = "恢复 TXT 明文备份？",
+    message = "恢复会以 TXT 备份中的收藏夹和笔记替换当前本地数据，此操作无法撤销。",
+    confirmLabel = "确认恢复",
+    onDismiss = onDismiss,
+    onConfirm = onConfirm
+)
 
 @Composable
-private fun RestoreBackupDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("恢复备份？") },
-        text = { Text("恢复会以备份文件中的收藏夹和笔记替换当前本地数据，此操作无法撤销。") },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("确认恢复") } }
-    )
-}
+private fun RestoreBackupDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) = ConfirmationDialog(
+    title = "恢复备份？",
+    message = "恢复会以备份文件中的收藏夹和笔记替换当前本地数据，此操作无法撤销。",
+    confirmLabel = "确认恢复",
+    onDismiss = onDismiss,
+    onConfirm = onConfirm
+)
 
 @Composable
 private fun FeedbackDialog(message: String, onDismiss: () -> Unit) {
@@ -2220,24 +2217,44 @@ private fun BatchDeleteDialog(
     count: Int,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
+) = ConfirmationDialog(
+    title = "删除 $count 条笔记？",
+    message = "批量删除后无法恢复。",
+    confirmLabel = "删除",
+    destructive = true,
+    onDismiss = onDismiss,
+    onConfirm = onConfirm
+)
+
+@Composable
+private fun ConfirmDeleteDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) = ConfirmationDialog(
+    title = "删除这条笔记？",
+    message = "删除后无法恢复。",
+    confirmLabel = "删除",
+    destructive = true,
+    onDismiss = onDismiss,
+    onConfirm = onConfirm
+)
+
+@Composable
+private fun ConfirmationDialog(
+    title: String,
+    message: String,
+    confirmLabel: String,
+    destructive: Boolean = false,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("删除 $count 条笔记？") },
-        text = { Text("批量删除后无法恢复。") },
+        title = { Text(title) },
+        text = { Text(message) },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("删除", color = MaterialTheme.colorScheme.error) } }
-    )
-}
-
-@Composable
-private fun ConfirmDeleteDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("删除这条笔记？") },
-        text = { Text("删除后无法恢复。") },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("删除", color = MaterialTheme.colorScheme.error) } }
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(confirmLabel, color = if (destructive) MaterialTheme.colorScheme.error else Color.Unspecified)
+            }
+        }
     )
 }
 

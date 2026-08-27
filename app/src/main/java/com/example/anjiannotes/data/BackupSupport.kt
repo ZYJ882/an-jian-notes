@@ -31,6 +31,16 @@ private fun decodeBackupFolders(values: JSONArray): List<FolderEntity> = buildLi
     }
 }
 
+private fun normalizeNoteFolders(
+    notes: List<NoteEntity>,
+    folders: List<FolderEntity>
+): List<NoteEntity> {
+    val validFolderIds = folders.mapTo(mutableSetOf()) { it.id }.apply { add(DEFAULT_FOLDER_ID) }
+    return notes.map { note ->
+        if (note.folderId in validFolderIds) note else note.copy(folderId = DEFAULT_FOLDER_ID)
+    }
+}
+
 object BackupCodec {
     fun encode(snapshot: BackupSnapshot): String {
         val root = JSONObject().apply {
@@ -64,13 +74,9 @@ object BackupCodec {
         val foldersJson = root.optJSONArray("folders") ?: throw IllegalArgumentException("备份中缺少收藏夹数据")
         val notesJson = root.optJSONArray("notes") ?: throw IllegalArgumentException("备份中缺少笔记数据")
         val folders = decodeBackupFolders(foldersJson)
-        val validFolderIds = folders.mapTo(mutableSetOf()) { it.id }.apply { add(DEFAULT_FOLDER_ID) }
         val notes = buildList {
             for (index in 0 until notesJson.length()) {
                 val item = notesJson.getJSONObject(index)
-                val targetFolder = item.optLong("folderId", DEFAULT_FOLDER_ID).let {
-                    if (it in validFolderIds) it else DEFAULT_FOLDER_ID
-                }
                 add(
                     NoteEntity(
                         id = item.getLong("id"),
@@ -81,12 +87,12 @@ object BackupCodec {
                         updatedAt = item.optLong("updatedAt", System.currentTimeMillis()),
                         isPinned = item.optBoolean("isPinned", false),
                         isMarkdown = item.optBoolean("isMarkdown", false),
-                        folderId = targetFolder
+                        folderId = item.optLong("folderId", DEFAULT_FOLDER_ID)
                     )
                 )
             }
         }
-        return BackupSnapshot(folders = folders, notes = notes)
+        return BackupSnapshot(folders = folders, notes = normalizeNoteFolders(notes, folders))
     }
 }
 
@@ -243,10 +249,7 @@ object MarkdownZipBackupCodec {
         require(backupMetadata.optString("format") == FORMAT) { "不是安笺 Markdown ZIP 备份" }
         require(backupMetadata.optInt("schemaVersion") == SCHEMA_VERSION) { "不支持的 Markdown ZIP 备份版本" }
         val folders = decodeFolders(foldersRaw ?: throw IllegalArgumentException("备份中缺少 folders.json"))
-        val validFolderIds = folders.mapTo(mutableSetOf()) { it.id }.apply { add(DEFAULT_FOLDER_ID) }
-        val notes = noteFiles.map { decodeNote(it) }.map { note ->
-            if (note.folderId in validFolderIds) note else note.copy(folderId = DEFAULT_FOLDER_ID)
-        }
+        val notes = normalizeNoteFolders(noteFiles.map(::decodeNote), folders)
         return BackupSnapshot(folders = folders, notes = notes)
     }
 
