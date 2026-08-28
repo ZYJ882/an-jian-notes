@@ -20,6 +20,10 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.Canvas
@@ -126,6 +130,8 @@ import com.example.anjiannotes.data.ALL_FOLDERS_ID
 import com.example.anjiannotes.data.DEFAULT_FOLDER_ID
 import com.example.anjiannotes.data.FolderEntity
 import com.example.anjiannotes.data.NoteEntity
+import com.example.anjiannotes.data.findSearchMatch
+import com.example.anjiannotes.data.NotePositionStore
 import com.example.anjiannotes.data.NotesRepository
 import com.example.anjiannotes.data.STARRED_FOLDER_ID
 import com.example.anjiannotes.data.WebDavConfig
@@ -134,6 +140,7 @@ import com.example.anjiannotes.ui.ImportReadResult
 import com.example.anjiannotes.ui.MarkdownPreview
 import com.example.anjiannotes.ui.MarkdownSyntaxHint
 import com.example.anjiannotes.ui.NoteFormatMode
+import com.example.anjiannotes.ui.RememberNoteReadingPosition
 import com.example.anjiannotes.ui.extractFirstLink
 import com.example.anjiannotes.ui.extractLinkAt
 import com.example.anjiannotes.ui.formatForFileName
@@ -154,7 +161,6 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
@@ -257,7 +263,8 @@ private sealed interface AppPage {
     data class Detail(
         val note: NoteEntity?,
         val seed: EditorSeed = EditorSeed(),
-        val folderId: Long = DEFAULT_FOLDER_ID
+        val folderId: Long = DEFAULT_FOLDER_ID,
+        val initialContentCursor: Int? = null
     ) : AppPage
     data object Settings : AppPage
     data object Appearance : AppPage
@@ -271,6 +278,9 @@ private fun NotesApp(
     onAppearanceChange: (AppearanceMode) -> Unit
 ) {
     val context = LocalContext.current
+    val notePositionStore = remember(context.applicationContext) {
+        (context.applicationContext as AnJianApplication).notePositionStore
+    }
     val notes by viewModel.notes.collectAsStateWithLifecycle()
     val query by viewModel.query.collectAsStateWithLifecycle()
     val folders by viewModel.folders.collectAsStateWithLifecycle()
@@ -453,7 +463,9 @@ private fun NotesApp(
                     folderId = writableFolderId()
                 )
             },
-            onOpenNote = { note -> page = AppPage.Detail(note = note, folderId = note.folderId) },
+            onOpenNote = { note, contentCursor ->
+                page = AppPage.Detail(note = note, folderId = note.folderId, initialContentCursor = contentCursor)
+            },
             onToggleStar = viewModel::toggleStar,
             onToggleTopPin = viewModel::toggleTopPin,
             onDeleteFolder = { folderToDelete = it },
@@ -490,7 +502,9 @@ private fun NotesApp(
             note = currentPage.note,
             seed = currentPage.seed,
             initialFolderId = currentPage.folderId,
+            initialContentCursor = currentPage.initialContentCursor,
             folders = folders.filterNot { it.id == STARRED_FOLDER_ID },
+            positionStore = notePositionStore,
             onBack = { returnedFolderId, returnedNoteId ->
                 if (currentPage.note == null && returnedNoteId > 0L) {
                     // “已保存”仅会在 Room 写入完成后显示；返回时定位到新笔记所在收藏夹，
@@ -692,7 +706,7 @@ private fun NotesListPage(
     onNewNote: () -> Unit,
     onImportFile: () -> Unit,
     onImportClipboard: () -> Unit,
-    onOpenNote: (NoteEntity) -> Unit,
+    onOpenNote: (NoteEntity, Int?) -> Unit,
     onToggleStar: (NoteEntity) -> Unit,
     onToggleTopPin: (NoteEntity) -> Unit,
     onDeleteFolder: (FolderEntity) -> Unit,
@@ -914,8 +928,9 @@ private fun NotesListPage(
                                     note = note,
                                     selected = note.id in selectedNoteIds,
                                     selectionMode = selectionMode,
+                                    searchQuery = query,
                                     onOpen = {
-                                        if (selectionMode) toggleSelection(note.id) else onOpenNote(note)
+                                        if (selectionMode) toggleSelection(note.id) else onOpenNote(note, note.findSearchMatch(query)?.contentOffset)
                                     },
                                     onLongPress = { toggleSelection(note.id) },
                                     onToggleStar = { onToggleStar(note) },
@@ -1430,7 +1445,9 @@ private fun NoteDetailPage(
     note: NoteEntity?,
     seed: EditorSeed,
     initialFolderId: Long,
+    initialContentCursor: Int?,
     folders: List<FolderEntity>,
+    positionStore: NotePositionStore,
     onBack: (Long, Long) -> Unit,
     onSave: (Long, String, String, Long, Boolean, Boolean, Boolean, Long, Long) -> Deferred<Long>,
     onDelete: (NoteEntity) -> Unit
@@ -1446,6 +1463,7 @@ private fun NoteDetailPage(
     var selectedFolderId by remember(note?.id, initialFolderId) { mutableStateOf(note?.folderId ?: initialFolderId) }
     var showFolderPicker by remember { mutableStateOf(false) }
     var showDetailMenu by remember(note?.id, seed) { mutableStateOf(false) }
+    var focusMode by remember(note?.id, seed) { mutableStateOf(false) }
     var formatMode by remember(note?.id, seed) {
         mutableStateOf(
             if (note != null) {
@@ -1475,7 +1493,7 @@ private fun NoteDetailPage(
     var focusTarget by remember(note?.id, seed) {
         mutableStateOf(InlineEditTarget.CONTENT)
     }
-    var requestedContentCursor by remember(note?.id, seed) { mutableStateOf<Int?>(null) }
+    var requestedContentSelection by remember(note?.id, seed) { mutableStateOf<TextRange?>(null) }
     var savedNoteId by remember(note?.id, seed) { mutableStateOf(note?.id ?: 0L) }
     val draftCreatedAt = remember(note?.id, seed) { note?.createdAt ?: System.currentTimeMillis() }
     val seedHasContent = isNewNote && (seed.title.isNotBlank() || seed.content.isNotBlank())
@@ -1502,9 +1520,14 @@ private fun NoteDetailPage(
             when (focusTarget) {
                 InlineEditTarget.TITLE -> nativeTitleFocusRequest += 1
                 InlineEditTarget.CONTENT -> {
-                    requestedContentCursor?.let { position ->
-                        contentValue = contentValue.copy(selection = TextRange(position.coerceIn(0, contentValue.text.length)))
-                        requestedContentCursor = null
+                    requestedContentSelection?.let { selection ->
+                        contentValue = contentValue.copy(
+                            selection = TextRange(
+                                selection.start.coerceIn(0, contentValue.text.length),
+                                selection.end.coerceIn(0, contentValue.text.length)
+                            )
+                        )
+                        requestedContentSelection = null
                     }
                     nativeContentFocusRequest += 1
                 }
@@ -1521,8 +1544,17 @@ private fun NoteDetailPage(
     }
 
     fun enterEdit(target: InlineEditTarget, cursorPosition: Int? = null) {
+        focusMode = false
         if (detailMode == DetailMode.PREVIEW) pendingScrollRestore = detailScrollState.value
-        if (target == InlineEditTarget.CONTENT) requestedContentCursor = cursorPosition
+        if (target == InlineEditTarget.CONTENT) {
+            requestedContentSelection = when {
+                cursorPosition != null -> TextRange(cursorPosition)
+                savedNoteId > 0L -> positionStore.load(savedNoteId).let { saved ->
+                    TextRange(saved.selectionStart, saved.selectionEnd)
+                }
+                else -> null
+            }
+        }
         focusTarget = target
         detailMode = DetailMode.EDIT
     }
@@ -1618,6 +1650,7 @@ private fun NoteDetailPage(
         val selectionStart = editor.selectionStart.coerceIn(0, currentText.length)
         val selectionEnd = editor.selectionEnd.coerceIn(0, currentText.length)
         contentValue = TextFieldValue(currentText, TextRange(selectionStart, selectionEnd))
+        if (savedNoteId > 0L) positionStore.saveSelection(savedNoteId, selectionStart, selectionEnd)
         // AndroidView 的最后一次输入可能尚未触发 Compose 重组；切换预览前以视图
         // 当前文本作为最终来源，同步更新草稿和保存队列。
         markEdited(contentOverride = currentText)
@@ -1682,6 +1715,13 @@ private fun NoteDetailPage(
         }
     }
 
+    RememberNoteReadingPosition(
+        noteId = savedNoteId,
+        isPreview = detailMode == DetailMode.PREVIEW,
+        scrollState = detailScrollState,
+        positionStore = positionStore
+    )
+
     LaunchedEffect(autoSaveState) {
         if (autoSaveState == AutoSaveState.SAVED) {
             delay(1_400)
@@ -1726,6 +1766,11 @@ private fun NoteDetailPage(
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
+            AnimatedVisibility(
+                visible = !focusMode,
+                enter = fadeIn(animationSpec = tween(160)),
+                exit = fadeOut(animationSpec = tween(160))
+            ) {
             TopAppBar(
                 title = {},
                 navigationIcon = {
@@ -1740,6 +1785,8 @@ private fun NoteDetailPage(
                         autoSaveState == AutoSaveState.SAVED -> Text("✓", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 4.dp))
                     }
                     if (detailMode == DetailMode.EDIT) {
+                        TextButton(onClick = { nativeContentEditor?.performNativeUndo() }) { Text("↶") }
+                        TextButton(onClick = { nativeContentEditor?.performNativeRedo() }) { Text("↷") }
                         TextButton(onClick = ::toggleDetailMode) { Text("预览") }
                     }
                     Box {
@@ -1751,6 +1798,10 @@ private fun NoteDetailPage(
                                 DropdownMenuItem(
                                     text = { Text("编辑") },
                                     onClick = { showDetailMenu = false; enterEdit(InlineEditTarget.CONTENT) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (focusMode) "退出专注阅读" else "专注阅读") },
+                                    onClick = { focusMode = !focusMode; showDetailMenu = false }
                                 )
                             }
                             DropdownMenuItem(
@@ -1784,6 +1835,7 @@ private fun NoteDetailPage(
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
+            }
         }
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
@@ -1799,6 +1851,7 @@ private fun NoteDetailPage(
             if (detailMode == DetailMode.EDIT) {
                 NativeNoteTitleEditor(
                     value = title,
+                    externalModelKey = note?.let { it.id to it.updatedAt } ?: seed,
                     focusRequest = nativeTitleFocusRequest,
                     modifier = Modifier.fillMaxWidth(),
                     textColor = MaterialTheme.colorScheme.onBackground,
@@ -1827,6 +1880,9 @@ private fun NoteDetailPage(
                     modifier = Modifier.fillMaxWidth().weight(1f),
                     textColor = MaterialTheme.colorScheme.onBackground,
                     onViewReady = { nativeContentEditor = it },
+                    onSelectionChange = { start, end ->
+                        if (savedNoteId > 0L) positionStore.saveSelection(savedNoteId, start, end)
+                    },
                     onValueChange = { value ->
                         contentValue = value
                         markEdited(contentOverride = value.text)
@@ -1837,13 +1893,21 @@ private fun NoteDetailPage(
                     content,
                     modifier = Modifier.fillMaxWidth(),
                     onLinkClick = ::openPreviewLink,
-                    onDoubleClickAt = { position -> enterEdit(InlineEditTarget.CONTENT, position) }
+                    onDoubleClickAt = { position -> enterEdit(InlineEditTarget.CONTENT, position) },
+                    initialSourceOffset = initialContentCursor,
+                    onClick = { focusMode = !focusMode }
                 )
             } else {
                 var plainTextLayout by remember(content) { mutableStateOf<TextLayoutResult?>(null) }
                 val linkColor = MaterialTheme.colorScheme.primary
                 val previewText = remember(content, linkColor) {
                     linkifyPlainText(content.ifBlank { "空白笔记" }, linkColor)
+                }
+                LaunchedEffect(initialContentCursor, plainTextLayout, content) {
+                    val cursor = initialContentCursor ?: return@LaunchedEffect
+                    val layout = plainTextLayout ?: return@LaunchedEffect
+                    val target = layout.getBoundingBox(cursor.coerceIn(0, content.length)).top.roundToInt()
+                    detailScrollState.scrollTo((target - 96).coerceAtLeast(0))
                 }
                 Text(
                     text = previewText,
@@ -1852,9 +1916,10 @@ private fun NoteDetailPage(
                     modifier = Modifier.fillMaxWidth().pointerInput(content) {
                         detectTapGestures(
                             onTap = { offset ->
-                                plainTextLayout?.let { layout ->
-                                    extractLinkAt(content, layout.getOffsetForPosition(offset))?.let(::openPreviewLink)
+                                val link = plainTextLayout?.let { layout ->
+                                    extractLinkAt(content, layout.getOffsetForPosition(offset))
                                 }
+                                if (link != null) openPreviewLink(link) else focusMode = !focusMode
                             },
                             onDoubleTap = { offset ->
                                 plainTextLayout?.let { layout ->
@@ -1867,7 +1932,7 @@ private fun NoteDetailPage(
             }
             Spacer(Modifier.height(48.dp))
                 }
-                if (detailMode == DetailMode.PREVIEW) {
+                if (detailMode == DetailMode.PREVIEW && !focusMode) {
                     DraggableDetailScrollbar(
                         scrollState = detailScrollState,
                         thumbColor = MaterialTheme.colorScheme.primary,
@@ -1893,20 +1958,36 @@ private fun NoteDetailPage(
     }
 }
 
+private class NativeNoteTitleEditText(context: Context) : EditText(context) {
+    var applyingModelText: Boolean = false
+    var appliedExternalModelKey: Any? = null
+
+    fun applyExternalModelText(modelText: String, modelKey: Any?) {
+        applyingModelText = true
+        try {
+            setText(modelText)
+            setSelection(modelText.length)
+            appliedExternalModelKey = modelKey
+        } finally {
+            applyingModelText = false
+        }
+    }
+}
+
 @Composable
 private fun NativeNoteTitleEditor(
     value: String,
+    externalModelKey: Any?,
     focusRequest: Int,
     modifier: Modifier = Modifier,
     textColor: Color,
     onValueChange: (String) -> Unit
 ) {
-    val latestValue by rememberUpdatedState(value)
     val latestOnValueChange by rememberUpdatedState(onValueChange)
     AndroidView(
         modifier = modifier,
         factory = { viewContext ->
-            EditText(viewContext).apply {
+            NativeNoteTitleEditText(viewContext).apply {
                 background = null
                 setPadding(0, 0, 0, 0)
                 includeFontPadding = false
@@ -1915,20 +1996,19 @@ private fun NativeNoteTitleEditor(
                 setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD))
                 isSingleLine = true
                 inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                applyExternalModelText(value, externalModelKey)
                 addTextChangedListener(object : TextWatcher {
                     override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
                     override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                        val changed = s?.toString().orEmpty()
-                        if (changed != latestValue) latestOnValueChange(changed)
+                        if (!applyingModelText) latestOnValueChange(s?.toString().orEmpty())
                     }
                     override fun afterTextChanged(s: Editable?) = Unit
                 })
             }
         },
         update = { view ->
-            if (view.text.toString() != value) {
-                view.setText(value)
-                view.setSelection(value.length)
+            if (shouldApplyExternalModelText(view.appliedExternalModelKey, externalModelKey)) {
+                view.applyExternalModelText(value, externalModelKey)
             }
             view.setTextColor(textColor.toArgb())
             val lastRequest = view.getTag() as? Int ?: -1
@@ -1958,6 +2038,20 @@ private class NativeNoteEditText(context: Context) : EditText(context) {
     /** 当前 View 已接收的外部模型身份；普通 Compose 重组不会改变它。 */
     var appliedExternalModelKey: Any? = null
     var lastFocusRequest: Int = -1
+    var onSelectionChange: ((Int, Int) -> Unit)? = null
+
+    fun performNativeUndo() {
+        onTextContextMenuItem(android.R.id.undo)
+    }
+
+    fun performNativeRedo() {
+        onTextContextMenuItem(android.R.id.redo)
+    }
+
+    override fun onSelectionChanged(selStart: Int, selEnd: Int) {
+        super.onSelectionChanged(selStart, selEnd)
+        if (!applyingModelText) onSelectionChange?.invoke(selStart, selEnd)
+    }
 
     fun applyExternalModelText(modelText: String, modelKey: Any?) {
         applyingModelText = true
@@ -1978,9 +2072,11 @@ private fun NativeNoteEditor(
     modifier: Modifier = Modifier,
     textColor: Color,
     onViewReady: (NativeNoteEditText) -> Unit = {},
+    onSelectionChange: (Int, Int) -> Unit = { _, _ -> },
     onValueChange: (TextFieldValue) -> Unit
 ) {
     val latestOnValueChange by rememberUpdatedState(onValueChange)
+    val latestOnSelectionChange by rememberUpdatedState(onSelectionChange)
     AndroidView(
         modifier = modifier,
         factory = { viewContext ->
@@ -2016,6 +2112,7 @@ private fun NativeNoteEditor(
         },
         update = { view ->
             onViewReady(view)
+            view.onSelectionChange = latestOnSelectionChange
             val viewText = view.text?.toString().orEmpty()
             if (BuildConfig.DEBUG) {
                 Log.d(
@@ -2223,13 +2320,15 @@ private fun NoteCard(
     note: NoteEntity,
     selected: Boolean,
     selectionMode: Boolean,
+    searchQuery: String,
     onOpen: () -> Unit,
     onLongPress: () -> Unit,
     onToggleStar: () -> Unit,
     onToggleTopPin: () -> Unit
 ) {
-    val summary = remember(note.id, note.updatedAt, note.isMarkdown) {
-        NoteListPreviewCache.get(note)
+    val searchMatch = remember(note.id, note.updatedAt, searchQuery) { note.findSearchMatch(searchQuery) }
+    val summary = remember(note.id, note.updatedAt, note.isMarkdown, searchMatch) {
+        searchMatch?.snippet?.ifBlank { NoteListPreviewCache.get(note) } ?: NoteListPreviewCache.get(note)
     }
     val formattedDate = remember(note.updatedAt) { formatDate(note.updatedAt) }
     Card(
@@ -2261,7 +2360,7 @@ private fun NoteCard(
             )
             if (summary.isNotBlank()) {
                 Text(
-                    summary,
+                    if (searchMatch?.contentOffset != null) "命中：$summary" else summary,
                     style = MaterialTheme.typography.bodyMedium,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,

@@ -1,6 +1,9 @@
 package com.example.anjiannotes.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -22,7 +25,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -84,7 +89,22 @@ internal data class SourceText(
         if (sourceOffsets.isEmpty()) return 0
         return sourceOffsets[displayOffset.coerceIn(0, sourceOffsets.lastIndex)]
     }
+
+    fun containsSourceOffset(sourceOffset: Int): Boolean =
+        sourceOffsets.isNotEmpty() && sourceOffset in sourceOffsets.first()..sourceOffsets.last()
 }
+
+private fun MarkdownBlock.containsSourceOffset(sourceOffset: Int): Boolean = when (this) {
+    is MarkdownBlock.Heading -> text.containsSourceOffset(sourceOffset)
+    is MarkdownBlock.Paragraph -> text.containsSourceOffset(sourceOffset)
+    is MarkdownBlock.Quote -> lines.any { it.containsSourceOffset(sourceOffset) }
+    is MarkdownBlock.ListBlock -> items.any { it.text.containsSourceOffset(sourceOffset) }
+    is MarkdownBlock.Code -> content.containsSourceOffset(sourceOffset)
+    is MarkdownBlock.Table -> header.any { it.containsSourceOffset(sourceOffset) } ||
+        rows.any { row -> row.any { it.containsSourceOffset(sourceOffset) } }
+    MarkdownBlock.Divider -> false
+}
+
 
 private data class SourceLine(
     val text: String,
@@ -132,6 +152,7 @@ private val ListPreviewWhitespacePattern = Regex("\\s+")
 private val PreviewLinkBlueLight = Color(0xFF765F82)
 private val PreviewLinkBlueDark = Color(0xFFC7B1CF)
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MarkdownPreview(
     markdown: String,
@@ -140,10 +161,15 @@ fun MarkdownPreview(
     onLinkLongPress: (String) -> Unit = {},
     onLinkClick: (String) -> Unit = {},
     onDoubleClickAt: (Int) -> Unit = {},
+    initialSourceOffset: Int? = null,
     onLongPress: () -> Unit = {},
     onClick: () -> Unit = {}
 ) {
     val document = remember(markdown) { MarkdownParser.parse(markdown) }
+    val initialBlockIndex = remember(document, initialSourceOffset) {
+        initialSourceOffset?.let { offset -> document.blocks.indexOfFirst { it.containsSourceOffset(offset) } }
+            ?.takeIf { it >= 0 }
+    }
     if (document.blocks.isEmpty()) {
         Text(
             text = "开始输入 Markdown…",
@@ -158,15 +184,24 @@ fun MarkdownPreview(
         Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             document.blocks.forEachIndexed { index, block ->
                 key(index, block) {
-                    MarkdownBlockRenderer(
-                        block = block,
-                        enableTextSelection = enableTextSelection,
-                        onLinkLongPress = onLinkLongPress,
-                        onLinkClick = onLinkClick,
-                        onDoubleClickAt = onDoubleClickAt,
-                        onLongPress = onLongPress,
-                        onClick = onClick
-                    )
+                    val blockRequester = remember { BringIntoViewRequester() }
+                    if (index == initialBlockIndex) {
+                        LaunchedEffect(blockRequester, initialBlockIndex) {
+                            withFrameNanos { }
+                            blockRequester.bringIntoView()
+                        }
+                    }
+                    Box(modifier = Modifier.bringIntoViewRequester(blockRequester)) {
+                        MarkdownBlockRenderer(
+                            block = block,
+                            enableTextSelection = enableTextSelection,
+                            onLinkLongPress = onLinkLongPress,
+                            onLinkClick = onLinkClick,
+                            onDoubleClickAt = onDoubleClickAt,
+                            onLongPress = onLongPress,
+                            onClick = onClick
+                        )
+                    }
                 }
             }
         }

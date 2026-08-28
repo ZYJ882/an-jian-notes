@@ -67,6 +67,33 @@ internal fun NoteEntity.matchesSearchTerms(terms: List<String>): Boolean =
         title.contains(term, ignoreCase = true) || content.contains(term, ignoreCase = true)
     }
 
+/** 搜索结果的正文命中位置与阅读摘要；标题命中但正文未命中时正文位置为空。 */
+internal data class NoteSearchMatch(
+    val contentOffset: Int?,
+    val snippet: String
+)
+
+internal fun NoteEntity.findSearchMatch(query: String): NoteSearchMatch? {
+    val terms = parseSearchTerms(query)
+    if (terms.isEmpty() || !matchesSearchTerms(terms)) return null
+    val contentOffset = terms.asSequence()
+        .map { term -> content.indexOf(term, ignoreCase = true) }
+        .firstOrNull { it >= 0 }
+        ?.takeIf { it >= 0 }
+    val normalizedContent = content.replace(Regex("\\s+"), " ").trim()
+    val snippet = if (contentOffset != null) searchSnippet(content, contentOffset) else normalizedContent.take(92)
+    return NoteSearchMatch(contentOffset, snippet)
+}
+
+internal fun searchSnippet(content: String, matchOffset: Int, maxLength: Int = 92): String {
+    if (content.isBlank()) return "标题匹配"
+    val start = (matchOffset - maxLength / 3).coerceAtLeast(0)
+    val end = (start + maxLength).coerceAtMost(content.length)
+    val prefix = if (start > 0) "…" else ""
+    val suffix = if (end < content.length) "…" else ""
+    return prefix + content.substring(start, end).replace(Regex("\\s+"), " ").trim() + suffix
+}
+
 @Dao
 interface NoteDao {
     @Query(

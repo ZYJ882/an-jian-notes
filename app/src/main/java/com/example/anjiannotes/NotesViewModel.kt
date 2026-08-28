@@ -55,7 +55,7 @@ class NotesViewModel(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val notes: StateFlow<List<NoteEntity>> = combine(
-        searchQuery.debounce(80),
+        searchQuery.debounce(180),
         selectedFolderId
     ) { query, folderId -> query to folderId }
         .flatMapLatest { (query, folderId) -> repository.observeNotes(query, folderId) }
