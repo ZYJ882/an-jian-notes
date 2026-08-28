@@ -64,6 +64,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DrawerValue
@@ -136,6 +137,7 @@ import com.example.anjiannotes.data.NotePositionStore
 import com.example.anjiannotes.data.NotesRepository
 import com.example.anjiannotes.data.STARRED_FOLDER_ID
 import com.example.anjiannotes.data.WebDavConfig
+import com.example.anjiannotes.data.WebDavRemoteSnapshot
 import com.example.anjiannotes.ui.EditorSeed
 import com.example.anjiannotes.ui.ImportReadResult
 import com.example.anjiannotes.ui.MarkdownPreview
@@ -288,6 +290,7 @@ private fun NotesApp(
     val activeFolderId by viewModel.activeFolderId.collectAsStateWithLifecycle()
     val isGlobalSearch by viewModel.isGlobalSearch.collectAsStateWithLifecycle()
     val webDavConfig by viewModel.webDavConfig.collectAsStateWithLifecycle()
+    val webDavTask by viewModel.webDavTask.collectAsStateWithLifecycle()
     var page by remember { mutableStateOf<AppPage>(AppPage.List) }
     var showSearch by remember { mutableStateOf(false) }
     var showCreateMenu by remember { mutableStateOf(false) }
@@ -304,6 +307,7 @@ private fun NotesApp(
     var pendingMarkdownZipPayload by remember { mutableStateOf<ByteArray?>(null) }
     var pendingMarkdownZipRestorePayload by remember { mutableStateOf<ByteArray?>(null) }
     var showWebDavDialog by remember { mutableStateOf(false) }
+    var pendingWebDavRestore by remember { mutableStateOf<WebDavRemoteSnapshot?>(null) }
     val fileIoScope = rememberCoroutineScope()
 
     fun <T> runFileOperation(
@@ -678,6 +682,21 @@ private fun NotesApp(
                     onFailure = { message -> feedbackMessage = message }
                 )
             },
+            task = webDavTask,
+            onTest = { config ->
+                viewModel.testWebDav(
+                    config = config,
+                    onSuccess = { feedbackMessage = "WebDAV 连接正常" },
+                    onFailure = { message -> feedbackMessage = message }
+                )
+            },
+            onRestore = { config ->
+                viewModel.previewWebDavRestore(
+                    config = config,
+                    onSuccess = { pendingWebDavRestore = it },
+                    onFailure = { message -> feedbackMessage = message }
+                )
+            },
             onSync = { config ->
                 viewModel.syncWebDav(
                     config = config,
@@ -685,6 +704,23 @@ private fun NotesApp(
                         showWebDavDialog = false
                         feedbackMessage = message
                     },
+                    onFailure = { message -> feedbackMessage = message }
+                )
+            }
+        )
+    }
+    pendingWebDavRestore?.let { remote ->
+        WebDavRestorePreviewDialog(
+            remote = remote,
+            onDismiss = {
+                pendingWebDavRestore = null
+                if (webDavTask == WebDavTask.RESTORE) viewModel.cancelWebDavRestorePreview()
+            },
+            onConfirm = {
+                pendingWebDavRestore = null
+                viewModel.confirmWebDavRestore(
+                    remote = remote,
+                    onSuccess = { message -> showWebDavDialog = false; feedbackMessage = message },
                     onFailure = { message -> feedbackMessage = message }
                 )
             }
@@ -1246,15 +1282,20 @@ private fun SettingsGroup(title: String, items: List<SettingsEntry>) {
 @Composable
 private fun WebDavBackupDialog(
     initialConfig: WebDavConfig?,
+    task: WebDavTask,
     onDismiss: () -> Unit,
+    onTest: (WebDavConfig) -> Unit,
     onSave: (WebDavConfig) -> Unit,
+    onRestore: (WebDavConfig) -> Unit,
     onSync: (WebDavConfig) -> Unit
 ) {
     var endpoint by remember(initialConfig) { mutableStateOf(initialConfig?.endpoint.orEmpty()) }
     var username by remember(initialConfig) { mutableStateOf(initialConfig?.username.orEmpty()) }
     var password by remember(initialConfig) { mutableStateOf(initialConfig?.password.orEmpty()) }
     var remoteDirectory by remember(initialConfig) { mutableStateOf(initialConfig?.remoteDirectory ?: "an-jian-backup") }
-    fun currentConfig() = WebDavConfig(endpoint, username, password, remoteDirectory)
+    var syncDeleteRemoteFiles by remember(initialConfig) { mutableStateOf(initialConfig?.syncDeleteRemoteFiles ?: true) }
+    val busy = task != WebDavTask.IDLE
+    fun currentConfig() = WebDavConfig(endpoint, username, password, remoteDirectory, syncDeleteRemoteFiles)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1292,15 +1333,56 @@ private fun WebDavBackupDialog(
                     label = { Text("远程备份目录") },
                     singleLine = true
                 )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = syncDeleteRemoteFiles,
+                        onCheckedChange = { syncDeleteRemoteFiles = it },
+                        enabled = !busy
+                    )
+                    Column {
+                        Text("同步删除远程备份文件")
+                        Text("删除本地笔记后，下次备份会清理远端冗余文件", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                Text(
+                    when (task) {
+                        WebDavTask.BACKUP -> "正在备份，请勿重复操作"
+                        WebDavTask.RESTORE -> "正在读取远程备份，请稍候"
+                        WebDavTask.IDLE -> "手动备份工具：不会自动覆盖本地数据"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") } },
         confirmButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(onClick = { onSave(currentConfig()) }) { Text("仅保存") }
-                TextButton(onClick = { onSync(currentConfig()) }) { Text("保存并备份", fontWeight = FontWeight.SemiBold) }
+            Column(horizontalAlignment = Alignment.End) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { onTest(currentConfig()) }, enabled = !busy) { Text("测试连接") }
+                    TextButton(onClick = { onSave(currentConfig()) }, enabled = !busy) { Text("仅保存") }
+                    TextButton(onClick = { onRestore(currentConfig()) }, enabled = !busy) { Text("从 WebDAV 恢复") }
+                    TextButton(onClick = { onSync(currentConfig()) }, enabled = !busy) { Text("立即备份", fontWeight = FontWeight.SemiBold) }
+                }
             }
         }
+    )
+}
+
+@Composable
+private fun WebDavRestorePreviewDialog(
+    remote: WebDavRemoteSnapshot,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("从 WebDAV 恢复？") },
+        text = {
+            Text("备份时间：${SimpleDateFormat("yyyy年M月d日 HH:mm", Locale.CHINA).format(Date(remote.updatedAt))}\n笔记：${remote.snapshot.notes.size} 条\n收藏夹：${remote.snapshot.folders.size} 个\n\n恢复将替换当前本地数据。远程文件已完成完整性校验。")
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("确认恢复") } }
     )
 }
 

@@ -3,8 +3,21 @@ package com.example.anjiannotes.data
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 class MarkdownZipBackupCodecTest {
+    @Test(expected = IllegalArgumentException::class)
+    fun markdownZip_rejectsPathTraversalEntry() {
+        MarkdownZipBackupCodec.decode(zipOf("../evil.md" to "unsafe".toByteArray()))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun markdownZip_rejectsOversizedEntry() {
+        MarkdownZipBackupCodec.decode(zipOf("notes/1.md" to ByteArray(8 * 1024 * 1024 + 1)))
+    }
+
     @Test
     fun markdownZip_roundTripsFoldersAndNotesWithoutChangingContent() {
         val snapshot = BackupSnapshot(
@@ -37,5 +50,17 @@ class MarkdownZipBackupCodecTest {
         assertTrue(markdown.contains("folderId: 7"))
         assertTrue(markdown.contains("topPinned: true"))
         assertTrue(markdown.endsWith("- 保留最后换行\n"))
+    }
+
+    private fun zipOf(vararg entries: Pair<String, ByteArray>): ByteArray {
+        val output = ByteArrayOutputStream()
+        ZipOutputStream(output).use { zip ->
+            entries.forEach { (name, bytes) ->
+                zip.putNextEntry(ZipEntry(name))
+                zip.write(bytes)
+                zip.closeEntry()
+            }
+        }
+        return output.toByteArray()
     }
 }

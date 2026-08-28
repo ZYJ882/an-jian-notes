@@ -15,6 +15,7 @@ import com.example.anjiannotes.data.PlainTextBackupCodec
 import com.example.anjiannotes.data.STARRED_FOLDER
 import com.example.anjiannotes.data.WebDavBackupClient
 import com.example.anjiannotes.data.WebDavConfig
+import com.example.anjiannotes.data.WebDavRemoteSnapshot
 import com.example.anjiannotes.data.WebDavConfigStore
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
@@ -34,6 +35,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
+enum class WebDavTask { IDLE, BACKUP, RESTORE }
+
 class NotesViewModel(
     private val repository: NotesRepository,
     private val webDavConfigStore: WebDavConfigStore,
@@ -43,6 +46,7 @@ class NotesViewModel(
     private val searchQuery = MutableStateFlow("")
     private val selectedFolderId = MutableStateFlow(folderSelectionPreferences.load())
     private val configuredWebDav = MutableStateFlow(webDavConfigStore.load())
+    private val webDavTaskState = MutableStateFlow(WebDavTask.IDLE)
 
     val query: StateFlow<String> = searchQuery.asStateFlow()
     val activeFolderId: StateFlow<Long> = selectedFolderId.asStateFlow()
@@ -50,6 +54,7 @@ class NotesViewModel(
         .map { it == ALL_FOLDERS_ID }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), selectedFolderId.value == ALL_FOLDERS_ID)
     val webDavConfig: StateFlow<WebDavConfig?> = configuredWebDav.asStateFlow()
+    val webDavTask: StateFlow<WebDavTask> = webDavTaskState.asStateFlow()
     val folders: StateFlow<List<FolderEntity>> = repository.observeFolders()
         .map { folders -> listOf(STARRED_FOLDER) + folders }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -137,19 +142,94 @@ class NotesViewModel(
         }
     }
 
+    fun testWebDav(
+        config: WebDavConfig,
+        onSuccess: () -> Unit,
+        onFailure: (String) -> Unit
+    ) {
+        if (!webDavTaskState.compareAndSet(WebDavTask.IDLE, WebDavTask.BACKUP)) {
+            onFailure("已有 WebDAV 任务正在执行")
+            return
+        }
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.Default) { webDavBackupClient.testConnection(config) }
+                onSuccess()
+            } catch (error: Throwable) {
+                onFailure(error.message ?: "WebDAV 连接测试失败")
+            } finally {
+                webDavTaskState.value = WebDavTask.IDLE
+            }
+        }
+    }
+
     fun syncWebDav(
         config: WebDavConfig,
         onSuccess: (String) -> Unit,
         onFailure: (String) -> Unit
     ) {
-        launchResult("WebDAV 备份失败", onSuccess, onFailure) {
-            val normalized = persistWebDavConfig(config)
-            val result = webDavBackupClient.syncIncremental(
-                config = normalized,
-                snapshot = repository.exportSnapshot(),
-                appVersion = BuildConfig.VERSION_NAME
-            )
-            "WebDAV 备份完成：上传 ${result.uploadedNotes} 条，跳过 ${result.skippedNotes} 条未变化笔记"
+        if (!webDavTaskState.compareAndSet(WebDavTask.IDLE, WebDavTask.BACKUP)) {
+            onFailure("已有 WebDAV 任务正在执行")
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val message = withContext(Dispatchers.Default) {
+                    val normalized = persistWebDavConfig(config)
+                    val result = webDavBackupClient.syncIncremental(
+                        config = normalized,
+                        snapshot = repository.exportSnapshot(),
+                        appVersion = BuildConfig.VERSION_NAME
+                    )
+                    "WebDAV 备份完成：上传 ${result.uploadedNotes} 条，跳过 ${result.skippedNotes} 条，修复 ${result.repairedNotes} 条，清理 ${result.deletedNotes} 条"
+                }
+                onSuccess(message)
+            } catch (error: Throwable) {
+                onFailure(error.message ?: "WebDAV 备份失败")
+            } finally {
+                webDavTaskState.value = WebDavTask.IDLE
+            }
+        }
+    }
+
+    fun previewWebDavRestore(
+        config: WebDavConfig,
+        onSuccess: (WebDavRemoteSnapshot) -> Unit,
+        onFailure: (String) -> Unit
+    ) {
+        if (!webDavTaskState.compareAndSet(WebDavTask.IDLE, WebDavTask.RESTORE)) {
+            onFailure("已有 WebDAV 任务正在执行")
+            return
+        }
+        viewModelScope.launch {
+            try {
+                onSuccess(withContext(Dispatchers.Default) { webDavBackupClient.fetchRemoteSnapshot(config) })
+            } catch (error: Throwable) {
+                onFailure(error.message ?: "WebDAV 恢复读取失败")
+                webDavTaskState.value = WebDavTask.IDLE
+            }
+        }
+    }
+
+    fun cancelWebDavRestorePreview() {
+        webDavTaskState.compareAndSet(WebDavTask.RESTORE, WebDavTask.IDLE)
+    }
+
+    fun confirmWebDavRestore(
+        remote: WebDavRemoteSnapshot,
+        onSuccess: (String) -> Unit,
+        onFailure: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                // Room 的 restoreSnapshot 在单事务内替换数据；任何下载或校验失败都发生在事务之前。
+                withContext(Dispatchers.Default) { repository.restoreSnapshot(remote.snapshot) }
+                onSuccess("已恢复 ${remote.snapshot.notes.size} 条笔记和 ${remote.snapshot.folders.size} 个收藏夹")
+            } catch (error: Throwable) {
+                onFailure(error.message ?: "WebDAV 恢复失败，原有本地数据未修改")
+            } finally {
+                webDavTaskState.value = WebDavTask.IDLE
+            }
         }
     }
 

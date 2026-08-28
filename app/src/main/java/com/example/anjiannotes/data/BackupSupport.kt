@@ -213,6 +213,10 @@ object PlainTextBackupCodec {
  */
 object MarkdownZipBackupCodec {
     private const val FORMAT = "an-jian-markdown-zip"
+    private const val MAX_ENTRY_BYTES = 8 * 1024 * 1024
+    private const val MAX_TOTAL_BYTES = 64 * 1024 * 1024
+    private const val MAX_NOTE_COUNT = 10_000
+    private const val MAX_FOLDER_COUNT = 1_000
     private const val SCHEMA_VERSION = 1
     private const val METADATA_FILE = "metadata.json"
     private const val FOLDERS_FILE = "folders.json"
@@ -234,16 +238,25 @@ object MarkdownZipBackupCodec {
         var metadata: JSONObject? = null
         var foldersRaw: String? = null
         val noteFiles = mutableListOf<String>()
+        val entryNames = mutableSetOf<String>()
+        var totalBytes = 0
         java.util.zip.ZipInputStream(payload.inputStream()).use { zip ->
             var entry = zip.nextEntry
             while (entry != null) {
                 val name = entry.name
                 require(!entry.isDirectory && !name.contains("..") && !name.startsWith("/")) { "备份 ZIP 包含无效路径" }
-                val content = zip.readBytes().toString(Charsets.UTF_8)
+                require(entryNames.add(name)) { "备份 ZIP 包含重复文件" }
+                val content = readLimited(zip, MAX_ENTRY_BYTES) { bytes ->
+                    totalBytes += bytes
+                    require(totalBytes <= MAX_TOTAL_BYTES) { "备份 ZIP 解压总大小超过限制" }
+                }.toString(Charsets.UTF_8)
                 when {
                     name == METADATA_FILE -> metadata = JSONObject(content)
                     name == FOLDERS_FILE -> foldersRaw = content
-                    name.startsWith(NOTES_PREFIX) && name.endsWith(".md") -> noteFiles += content
+                    name.startsWith(NOTES_PREFIX) && name.endsWith(".md") -> {
+                        require(noteFiles.size < MAX_NOTE_COUNT) { "备份 ZIP 笔记数量超过限制" }
+                        noteFiles += content
+                    }
                 }
                 zip.closeEntry()
                 entry = zip.nextEntry
@@ -253,6 +266,7 @@ object MarkdownZipBackupCodec {
         require(backupMetadata.optString("format") == FORMAT) { "不是安笺 Markdown ZIP 备份" }
         require(backupMetadata.optInt("schemaVersion") == SCHEMA_VERSION) { "不支持的 Markdown ZIP 备份版本" }
         val folders = decodeFolders(foldersRaw ?: throw IllegalArgumentException("备份中缺少 folders.json"))
+        require(folders.size <= MAX_FOLDER_COUNT) { "备份 ZIP 收藏夹数量超过限制" }
         val notes = normalizeNoteFolders(noteFiles.map(::decodeNote), folders)
         return BackupSnapshot(folders = folders, notes = notes)
     }
@@ -320,6 +334,21 @@ object MarkdownZipBackupCodec {
             isMarkdown = values["markdown"].toBoolean(),
             folderId = values.longOr("folderId", DEFAULT_FOLDER_ID)
         )
+    }
+
+    private fun readLimited(input: java.io.InputStream, limit: Int, onBytes: (Int) -> Unit): ByteArray {
+        val output = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(16 * 1024)
+        var size = 0
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            size += count
+            require(size <= limit) { "备份 ZIP 单文件大小超过限制" }
+            onBytes(count)
+            output.write(buffer, 0, count)
+        }
+        return output.toByteArray()
     }
 
     private fun writeEntry(zip: java.util.zip.ZipOutputStream, name: String, content: ByteArray) {
