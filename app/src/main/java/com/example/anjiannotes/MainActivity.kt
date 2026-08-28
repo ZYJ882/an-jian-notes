@@ -12,6 +12,7 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
+import android.widget.Toast
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
@@ -519,7 +520,15 @@ private fun NotesApp(
             onSave = { id, title, content, color, pinned, topPinned, markdown, folderId, createdAt ->
                 viewModel.queueSaveNote(id, title, content, color, pinned, topPinned, markdown, folderId, createdAt)
             },
-            onDelete = { note -> noteToDelete = note }
+            onDelete = { note -> noteToDelete = note },
+            onCopyToFolder = { note, folderId ->
+                viewModel.copyNoteToFolder(
+                    note = note,
+                    folderId = folderId,
+                    onSuccess = { feedbackMessage = "已复制到收藏夹" },
+                    onFailure = { feedbackMessage = "复制失败：$it" }
+                )
+            }
         )
     }
 
@@ -1002,12 +1011,13 @@ private fun FolderDeleteDialog(
 private fun FolderPickerDialog(
     folders: List<FolderEntity>,
     selectedFolderId: Long,
+    title: String = "移动到收藏夹",
     onDismiss: () -> Unit,
     onSelected: (Long) -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("移动到收藏夹") },
+        title = { Text(title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 folders.forEach { folder ->
@@ -1450,7 +1460,8 @@ private fun NoteDetailPage(
     positionStore: NotePositionStore,
     onBack: (Long, Long) -> Unit,
     onSave: (Long, String, String, Long, Boolean, Boolean, Boolean, Long, Long) -> Deferred<Long>,
-    onDelete: (NoteEntity) -> Unit
+    onDelete: (NoteEntity) -> Unit,
+    onCopyToFolder: (NoteEntity, Long) -> Unit
 ) {
     val context = LocalContext.current
     val isNewNote = note == null
@@ -1462,6 +1473,7 @@ private fun NoteDetailPage(
     var topPinned by remember(note?.id) { mutableStateOf(note?.isTopPinned ?: false) }
     var selectedFolderId by remember(note?.id, initialFolderId) { mutableStateOf(note?.folderId ?: initialFolderId) }
     var showFolderPicker by remember { mutableStateOf(false) }
+    var showCopyFolderPicker by remember { mutableStateOf(false) }
     var showDetailMenu by remember(note?.id, seed) { mutableStateOf(false) }
     var focusMode by remember(note?.id, seed) { mutableStateOf(false) }
     var formatMode by remember(note?.id, seed) {
@@ -1512,6 +1524,7 @@ private fun NoteDetailPage(
     val keyboard = LocalSoftwareKeyboardController.current
     val markdownActive = formatMode.resolvesToMarkdown(content)
     val folderName = folders.firstOrNull { it.id == selectedFolderId }?.name ?: "默认收藏夹"
+    val characterCount = title.length + content.length
     val detailScrollState = rememberScrollState()
     var pendingScrollRestore by remember(note?.id, seed) { mutableStateOf<Int?>(null) }
 
@@ -1781,6 +1794,12 @@ private fun NoteDetailPage(
                     }
                 },
                 actions = {
+                    Text(
+                        "$characterCount 字",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(end = 4.dp)
+                    )
                     when {
                         saveError != null -> Text("保存失败", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(end = 4.dp))
                         autoSaveState == AutoSaveState.SAVING -> Text("保存中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 4.dp))
@@ -1815,9 +1834,28 @@ private fun NoteDetailPage(
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("移动到：$folderName") },
+                                text = { Text("移动收藏夹") },
                                 onClick = { showFolderPicker = true; showDetailMenu = false }
                             )
+                            if (note != null) {
+                                DropdownMenuItem(
+                                    text = { Text("复制全文") },
+                                    onClick = {
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        val fullText = buildString {
+                                            if (title.isNotBlank()) append(title.trimEnd()).append("\n\n")
+                                            append(content)
+                                        }
+                                        clipboard.setPrimaryClip(ClipData.newPlainText("安笺笔记", fullText))
+                                        Toast.makeText(context, "已复制全文", Toast.LENGTH_SHORT).show()
+                                        showDetailMenu = false
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("复制到另一个收藏夹") },
+                                    onClick = { showCopyFolderPicker = true; showDetailMenu = false }
+                                )
+                            }
                             DropdownMenuItem(
                                 text = { Text(if (pinned) "取消星标" else "加入星标") },
                                 onClick = { pinned = !pinned; markEdited(); showDetailMenu = false }
@@ -1949,11 +1987,36 @@ private fun NoteDetailPage(
         FolderPickerDialog(
             folders = folders,
             selectedFolderId = selectedFolderId,
+            title = "移动收藏夹",
             onDismiss = { showFolderPicker = false },
             onSelected = { folderId ->
                 selectedFolderId = folderId
                 markEdited()
                 showFolderPicker = false
+            }
+        )
+    }
+    if (showCopyFolderPicker && note != null) {
+        FolderPickerDialog(
+            folders = folders.filterNot { it.id == selectedFolderId },
+            selectedFolderId = Long.MIN_VALUE,
+            title = "复制到另一个收藏夹",
+            onDismiss = { showCopyFolderPicker = false },
+            onSelected = { folderId ->
+                onCopyToFolder(
+                    note.copy(
+                        title = title,
+                        content = content,
+                        color = color,
+                        isPinned = pinned,
+                        isTopPinned = topPinned,
+                        isMarkdown = markdownActive,
+                        folderId = folderId,
+                        updatedAt = System.currentTimeMillis()
+                    ),
+                    folderId
+                )
+                showCopyFolderPicker = false
             }
         )
     }

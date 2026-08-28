@@ -258,6 +258,25 @@ class NotesViewModel(
         saveNote(id, title, content, color, pinned, topPinned, markdown, folderId, createdAt)
     }
 
+    fun copyNoteToFolder(
+        note: NoteEntity,
+        folderId: Long,
+        onSuccess: () -> Unit,
+        onFailure: (String) -> Unit
+    ) {
+        launchResult("复制笔记失败", { onSuccess() }, onFailure) {
+            repository.save(
+                note.copy(
+                    id = 0L,
+                    folderId = folderId,
+                    createdAt = System.currentTimeMillis(),
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+            Unit
+        }
+    }
+
     fun toggleStar(note: NoteEntity) {
         viewModelScope.launch {
             repository.save(note.copy(isPinned = !note.isPinned))
