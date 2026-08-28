@@ -1445,6 +1445,7 @@ private fun NoteDetailPage(
     var topPinned by remember(note?.id) { mutableStateOf(note?.isTopPinned ?: false) }
     var selectedFolderId by remember(note?.id, initialFolderId) { mutableStateOf(note?.folderId ?: initialFolderId) }
     var showFolderPicker by remember { mutableStateOf(false) }
+    var showDetailMenu by remember(note?.id, seed) { mutableStateOf(false) }
     var formatMode by remember(note?.id, seed) {
         mutableStateOf(
             if (note != null) {
@@ -1723,27 +1724,62 @@ private fun NoteDetailPage(
     BackHandler(enabled = true) { latestFinalizeAndLeave() }
 
     Scaffold(
-            containerColor = MaterialTheme.colorScheme.background,
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(if (note == null) "新建笔记" else "笔记详情", fontWeight = FontWeight.SemiBold)
-                        when {
-                            saveError != null -> Text("保存失败", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-                            autoSaveState == AutoSaveState.SAVING -> Text("保存中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            autoSaveState == AutoSaveState.SAVED -> Text("已保存 ✓", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                        }
-                    }
-                },
+                title = {},
                 navigationIcon = {
-                    TextButton(onClick = ::finalizeAndLeave) {
-                        Text("返回")
+                    TextButton(onClick = ::finalizeAndLeave, modifier = Modifier.size(48.dp)) {
+                        Text("←", fontSize = 28.sp, color = MaterialTheme.colorScheme.onBackground)
                     }
                 },
                 actions = {
-                    TextButton(onClick = ::toggleDetailMode) {
-                        Text(if (detailMode == DetailMode.PREVIEW) "编辑" else "预览")
+                    when {
+                        saveError != null -> Text("保存失败", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(end = 4.dp))
+                        autoSaveState == AutoSaveState.SAVING -> Text("保存中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 4.dp))
+                        autoSaveState == AutoSaveState.SAVED -> Text("✓", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 4.dp))
+                    }
+                    if (detailMode == DetailMode.EDIT) {
+                        TextButton(onClick = ::toggleDetailMode) { Text("预览") }
+                    }
+                    Box {
+                        TextButton(onClick = { showDetailMenu = true }, modifier = Modifier.size(48.dp)) {
+                            Text("⋯", fontSize = 26.sp, color = MaterialTheme.colorScheme.onBackground)
+                        }
+                        DropdownMenu(expanded = showDetailMenu, onDismissRequest = { showDetailMenu = false }) {
+                            if (detailMode == DetailMode.PREVIEW) {
+                                DropdownMenuItem(
+                                    text = { Text("编辑") },
+                                    onClick = { showDetailMenu = false; enterEdit(InlineEditTarget.CONTENT) }
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = { Text(if (markdownActive) "切换为纯文本" else "切换为 Markdown") },
+                                onClick = {
+                                    formatMode = formatMode.next()
+                                    markEdited()
+                                    showDetailMenu = false
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("移动到：$folderName") },
+                                onClick = { showFolderPicker = true; showDetailMenu = false }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (pinned) "取消星标" else "加入星标") },
+                                onClick = { pinned = !pinned; markEdited(); showDetailMenu = false }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (topPinned) "取消置顶" else "置顶") },
+                                onClick = { topPinned = !topPinned; markEdited(); showDetailMenu = false }
+                            )
+                            if (note != null) {
+                                DropdownMenuItem(
+                                    text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                                    onClick = { showDetailMenu = false; onDelete(note) }
+                                )
+                            }
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
@@ -1754,11 +1790,11 @@ private fun NoteDetailPage(
             Box(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
                 Column(
                     modifier = if (detailMode == DetailMode.EDIT) {
-                        Modifier.fillMaxSize().padding(end = 12.dp)
+                        Modifier.fillMaxSize()
                     } else {
-                        Modifier.fillMaxSize().padding(end = 12.dp).verticalScroll(detailScrollState)
+                        Modifier.fillMaxSize().verticalScroll(detailScrollState)
                     },
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    verticalArrangement = Arrangement.spacedBy(18.dp)
                 ) {
             if (detailMode == DetailMode.EDIT) {
                 NativeNoteTitleEditor(
@@ -1774,71 +1810,14 @@ private fun NoteDetailPage(
             } else {
                 Text(
                     title.ifBlank { "未命名笔记" },
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.headlineSmall.copy(fontSize = 30.sp, lineHeight = 38.sp),
+                    fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.fillMaxWidth().combinedClickable(
                         onClick = {},
                         onDoubleClick = { enterEdit(InlineEditTarget.TITLE) }
                     )
                 )
             }
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(top = 1.dp, bottom = 2.dp),
-                verticalArrangement = Arrangement.spacedBy(3.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = if (markdownActive) "Markdown" else "纯文本",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .clip(MaterialTheme.shapes.small)
-                            .clickable {
-                                if (detailMode == DetailMode.EDIT) {
-                                    formatMode = formatMode.next()
-                                    markEdited()
-                                }
-                            }
-                            .padding(vertical = 4.dp)
-                    )
-                    Text(" · ", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(
-                        text = folderName,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .clip(MaterialTheme.shapes.small)
-                            .clickable { showFolderPicker = true }
-                            .padding(vertical = 4.dp)
-                    )
-                    if (pinned) {
-                        Text(
-                            text = " · ★",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier
-                                .clip(MaterialTheme.shapes.small)
-                                .clickable { pinned = !pinned; markEdited() }
-                                .padding(vertical = 4.dp)
-                        )
-                    }
-                    if (topPinned) {
-                        Text(
-                            text = " · ↑",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
-                Text(
-                    formatDate(note?.updatedAt ?: System.currentTimeMillis()),
-                    maxLines = 1,
-                    softWrap = false,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f)
-                )
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.38f))
             if (detailMode == DetailMode.EDIT) {
                 if (markdownActive) MarkdownSyntaxHint()
                 NativeNoteEditor(
@@ -1853,17 +1832,6 @@ private fun NoteDetailPage(
                         markEdited(contentOverride = value.text)
                     }
                 )
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    if (note != null) TextButton(onClick = { onDelete(note) }) { Text("删除", color = MaterialTheme.colorScheme.error) } else Spacer(Modifier.width(1.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                        TextButton(onClick = { topPinned = !topPinned; markEdited() }) {
-                            Text("置顶", color = if (topPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        TextButton(onClick = { pinned = !pinned; markEdited() }) {
-                            Text("星标", color = if (pinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
             } else if (markdownActive) {
                 MarkdownPreview(
                     content,
@@ -1879,7 +1847,7 @@ private fun NoteDetailPage(
                 }
                 Text(
                     text = previewText,
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 29.sp),
                     onTextLayout = { plainTextLayout = it },
                     modifier = Modifier.fillMaxWidth().pointerInput(content) {
                         detectTapGestures(

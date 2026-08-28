@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -39,6 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
 import java.util.concurrent.atomic.AtomicReference
@@ -70,7 +72,7 @@ fun MarkdownPreview(
         )
         return
     }
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         blocks.forEach { block ->
             key(
                 when (block) {
@@ -175,8 +177,8 @@ private fun MarkdownCodeBlock(
     }
     Surface(
         modifier = interactionModifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
-        shape = MaterialTheme.shapes.medium
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.56f),
+        shape = RoundedCornerShape(4.dp)
     ) {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
             if (block.language.isNotBlank()) {
@@ -274,8 +276,8 @@ private fun MarkdownTable(
     ) {
         Surface(
             modifier = surfaceModifier.wrapContentWidth(unbounded = true),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-            shape = MaterialTheme.shapes.medium
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.36f),
+            shape = RoundedCornerShape(4.dp)
         ) {
             Column {
                 MarkdownTableRow(header, columnWidths, header = true)
@@ -344,12 +346,12 @@ private fun MarkdownLine(
         }
     }
     when {
-        line.startsWith("### ") -> MarkdownLineText(markdownInline(line.removePrefix("### "), linkColor, codeBackground), MaterialTheme.typography.titleMedium, lineModifier, FontWeight.Bold, onTextLayout = textLayoutCallback)
-        line.startsWith("## ") -> MarkdownLineText(markdownInline(line.removePrefix("## "), linkColor, codeBackground), MaterialTheme.typography.titleLarge, lineModifier, FontWeight.Bold, onTextLayout = textLayoutCallback)
-        line.startsWith("# ") -> MarkdownLineText(markdownInline(line.removePrefix("# "), linkColor, codeBackground), MaterialTheme.typography.headlineSmall, lineModifier, FontWeight.Bold, onTextLayout = textLayoutCallback)
+        line.startsWith("### ") -> MarkdownLineText(markdownInline(line.removePrefix("### "), linkColor, codeBackground), MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp, lineHeight = 27.sp), lineModifier.padding(top = 4.dp), FontWeight.SemiBold, onTextLayout = textLayoutCallback)
+        line.startsWith("## ") -> MarkdownLineText(markdownInline(line.removePrefix("## "), linkColor, codeBackground), MaterialTheme.typography.titleLarge.copy(fontSize = 22.sp, lineHeight = 31.sp), lineModifier.padding(top = 7.dp), FontWeight.SemiBold, onTextLayout = textLayoutCallback)
+        line.startsWith("# ") -> MarkdownLineText(markdownInline(line.removePrefix("# "), linkColor, codeBackground), MaterialTheme.typography.headlineSmall.copy(fontSize = 27.sp, lineHeight = 36.sp), lineModifier.padding(top = 10.dp), FontWeight.SemiBold, onTextLayout = textLayoutCallback)
         line.trim() == "---" || line.trim() == "***" -> Spacer(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-        line.startsWith("> ") -> Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium) {
-            MarkdownLineText(markdownInline(line.removePrefix("> "), linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier.padding(horizontal = 12.dp, vertical = 9.dp), onTextLayout = textLayoutCallback)
+        line.startsWith("> ") -> Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.07f), shape = RoundedCornerShape(3.dp)) {
+            MarkdownLineText(markdownInline(line.removePrefix("> "), linkColor, codeBackground), MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 29.sp), lineModifier.padding(horizontal = 13.dp, vertical = 9.dp), onTextLayout = textLayoutCallback)
         }
         line.matches(MarkdownUnorderedListPattern) -> MarkdownLineText(
             markdownListItem(
@@ -359,7 +361,7 @@ private fun MarkdownLine(
                 linkColor = linkColor,
                 codeBackground = codeBackground
             ),
-            MaterialTheme.typography.bodyMedium,
+            MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 29.sp),
             lineModifier.fillMaxWidth(),
             onTextLayout = textLayoutCallback
         )
@@ -378,7 +380,7 @@ private fun MarkdownLine(
                 onTextLayout = textLayoutCallback
             )
         }
-        else -> MarkdownLineText(markdownInline(line, linkColor, codeBackground), MaterialTheme.typography.bodyMedium, lineModifier, onTextLayout = textLayoutCallback)
+        else -> MarkdownLineText(markdownInline(line, linkColor, codeBackground), MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 29.sp), lineModifier, onTextLayout = textLayoutCallback)
     }
 }
 
@@ -548,16 +550,10 @@ private fun buildListPreview(text: String, lineTransform: (String) -> String): S
 
 @Composable
 fun MarkdownSyntaxHint(modifier: Modifier = Modifier) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
-        shape = MaterialTheme.shapes.medium
-    ) {
-        Text(
-            text = "# 标题   **粗体**   *斜体*   - 列表   > 引用   | 表格 |",
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
+    Text(
+        text = "Markdown：# 标题 · **粗体** · *斜体* · - 列表",
+        modifier = modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 1.dp),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.76f)
+    )
 }
