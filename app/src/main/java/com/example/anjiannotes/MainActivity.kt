@@ -328,13 +328,27 @@ private fun NotesApp(
         else -> activeFolderId
     }
 
-    fun openImported(note: EditorSeed) {
-        page = AppPage.Detail(
-            note = null,
-            seed = note,
-            folderId = writableFolderId(),
-            initialPinned = activeFolderId == STARRED_FOLDER_ID
-        )
+    fun saveImportedDirectly(note: EditorSeed) {
+        val folderId = writableFolderId()
+        val pinned = activeFolderId == STARRED_FOLDER_ID
+        fileIoScope.launch {
+            runCatching {
+                viewModel.queueSaveNote(
+                    id = 0L,
+                    title = note.title,
+                    content = note.content,
+                    color = 0xFFF5F0E8,
+                    pinned = pinned,
+                    topPinned = false,
+                    markdown = note.formatMode.resolvesToMarkdown(note.content),
+                    folderId = folderId
+                ).await()
+            }.onSuccess {
+                feedbackMessage = "已导入 1 条笔记"
+            }.onFailure {
+                feedbackMessage = "导入保存失败：${it.message ?: "无法保存笔记"}"
+            }
+        }
     }
 
     val backupSaveLauncher = rememberLauncherForActivityResult(
@@ -420,7 +434,7 @@ private fun NotesApp(
             runFileOperation("导入失败", { readTextImport(context, selectedUri) }) { result ->
                 when (result) {
                     is ImportReadResult.Success -> {
-                        openImported(EditorSeed(result.note.title, result.note.content, result.note.formatMode))
+                        saveImportedDirectly(EditorSeed(result.note.title, result.note.content, result.note.formatMode))
                     }
                     is ImportReadResult.Failure -> importError = result.message
                 }
@@ -474,12 +488,11 @@ private fun NotesApp(
                         .mapNotNull { index -> clip.getItemAt(index).coerceToText(context)?.toString() }
                         .firstOrNull { it.isNotBlank() }
                 }.orEmpty()
-                page = AppPage.Detail(
-                    note = null,
-                    seed = EditorSeed("剪切板笔记", recentText, NoteFormatMode.AUTO),
-                    folderId = writableFolderId(),
-                    initialPinned = activeFolderId == STARRED_FOLDER_ID
-                )
+                if (recentText.isBlank()) {
+                    feedbackMessage = "剪贴板没有可导入的文本"
+                } else {
+                    saveImportedDirectly(EditorSeed("剪切板笔记", recentText, NoteFormatMode.AUTO))
+                }
             },
             onOpenNote = { note, contentCursor ->
                 page = AppPage.Detail(note = note, folderId = note.folderId, initialContentCursor = contentCursor)
@@ -1620,7 +1633,6 @@ private fun NoteDetailPage(
     var nativeTitleFocusRequest by remember(note?.id, seed) { mutableStateOf(-1) }
     var nativeContentFocusRequest by remember(note?.id, seed) { mutableStateOf(-1) }
     var nativeContentEditor by remember(note?.id, seed) { mutableStateOf<NativeNoteEditText?>(null) }
-    var nativeEditorScrollVersion by remember(note?.id, seed) { mutableStateOf(0) }
     val keyboard = LocalSoftwareKeyboardController.current
     val markdownActive = formatMode.resolvesToMarkdown(content)
     val folderName = folders.firstOrNull { it.id == selectedFolderId }?.name ?: "默认收藏夹"
@@ -1894,6 +1906,10 @@ private fun NoteDetailPage(
                     }
                 },
                 actions = {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                     Text(
                         "$characterCount 字",
                         style = MaterialTheme.typography.labelSmall,
@@ -1972,6 +1988,7 @@ private fun NoteDetailPage(
                             }
                         }
                     }
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
@@ -2020,7 +2037,6 @@ private fun NoteDetailPage(
                     modifier = Modifier.fillMaxWidth().weight(1f),
                     textColor = MaterialTheme.colorScheme.onBackground,
                     onViewReady = { nativeContentEditor = it },
-                    onScrollChanged = { nativeEditorScrollVersion++ },
                     onSelectionChange = { start, end ->
                         if (savedNoteId > 0L) positionStore.saveSelection(savedNoteId, start, end)
                     },
@@ -2072,18 +2088,7 @@ private fun NoteDetailPage(
             }
             Spacer(Modifier.height(48.dp))
                 }
-                if (detailMode == DetailMode.EDIT) {
-                    nativeContentEditor?.let { editor ->
-                        DraggableNativeEditorScrollbar(
-                            editor = editor,
-                            scrollVersion = nativeEditorScrollVersion,
-                            thumbColor = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .fillMaxHeight()
-                        )
-                    }
-                } else if (!focusMode) {
+                if (detailMode == DetailMode.PREVIEW && !focusMode) {
                     DraggableDetailScrollbar(
                         scrollState = detailScrollState,
                         thumbColor = MaterialTheme.colorScheme.primary,
