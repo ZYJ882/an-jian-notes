@@ -1,7 +1,11 @@
 package com.example.anjiannotes.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -21,6 +25,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -32,7 +37,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -407,27 +417,63 @@ private fun MarkdownCodeBlock(
     onLongPress: () -> Unit,
     onClick: () -> Unit
 ) {
+    val context = LocalContext.current
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),
         shape = RoundedCornerShape(4.dp)
     ) {
-        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp)) {
-            if (block.language.isNotBlank()) {
-                Text(
-                    text = block.language.uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(bottom = 6.dp)
-                )
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                if (block.language.isNotBlank()) {
+                    Text(
+                        text = block.language.uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
+                        fontWeight = FontWeight.Medium
+                    )
+                } else {
+                    Spacer(modifier = Modifier.width(1.dp))
+                }
+                IconButton(
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                        clipboard?.setPrimaryClip(ClipData.newPlainText("代码", block.content.text))
+                    },
+                    modifier = Modifier.width(28.dp).height(28.dp)
+                ) {
+                    val tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f)
+                    Canvas(
+                        modifier = Modifier.width(16.dp).height(16.dp)
+                    ) {
+                        val stroke = 1.5.dp.toPx()
+                        drawRoundRect(
+                            color = tint,
+                            topLeft = Offset(4.dp.toPx(), 1.dp.toPx()),
+                            size = Size(10.dp.toPx(), 10.dp.toPx()),
+                            cornerRadius = CornerRadius(2.dp.toPx()),
+                            style = Stroke(width = stroke)
+                        )
+                        drawRoundRect(
+                            color = tint,
+                            topLeft = Offset(1.dp.toPx(), 4.dp.toPx()),
+                            size = Size(10.dp.toPx(), 10.dp.toPx()),
+                            cornerRadius = CornerRadius(2.dp.toPx()),
+                            style = Stroke(width = stroke)
+                        )
+                    }
+                }
             }
             MarkdownInteractiveText(
                 source = block.content,
                 style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, lineHeight = 22.sp),
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 3.dp),
                 parseFormatting = false,
                 enableTextSelection = enableTextSelection,
                 onLinkLongPress = onLinkLongPress,
