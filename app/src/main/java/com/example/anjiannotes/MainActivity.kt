@@ -1,5 +1,6 @@
 package com.example.anjiannotes
 
+
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -170,6 +171,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
+private data class NoteExportPayload(
+    val fileName: String,
+    val content: String
+)
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -309,6 +315,7 @@ private fun NotesApp(
     var pendingTextRestorePayload by remember { mutableStateOf<String?>(null) }
     var pendingMarkdownZipPayload by remember { mutableStateOf<ByteArray?>(null) }
     var pendingMarkdownZipRestorePayload by remember { mutableStateOf<ByteArray?>(null) }
+    var pendingNoteExport by remember { mutableStateOf<NoteExportPayload?>(null) }
     var showWebDavDialog by remember { mutableStateOf(false) }
     var pendingWebDavRestore by remember { mutableStateOf<WebDavRemoteSnapshot?>(null) }
     val fileIoScope = rememberCoroutineScope()
@@ -366,6 +373,35 @@ private fun NotesApp(
                 feedbackMessage = "备份已导出"
             }
         }
+    }
+
+    val noteExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/*")
+    ) { uri ->
+        val payload = pendingNoteExport
+        pendingNoteExport = null
+        if (uri != null && payload != null) {
+            runFileOperation("笔记导出失败", {
+                context.contentResolver.openOutputStream(uri)?.bufferedWriter(Charsets.UTF_8)?.use {
+                    it.write(payload.content)
+                } ?: error("无法写入所选位置")
+            }) {
+                feedbackMessage = "笔记已导出"
+            }
+        }
+    }
+    fun launchNoteExport(title: String, content: String, markdown: Boolean) {
+        val extension = if (markdown) "md" else "txt"
+        val safeTitle = title.trim()
+            .ifBlank { "未命名笔记" }
+            .replace(Regex("[\\\\/:*?\\\"<>|]"), "_")
+            .take(80)
+            .ifBlank { "未命名笔记" }
+        pendingNoteExport = NoteExportPayload(
+            fileName = "$safeTitle.$extension",
+            content = content
+        )
+        noteExportLauncher.launch("$safeTitle.$extension")
     }
 
     val textBackupSaveLauncher = rememberLauncherForActivityResult(
@@ -556,6 +592,7 @@ private fun NotesApp(
                 viewModel.queueSaveNote(id, title, content, color, pinned, topPinned, markdown, folderId, createdAt)
             },
             onDelete = { note -> noteToDelete = note },
+            onExport = { title, content, markdown -> launchNoteExport(title, content, markdown) },
             onCopyToFolder = { note, folderId ->
                 viewModel.copyNoteToFolder(
                     note = note,
@@ -1575,6 +1612,7 @@ private fun NoteDetailPage(
     onBack: (Long, Long) -> Unit,
     onSave: (Long, String, String, Long, Boolean, Boolean, Boolean, Long, Long) -> Deferred<Long>,
     onDelete: (NoteEntity) -> Unit,
+    onExport: (String, String, Boolean) -> Unit,
     onCopyToFolder: (NoteEntity, Long) -> Unit
 ) {
     val context = LocalContext.current
@@ -1973,6 +2011,19 @@ private fun NoteDetailPage(
                                 DropdownMenuItem(
                                     text = { Text("复制到另一个收藏夹") },
                                     onClick = { showCopyFolderPicker = true; showDetailMenu = false }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("导出笔记") },
+                                    onClick = {
+                                        if (detailMode == DetailMode.EDIT) syncNativeContentBeforePreview()
+                                        val exportContent = nativeContentEditor?.text?.toString() ?: content
+                                        onExport(
+                                            title,
+                                            exportContent,
+                                            formatMode.resolvesToMarkdown(exportContent)
+                                        )
+                                        showDetailMenu = false
+                                    }
                                 )
                             }
                             DropdownMenuItem(
