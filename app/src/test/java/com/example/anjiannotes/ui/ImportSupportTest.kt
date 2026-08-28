@@ -42,6 +42,26 @@ class ImportSupportTest {
     }
 
     @Test
+    fun txtContentWithMarkdownSyntaxUsesMarkdownPreviewInAutoMode() {
+        val txtContent = """
+            # 项目记录
+
+            - 第一项
+            - 第二项
+
+            | 名称 | 状态 |
+            | --- | --- |
+            | 安笺 | 完成 |
+
+            ```kotlin
+            println("ok")
+            ```
+        """.trimIndent()
+        assertEquals(NoteFormatMode.AUTO, formatForFileName("项目记录.txt"))
+        assertTrue(NoteFormatMode.AUTO.resolvesToMarkdown(txtContent))
+    }
+
+    @Test
     fun manualModeStillOverridesAutomaticDetection() {
         assertFalse(NoteFormatMode.PLAIN.resolvesToMarkdown("# 标题\n- 项目"))
         assertTrue(NoteFormatMode.MARKDOWN.resolvesToMarkdown("普通文字"))

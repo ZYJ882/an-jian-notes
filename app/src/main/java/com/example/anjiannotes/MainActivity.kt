@@ -8,7 +8,6 @@ import android.graphics.Typeface
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
-import android.text.method.ScrollingMovementMethod
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
@@ -2091,7 +2090,9 @@ private fun NoteDetailPage(
                     }
                 )
             }
-            Spacer(Modifier.height(48.dp))
+            if (detailMode != DetailMode.EDIT) {
+                Spacer(Modifier.height(48.dp))
+            }
                 }
                 if (detailMode == DetailMode.EDIT) {
                     nativeContentEditor?.let { editor ->
@@ -2237,10 +2238,17 @@ private class NativeNoteEditText(context: Context) : EditText(context) {
     var lastFocusRequest: Int = -1
     var onSelectionChange: ((Int, Int) -> Unit)? = null
     var onScrollPositionChanged: (() -> Unit)? = null
+    private var scrollCallbackPosted = false
 
     override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
         super.onScrollChanged(l, t, oldl, oldt)
-        onScrollPositionChanged?.invoke()
+        if (!scrollCallbackPosted) {
+            scrollCallbackPosted = true
+            postOnAnimation {
+                scrollCallbackPosted = false
+                onScrollPositionChanged?.invoke()
+            }
+        }
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -2311,7 +2319,6 @@ private fun NativeNoteEditor(
                 isSingleLine = false
                 isVerticalScrollBarEnabled = false
                 overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
-                movementMethod = ScrollingMovementMethod.getInstance()
                 inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
                 // 初始文本属于明确的外部模型装配；之后用户输入始终以 view.text 为实时来源。
                 applyExternalModelText(value.text, externalModelKey)
