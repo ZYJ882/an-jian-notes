@@ -8,11 +8,14 @@ import android.graphics.Typeface
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
+import android.text.method.ScrollingMovementMethod
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.Toast
+import android.view.View
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
@@ -491,7 +494,7 @@ private fun NotesApp(
                 if (recentText.isBlank()) {
                     feedbackMessage = "剪贴板没有可导入的文本"
                 } else {
-                    saveImportedDirectly(EditorSeed("剪切板笔记", recentText, NoteFormatMode.AUTO))
+                    saveImportedDirectly(EditorSeed("", recentText, NoteFormatMode.AUTO))
                 }
             },
             onOpenNote = { note, contentCursor ->
@@ -1633,6 +1636,7 @@ private fun NoteDetailPage(
     var nativeTitleFocusRequest by remember(note?.id, seed) { mutableStateOf(-1) }
     var nativeContentFocusRequest by remember(note?.id, seed) { mutableStateOf(-1) }
     var nativeContentEditor by remember(note?.id, seed) { mutableStateOf<NativeNoteEditText?>(null) }
+    var nativeEditorScrollVersion by remember(note?.id, seed) { mutableStateOf(0) }
     val keyboard = LocalSoftwareKeyboardController.current
     val markdownActive = formatMode.resolvesToMarkdown(content)
     val folderName = folders.firstOrNull { it.id == selectedFolderId }?.name ?: "默认收藏夹"
@@ -2037,6 +2041,7 @@ private fun NoteDetailPage(
                     modifier = Modifier.fillMaxWidth().weight(1f),
                     textColor = MaterialTheme.colorScheme.onBackground,
                     onViewReady = { nativeContentEditor = it },
+                    onScrollChanged = { nativeEditorScrollVersion++ },
                     onSelectionChange = { start, end ->
                         if (savedNoteId > 0L) positionStore.saveSelection(savedNoteId, start, end)
                     },
@@ -2088,7 +2093,18 @@ private fun NoteDetailPage(
             }
             Spacer(Modifier.height(48.dp))
                 }
-                if (detailMode == DetailMode.PREVIEW && !focusMode) {
+                if (detailMode == DetailMode.EDIT) {
+                    nativeContentEditor?.let { editor ->
+                        DraggableNativeEditorScrollbar(
+                            editor = editor,
+                            scrollVersion = nativeEditorScrollVersion,
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .fillMaxHeight()
+                        )
+                    }
+                } else if (!focusMode) {
                     DraggableDetailScrollbar(
                         scrollState = detailScrollState,
                         thumbColor = MaterialTheme.colorScheme.primary,
@@ -2227,6 +2243,16 @@ private class NativeNoteEditText(context: Context) : EditText(context) {
         onScrollPositionChanged?.invoke()
     }
 
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE ->
+                parent?.requestDisallowInterceptTouchEvent(true)
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                parent?.requestDisallowInterceptTouchEvent(false)
+        }
+        return super.onTouchEvent(event)
+    }
+
     fun verticalScrollRange(): Int = computeVerticalScrollRange()
 
     fun verticalScrollExtent(): Int = computeVerticalScrollExtent()
@@ -2283,6 +2309,9 @@ private fun NativeNoteEditor(
                 minLines = 6
                 maxLines = Int.MAX_VALUE
                 isSingleLine = false
+                isVerticalScrollBarEnabled = false
+                overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+                movementMethod = ScrollingMovementMethod.getInstance()
                 inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
                 // 初始文本属于明确的外部模型装配；之后用户输入始终以 view.text 为实时来源。
                 applyExternalModelText(value.text, externalModelKey)
