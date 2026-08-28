@@ -1760,8 +1760,10 @@ private fun NoteDetailPage(
     }
 
     val latestFinalizeAndLeave by rememberUpdatedState(::finalizeAndLeave)
-    // BackHandler 通过 AndroidX 回调覆盖物理返回键、三键导航及系统返回手势。
-    BackHandler(enabled = true) { latestFinalizeAndLeave() }
+    // 专注阅读使用分层返回：第一次返回只恢复普通阅读，第二次才离开笔记。
+    BackHandler(enabled = true) {
+        if (focusMode) focusMode = false else latestFinalizeAndLeave()
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -1800,8 +1802,8 @@ private fun NoteDetailPage(
                                     onClick = { showDetailMenu = false; enterEdit(InlineEditTarget.CONTENT) }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text(if (focusMode) "退出专注阅读" else "专注阅读") },
-                                    onClick = { focusMode = !focusMode; showDetailMenu = false }
+                                    text = { Text("专注阅读") },
+                                    onClick = { focusMode = true; showDetailMenu = false }
                                 )
                             }
                             DropdownMenuItem(
@@ -1894,8 +1896,7 @@ private fun NoteDetailPage(
                     modifier = Modifier.fillMaxWidth(),
                     onLinkClick = ::openPreviewLink,
                     onDoubleClickAt = { position -> enterEdit(InlineEditTarget.CONTENT, position) },
-                    initialSourceOffset = initialContentCursor,
-                    onClick = { focusMode = !focusMode }
+                    initialSourceOffset = initialContentCursor
                 )
             } else {
                 var plainTextLayout by remember(content) { mutableStateOf<TextLayoutResult?>(null) }
@@ -1919,7 +1920,7 @@ private fun NoteDetailPage(
                                 val link = plainTextLayout?.let { layout ->
                                     extractLinkAt(content, layout.getOffsetForPosition(offset))
                                 }
-                                if (link != null) openPreviewLink(link) else focusMode = !focusMode
+                                if (link != null) openPreviewLink(link)
                             },
                             onDoubleTap = { offset ->
                                 plainTextLayout?.let { layout ->
