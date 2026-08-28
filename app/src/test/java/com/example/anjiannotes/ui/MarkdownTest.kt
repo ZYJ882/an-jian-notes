@@ -3,6 +3,7 @@ package com.example.anjiannotes.ui
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MarkdownTest {
@@ -24,32 +25,77 @@ class MarkdownTest {
     }
 
     @Test
-    fun markdownPreview_keepsEveryLineOfLongOrderedList() {
-        val markdown = """
-            本次做性能优化
-            1. 改善冷启动：把主线程阻塞的初始化逻辑延迟到首帧绘制完成之后放到后台执行；不要在启动阶段执行大量 IO、解析工作。
-            2. 提升页面运行流畅度：Compose 层面优化，减少不必要重组，耗时计算使用 remember 缓存，懒列表补充稳定 key，避免滑动卡顿。
-            3. 优化动画：解决动画卡顿、丢帧问题。
-        """.trimIndent()
+    fun parser_mergesContinuousLinesIntoParagraphs() {
+        val document = MarkdownParser.parse("第一行\n第二行\n\n第三段")
+        val paragraphs = document.blocks.filterIsInstance<MarkdownBlock.Paragraph>()
 
-        assertEquals(4, markdownPreviewBlockCount(markdown))
-        assertEquals(
-            "本次做性能优化 改善冷启动：把主线程阻塞的初始化逻辑延迟到首帧绘制完成之后放到后台执行；不要在启动阶段执行大量 IO、解析工作。 提升页面运行流畅度：Compose 层面优化，减少不必要重组，耗时计算使用 remember 缓存，懒列表补充稳定 key，避免滑动卡顿。 优化动画：解决动画卡顿、丢帧问题。",
-            markdownToPlainText(markdown)
-        )
+        assertEquals(2, paragraphs.size)
+        assertEquals("第一行\n第二行", paragraphs[0].text.text)
+        assertEquals("第三段", paragraphs[1].text.text)
     }
 
     @Test
-    fun markdownPreview_keepsListItemsAfterFencedCodeBlock() {
+    fun parser_supportsEveryHeadingLevel() {
+        val markdown = (1..6).joinToString("\n") { level -> "${"#".repeat(level)} 标题$level" }
+        val headings = MarkdownParser.parse(markdown).blocks.filterIsInstance<MarkdownBlock.Heading>()
+
+        assertEquals(listOf(1, 2, 3, 4, 5, 6), headings.map { it.level })
+        assertEquals("标题6", headings.last().text.text)
+    }
+
+    @Test
+    fun parser_keepsNestedListDepthAndListItemsAfterCodeBlock() {
         val markdown = """
             ```kotlin
-            val message = \"安笺\"
+            val message = "安笺"
             ```
-            1. 第一条
-            2. 第二条
+            - 第一项
+              - 子项目
+            1. 第二项
+               1. 子项目
         """.trimIndent()
+        val blocks = MarkdownParser.parse(markdown).blocks
+        val code = blocks.filterIsInstance<MarkdownBlock.Code>().single()
+        val list = blocks.filterIsInstance<MarkdownBlock.ListBlock>().single()
 
-        assertEquals(3, markdownPreviewBlockCount(markdown))
+        assertEquals("kotlin", code.language)
+        assertEquals(4, list.items.size)
+        assertEquals(listOf(0, 1, 0, 1), list.items.map { it.depth })
+        assertEquals(listOf("•", "•", "1.", "1."), list.items.map { it.marker })
+    }
+
+    @Test
+    fun inlineParser_supportsNestedFormattingAndUnderscoreMarkers() {
+        assertEquals("这是 粗体斜体", markdownInlineDisplayText("**这是 *粗体斜体***"))
+        assertEquals("粗体 斜体 删除 代码", markdownInlineDisplayText("__粗体__ _斜体_ ~~删除~~ `代码`"))
+        assertEquals("重要链接", markdownInlineDisplayText("[**重要链接**](https://example.com)"))
+        assertEquals("*不是斜体*", markdownInlineDisplayText("\\*不是斜体\\*"))
+    }
+
+    @Test
+    fun linkHitTesting_onlyOpensWhenTheTappedDisplayCharacterIsALink() {
+        val markdown = "请访问 [帮助页面](https://example.com/help) 后继续"
+        assertEquals("https://example.com/help", markdownInlineLinkAt(markdown, 4))
+        assertNull(markdownInlineLinkAt(markdown, 1))
+    }
+
+    @Test
+    fun parser_mapsCrLfParagraphDisplayOffsetsBackToOriginalText() {
+        val markdown = "第一行\r\n第二行"
+        assertEquals(5, markdownFirstParagraphSourceOffset(markdown, 4))
+    }
+
+    @Test
+    fun parser_preservesEscapedTablePipesAndAlignment() {
+        val markdown = """
+            | 左 | 中 | 右 |
+            |:---|:---:|---:|
+            | A | CPU \| GPU | 42 |
+        """.trimIndent()
+        val table = MarkdownParser.parse(markdown).blocks.filterIsInstance<MarkdownBlock.Table>().single()
+
+        assertEquals(listOf(TableAlignment.START, TableAlignment.CENTER, TableAlignment.END), table.alignments)
+        assertEquals("CPU | GPU", table.rows.single()[1].text)
     }
 
     @Test
@@ -71,5 +117,19 @@ class MarkdownTest {
         val result = linkifyPlainText("访问 https://example.com", previewLinkColor(darkTheme = false))
         assertEquals("访问 https://example.com", result.text)
         assertNotNull(result.spanStyles.firstOrNull())
+    }
+
+    @Test
+    fun markdownPreview_documentContainsNoUnexpectedLineLoss() {
+        val markdown = """
+            本次做性能优化
+            1. 改善冷启动
+            2. 提升页面运行流畅度
+            3. 优化动画
+        """.trimIndent()
+        val document = MarkdownParser.parse(markdown)
+
+        assertEquals(2, document.blocks.size)
+        assertTrue(markdownToPlainText(markdown).contains("优化动画"))
     }
 }
