@@ -1620,6 +1620,7 @@ private fun NoteDetailPage(
     var nativeTitleFocusRequest by remember(note?.id, seed) { mutableStateOf(-1) }
     var nativeContentFocusRequest by remember(note?.id, seed) { mutableStateOf(-1) }
     var nativeContentEditor by remember(note?.id, seed) { mutableStateOf<NativeNoteEditText?>(null) }
+    var nativeEditorScrollVersion by remember(note?.id, seed) { mutableStateOf(0) }
     val keyboard = LocalSoftwareKeyboardController.current
     val markdownActive = formatMode.resolvesToMarkdown(content)
     val folderName = folders.firstOrNull { it.id == selectedFolderId }?.name ?: "默认收藏夹"
@@ -2019,6 +2020,7 @@ private fun NoteDetailPage(
                     modifier = Modifier.fillMaxWidth().weight(1f),
                     textColor = MaterialTheme.colorScheme.onBackground,
                     onViewReady = { nativeContentEditor = it },
+                    onScrollChanged = { nativeEditorScrollVersion++ },
                     onSelectionChange = { start, end ->
                         if (savedNoteId > 0L) positionStore.saveSelection(savedNoteId, start, end)
                     },
@@ -2070,7 +2072,18 @@ private fun NoteDetailPage(
             }
             Spacer(Modifier.height(48.dp))
                 }
-                if (detailMode == DetailMode.PREVIEW && !focusMode) {
+                if (detailMode == DetailMode.EDIT) {
+                    nativeContentEditor?.let { editor ->
+                        DraggableNativeEditorScrollbar(
+                            editor = editor,
+                            scrollVersion = nativeEditorScrollVersion,
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .fillMaxHeight()
+                        )
+                    }
+                } else if (!focusMode) {
                     DraggableDetailScrollbar(
                         scrollState = detailScrollState,
                         thumbColor = MaterialTheme.colorScheme.primary,
@@ -2202,6 +2215,16 @@ private class NativeNoteEditText(context: Context) : EditText(context) {
     var appliedExternalModelKey: Any? = null
     var lastFocusRequest: Int = -1
     var onSelectionChange: ((Int, Int) -> Unit)? = null
+    var onScrollPositionChanged: (() -> Unit)? = null
+
+    override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
+        super.onScrollChanged(l, t, oldl, oldt)
+        onScrollPositionChanged?.invoke()
+    }
+
+    fun verticalScrollRange(): Int = computeVerticalScrollRange()
+
+    fun verticalScrollExtent(): Int = computeVerticalScrollExtent()
 
     fun performNativeUndo() {
         onTextContextMenuItem(android.R.id.undo)
@@ -2235,10 +2258,12 @@ private fun NativeNoteEditor(
     modifier: Modifier = Modifier,
     textColor: Color,
     onViewReady: (NativeNoteEditText) -> Unit = {},
+    onScrollChanged: () -> Unit = {},
     onSelectionChange: (Int, Int) -> Unit = { _, _ -> },
     onValueChange: (TextFieldValue) -> Unit
 ) {
     val latestOnValueChange by rememberUpdatedState(onValueChange)
+    val latestOnScrollChanged by rememberUpdatedState(onScrollChanged)
     val latestOnSelectionChange by rememberUpdatedState(onSelectionChange)
     AndroidView(
         modifier = modifier,
@@ -2275,8 +2300,10 @@ private fun NativeNoteEditor(
         },
         update = { view ->
             onViewReady(view)
-            view.onSelectionChange = latestOnSelectionChange
-            val viewText = view.text?.toString().orEmpty()
+                            view.onSelectionChange = latestOnSelectionChange
+                view.onScrollPositionChanged = latestOnScrollChanged
+                val viewText = view.text?.toString().orEmpty()
+
             if (BuildConfig.DEBUG) {
                 Log.d(
                     "NativeNoteEditor",
@@ -2328,6 +2355,58 @@ private fun EmptyNotes(query: String, onCreate: () -> Unit) {
                 if (query.isBlank()) TextButton(onClick = onCreate) { Text("写下第一条") }
             }
         }
+    }
+}
+
+@Composable
+private fun DraggableNativeEditorScrollbar(
+    editor: NativeNoteEditText,
+    scrollVersion: Int,
+    thumbColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val density = LocalDensity.current
+    val thumbWidthPx = with(density) { 4.dp.toPx() }
+    val thumbHeightPx = with(density) { 42.dp.toPx() }
+    val scrollRange = (editor.verticalScrollRange() - editor.verticalScrollExtent()).coerceAtLeast(0)
+    val canScroll = scrollRange > 0
+    var dragging by remember(editor) { mutableStateOf(false) }
+
+    Canvas(
+        modifier = modifier
+            .width(12.dp)
+            .pointerInput(editor, scrollRange) {
+                if (!canScroll) return@pointerInput
+                fun scrollToPointer(positionY: Float) {
+                    val trackHeight = (size.height - thumbHeightPx).coerceAtLeast(1f)
+                    val fraction = (positionY - thumbHeightPx / 2f) / trackHeight
+                    editor.scrollTo(0, (fraction.coerceIn(0f, 1f) * scrollRange).roundToInt())
+                }
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        dragging = true
+                        scrollToPointer(offset.y)
+                    },
+                    onDrag = { change, _ ->
+                        change.consume()
+                        scrollToPointer(change.position.y)
+                    },
+                    onDragEnd = { dragging = false },
+                    onDragCancel = { dragging = false }
+                )
+            }
+    ) {
+        // 仅引用版本号以保证原生滚动回调触发后重新绘制滑条位置。
+        if (scrollVersion < 0 || !canScroll) return@Canvas
+        val actualThumbHeight = thumbHeightPx.coerceAtMost(size.height)
+        val scrollFraction = (editor.scrollY.toFloat() / scrollRange).coerceIn(0f, 1f)
+        val thumbY = (size.height - actualThumbHeight) * scrollFraction
+        drawRoundRect(
+            color = thumbColor.copy(alpha = if (dragging) 0.72f else 0.52f),
+            topLeft = Offset(size.width - thumbWidthPx, thumbY),
+            size = Size(thumbWidthPx, actualThumbHeight),
+            cornerRadius = CornerRadius(thumbWidthPx, thumbWidthPx)
+        )
     }
 }
 
