@@ -267,7 +267,8 @@ private sealed interface AppPage {
         val note: NoteEntity?,
         val seed: EditorSeed = EditorSeed(),
         val folderId: Long = DEFAULT_FOLDER_ID,
-        val initialContentCursor: Int? = null
+        val initialContentCursor: Int? = null,
+        val initialPinned: Boolean = false
     ) : AppPage
     data object Settings : AppPage
     data object Appearance : AppPage
@@ -328,7 +329,12 @@ private fun NotesApp(
     }
 
     fun openImported(note: EditorSeed) {
-        page = AppPage.Detail(note = null, seed = note, folderId = writableFolderId())
+        page = AppPage.Detail(
+            note = null,
+            seed = note,
+            folderId = writableFolderId(),
+            initialPinned = activeFolderId == STARRED_FOLDER_ID
+        )
     }
 
     val backupSaveLauncher = rememberLauncherForActivityResult(
@@ -452,7 +458,13 @@ private fun NotesApp(
             onOpenSettings = { page = AppPage.Settings },
             createMenuExpanded = showCreateMenu,
             onCreateMenuExpanded = { showCreateMenu = it },
-            onNewNote = { page = AppPage.Detail(note = null, folderId = writableFolderId()) },
+            onNewNote = {
+                page = AppPage.Detail(
+                    note = null,
+                    folderId = writableFolderId(),
+                    initialPinned = activeFolderId == STARRED_FOLDER_ID
+                )
+            },
             onImportFile = { fileLauncher.launch(arrayOf("text/plain", "text/markdown", "text/x-markdown", "text/*")) },
             onImportClipboard = {
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -465,7 +477,8 @@ private fun NotesApp(
                 page = AppPage.Detail(
                     note = null,
                     seed = EditorSeed("剪切板笔记", recentText, NoteFormatMode.AUTO),
-                    folderId = writableFolderId()
+                    folderId = writableFolderId(),
+                    initialPinned = activeFolderId == STARRED_FOLDER_ID
                 )
             },
             onOpenNote = { note, contentCursor ->
@@ -508,13 +521,16 @@ private fun NotesApp(
             seed = currentPage.seed,
             initialFolderId = currentPage.folderId,
             initialContentCursor = currentPage.initialContentCursor,
+            initialPinned = currentPage.initialPinned,
             folders = folders.filterNot { it.id == STARRED_FOLDER_ID },
             positionStore = notePositionStore,
             onBack = { returnedFolderId, returnedNoteId ->
                 if (currentPage.note == null && returnedNoteId > 0L) {
                     // “已保存”仅会在 Room 写入完成后显示；返回时定位到新笔记所在收藏夹，
                     // 并清除旧搜索条件，避免首个草稿因列表筛选而看似消失。
-                    if (activeFolderId != returnedFolderId) viewModel.selectFolder(returnedFolderId)
+                    if (activeFolderId != STARRED_FOLDER_ID && activeFolderId != returnedFolderId) {
+                        viewModel.selectFolder(returnedFolderId)
+                    }
                     if (query.isNotBlank()) viewModel.setSearchQuery("")
                 } else if (activeFolderId == STARRED_FOLDER_ID && returnedFolderId != STARRED_FOLDER_ID) {
                     viewModel.selectFolder(returnedFolderId)
@@ -1538,6 +1554,7 @@ private fun NoteDetailPage(
     seed: EditorSeed,
     initialFolderId: Long,
     initialContentCursor: Int?,
+    initialPinned: Boolean,
     folders: List<FolderEntity>,
     positionStore: NotePositionStore,
     onBack: (Long, Long) -> Unit,
@@ -1551,7 +1568,7 @@ private fun NoteDetailPage(
     var contentValue by remember(note?.id, seed) { mutableStateOf(TextFieldValue(note?.content ?: seed.content)) }
     val content = contentValue.text
     var color by remember(note?.id) { mutableStateOf(note?.color ?: NoteColors.first()) }
-    var pinned by remember(note?.id) { mutableStateOf(note?.isPinned ?: false) }
+    var pinned by remember(note?.id, initialPinned) { mutableStateOf(note?.isPinned ?: initialPinned) }
     var topPinned by remember(note?.id) { mutableStateOf(note?.isTopPinned ?: false) }
     var selectedFolderId by remember(note?.id, initialFolderId) { mutableStateOf(note?.folderId ?: initialFolderId) }
     var showFolderPicker by remember { mutableStateOf(false) }
@@ -1567,14 +1584,14 @@ private fun NoteDetailPage(
             }
         )
     }
-    var latestDraft by remember(note?.id, seed, initialFolderId) {
+    var latestDraft by remember(note?.id, seed, initialFolderId, initialPinned) {
         val initialContent = note?.content ?: seed.content
         mutableStateOf(
             NoteDraftSnapshot(
                 title = note?.title ?: seed.title,
                 content = initialContent,
                 color = note?.color ?: NoteColors.first(),
-                isPinned = note?.isPinned ?: false,
+                isPinned = note?.isPinned ?: initialPinned,
                 isTopPinned = note?.isTopPinned ?: false,
                 isMarkdown = formatMode.resolvesToMarkdown(initialContent),
                 folderId = note?.folderId ?: initialFolderId
