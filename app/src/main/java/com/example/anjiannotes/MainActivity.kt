@@ -12,8 +12,12 @@ import android.text.TextWatcher
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.VelocityTracker
+import android.view.ViewConfiguration
 import android.view.inputmethod.InputMethodManager
+import android.widget.EdgeEffect
 import android.widget.EditText
+import android.widget.OverScroller
 import android.widget.Toast
 import android.view.View
 import android.net.Uri
@@ -169,6 +173,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private data class NoteExportPayload(
@@ -2291,6 +2296,21 @@ private class NativeNoteEditText(context: Context) : EditText(context) {
     var onScrollPositionChanged: (() -> Unit)? = null
     private var scrollCallbackPosted = false
 
+    // 原生 EditText 的文本拖动不会自动提供可靠的 fling，这里补上连续惯性滚动。
+    private val scroller = OverScroller(context)
+    private val viewConfig = ViewConfiguration.get(context)
+    private val minFlingVelocity = viewConfig.scaledMinimumFlingVelocity
+    private val maxFlingVelocity = viewConfig.scaledMaximumFlingVelocity.toFloat()
+    private var velocityTracker: VelocityTracker? = null
+    private var lastTouchY = 0f
+    private var isBeingDragged = false
+    private val edgeEffectTop = EdgeEffect(context)
+    private val edgeEffectBottom = EdgeEffect(context)
+
+    init {
+        isNestedScrollingEnabled = false
+    }
+
     override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
         super.onScrollChanged(l, t, oldl, oldt)
         if (!scrollCallbackPosted) {
@@ -2304,16 +2324,65 @@ private class NativeNoteEditText(context: Context) : EditText(context) {
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE ->
+            MotionEvent.ACTION_DOWN -> {
+                if (!scroller.isFinished) scroller.abortAnimation()
+                velocityTracker = velocityTracker ?: VelocityTracker.obtain()
+                velocityTracker?.clear()
+                velocityTracker?.addMovement(event)
+                lastTouchY = event.y
+                isBeingDragged = false
+                edgeEffectTop.onRelease()
+                edgeEffectBottom.onRelease()
                 parent?.requestDisallowInterceptTouchEvent(true)
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+            }
+            MotionEvent.ACTION_MOVE -> {
+                velocityTracker?.addMovement(event)
+                val dy = event.y - lastTouchY
+                if (!isBeingDragged && abs(dy) > viewConfig.scaledTouchSlop) isBeingDragged = true
+                lastTouchY = event.y
+                if (isBeingDragged) parent?.requestDisallowInterceptTouchEvent(true)
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                velocityTracker?.addMovement(event)
+                velocityTracker?.computeCurrentVelocity(1000, maxFlingVelocity)
+                val vy = velocityTracker?.yVelocity?.toInt() ?: 0
+                if (event.actionMasked == MotionEvent.ACTION_UP && isBeingDragged && abs(vy) > minFlingVelocity) {
+                    val scrollRange = (computeVerticalScrollRange() - height).coerceAtLeast(0)
+                    scroller.fling(0, scrollY, 0, -vy, 0, 0, 0, scrollRange, 0, computeVerticalScrollExtent() / 3)
+                    postInvalidateOnAnimation()
+                }
+                edgeEffectTop.onRelease()
+                edgeEffectBottom.onRelease()
+                velocityTracker?.recycle()
+                velocityTracker = null
+                isBeingDragged = false
                 parent?.requestDisallowInterceptTouchEvent(false)
+            }
         }
         return super.onTouchEvent(event)
     }
 
-    fun verticalScrollRange(): Int = computeVerticalScrollRange()
+    override fun computeScroll() {
+        if (scroller.isFinished) return
+        if (scroller.computeScrollOffset()) {
+            scrollTo(0, scroller.currY)
+            val maxScroll = (computeVerticalScrollRange() - height).coerceAtLeast(0)
+            if (scroller.currY <= 0) {
+                edgeEffectTop.onAbsorb(-scroller.currVelocity.toInt())
+                scroller.abortAnimation()
+            } else if (scroller.currY >= maxScroll) {
+                edgeEffectBottom.onAbsorb(scroller.currVelocity.toInt())
+                scroller.abortAnimation()
+            }
+            postInvalidateOnAnimation()
+        }
+    }
 
+    fun abortFling() {
+        if (!scroller.isFinished) scroller.abortAnimation()
+    }
+
+    fun verticalScrollRange(): Int = computeVerticalScrollRange()
     fun verticalScrollExtent(): Int = computeVerticalScrollExtent()
 
     fun performNativeUndo() {
