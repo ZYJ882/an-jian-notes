@@ -5,7 +5,6 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.graphics.Typeface
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -23,6 +22,7 @@ import android.view.View
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
+import androidx.core.content.res.ResourcesCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -2247,7 +2247,7 @@ private fun NativeNoteTitleEditor(
                 includeFontPadding = false
                 gravity = Gravity.CENTER_VERTICAL or Gravity.START
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
-                setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD))
+                typeface = ResourcesCompat.getFont(viewContext, R.font.noto_sans_sc_semibold)
                 isSingleLine = true
                 inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
                 applyExternalModelText(value, externalModelKey)
@@ -2433,7 +2433,7 @@ private fun NativeNoteEditor(
                 includeFontPadding = false
                 gravity = Gravity.TOP or Gravity.START
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
-                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+                typeface = ResourcesCompat.getFont(viewContext, R.font.noto_sans_sc_regular)
                 minLines = 6
                 maxLines = Int.MAX_VALUE
                 isSingleLine = false

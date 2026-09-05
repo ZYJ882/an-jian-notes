@@ -1055,8 +1055,17 @@ private fun buildListPreview(text: String, lineTransform: (String) -> String): S
 
 @Composable
 fun MarkdownSyntaxHint(modifier: Modifier = Modifier) {
+    val linkColor = MaterialTheme.colorScheme.primary
+    // 直接渲染 Markdown 而不是显示语法字面字符。`**粗体**` 显示成真正的粗体、
+    // `*斜体*` 显示成真正的斜体、`` `代码` `` 显示成等宽代码字，让用户直观看到
+    // Markdown 的效果，而不是看到一堆星号和反引号。
+    val annotated = remember(linkColor) {
+        val raw = "Markdown：**粗体** · *斜体* · ~~删除~~ · `代码` · [链接](https://example.com)"
+        val source = SourceText(raw, IntArray(raw.length) { it })
+        parseMarkdownInline(source, linkColor).text
+    }
     Text(
-        text = "Markdown：# 标题 · **粗体** · *斜体* · - 列表",
+        text = annotated,
         modifier = modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 1.dp),
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.76f)
