@@ -2062,7 +2062,7 @@ private fun NoteDetailPage(
                     } else {
                         Modifier.fillMaxSize().verticalScroll(detailScrollState)
                     },
-                    verticalArrangement = Arrangement.spacedBy(18.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
             if (detailMode == DetailMode.EDIT) {
                 NativeNoteTitleEditor(
@@ -2079,7 +2079,7 @@ private fun NoteDetailPage(
             } else {
                 Text(
                     title.ifBlank { "未命名笔记" },
-                    style = MaterialTheme.typography.headlineSmall.copy(fontSize = 30.sp, lineHeight = 38.sp),
+                    style = MaterialTheme.typography.headlineSmall.copy(fontSize = 28.sp, lineHeight = 36.sp),
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.fillMaxWidth().combinedClickable(
                         onClick = {},

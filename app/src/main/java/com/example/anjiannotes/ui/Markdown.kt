@@ -1,11 +1,7 @@
 package com.example.anjiannotes.ui
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -17,17 +13,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -37,12 +29,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -162,6 +149,26 @@ private val ListPreviewWhitespacePattern = Regex("\\s+")
 private val PreviewLinkBlueLight = Color(0xFF765F82)
 private val PreviewLinkBlueDark = Color(0xFFC7B1CF)
 
+/** 预览页面阅读器式排版的尺寸常量。
+ *
+ * 设计目标：把 Markdown 渲染从“网页式”调成“电子书式”——
+ * - 正文是视觉中心：17sp / 行高 1.65（28sp），normal 字重；
+ * - 标题建立清晰层级：H1 > H2 > H3 > H4 > 正文，越往下越小、越弱；
+ * - 块间留呼吸感但不夸张，避免“每段一个卡片”；
+ * - 引用 / 代码 / 表格只在必要时给极浅背景或单线提示，不做卡片化。
+ */
+private val BlockSpacing = 14.dp
+private val BodyFontSize = 17.sp
+private val BodyLineHeight = 28.sp
+
+/** 正文 / 列表 / 引用统一使用此样式，保证阅读节奏一致。 */
+private val BodyStyle = androidx.compose.ui.text.TextStyle(
+    fontFamily = com.example.anjiannotes.ui.theme.NotoSansSC,
+    fontWeight = FontWeight.Normal,
+    fontSize = BodyFontSize,
+    lineHeight = BodyLineHeight
+)
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MarkdownPreview(
@@ -183,7 +190,7 @@ fun MarkdownPreview(
     if (document.blocks.isEmpty()) {
         Text(
             text = "开始输入 Markdown…",
-            style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 29.sp),
+            style = BodyStyle,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = modifier.padding(vertical = 8.dp)
         )
@@ -191,7 +198,7 @@ fun MarkdownPreview(
     }
 
     val content: @Composable () -> Unit = {
-        Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(BlockSpacing)) {
             document.blocks.forEachIndexed { index, block ->
                 key(index, block) {
                     val blockRequester = remember { BringIntoViewRequester() }
@@ -241,7 +248,7 @@ private fun MarkdownBlockRenderer(
         )
         is MarkdownBlock.Paragraph -> MarkdownInteractiveText(
             source = block.text,
-            style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 29.sp),
+            style = BodyStyle,
             enableTextSelection = enableTextSelection,
             onLinkLongPress = onLinkLongPress,
             onLinkClick = onLinkClick,
@@ -286,12 +293,25 @@ private fun MarkdownBlockRenderer(
             onClick = onClick
         )
         MarkdownBlock.Divider -> HorizontalDivider(
-            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-            modifier = Modifier.padding(vertical = 8.dp)
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
+            modifier = Modifier.padding(vertical = 4.dp)
         )
     }
 }
 
+/**
+ * 完整标题层级。
+ *
+ * 视觉降级链路（sp / weight）：
+ *  H1 26 / Bold      ← 文档中的主标题，明显大于正文
+ *  H2 22 / Bold      ← 章节级
+ *  H3 18 / SemiBold  ← 小节，明显小于 H2 但比正文略大
+ *  H4 16 / SemiBold  ← 子小节，仅比正文略大一点
+ *  H5 15 / Medium    ← 极弱强调
+ *  H6 14 / Medium    ← 接近 label
+ *
+ * 上 padding 给得偏大，让标题在长段连续阅读中“浮起来”，是分节点的视觉锚点。
+ */
 @Composable
 private fun MarkdownHeading(
     heading: MarkdownBlock.Heading,
@@ -302,25 +322,23 @@ private fun MarkdownHeading(
     onLongPress: () -> Unit,
     onClick: () -> Unit
 ) {
-    val style = when (heading.level) {
-        1 -> MaterialTheme.typography.headlineSmall.copy(fontSize = 30.sp, lineHeight = 39.sp)
-        2 -> MaterialTheme.typography.titleLarge.copy(fontSize = 25.sp, lineHeight = 34.sp)
-        3 -> MaterialTheme.typography.titleMedium.copy(fontSize = 21.sp, lineHeight = 30.sp)
-        4 -> MaterialTheme.typography.titleMedium.copy(fontSize = 19.sp, lineHeight = 28.sp)
-        5 -> MaterialTheme.typography.bodyLarge.copy(fontSize = 18.sp, lineHeight = 27.sp)
-        else -> MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 26.sp)
+    val (fontSize, lineHeight, weight, topPadding) = when (heading.level) {
+        1 -> Quad(26.sp, 34.sp, FontWeight.Bold, 22.dp)
+        2 -> Quad(22.sp, 30.sp, FontWeight.Bold, 18.dp)
+        3 -> Quad(18.sp, 26.sp, FontWeight.SemiBold, 16.dp)
+        4 -> Quad(16.sp, 24.sp, FontWeight.SemiBold, 14.dp)
+        5 -> Quad(15.sp, 22.sp, FontWeight.Medium, 12.dp)
+        else -> Quad(14.sp, 21.sp, FontWeight.Medium, 10.dp)
     }
-    val topPadding = when (heading.level) {
-        1 -> 20.dp
-        2 -> 16.dp
-        3 -> 12.dp
-        else -> 9.dp
-    }
+    val style = BodyStyle.copy(
+        fontSize = fontSize,
+        lineHeight = lineHeight,
+        fontWeight = weight
+    )
     MarkdownInteractiveText(
         source = heading.text,
         style = style,
-        fontWeight = if (heading.level <= 2) FontWeight.Bold else FontWeight.SemiBold,
-        modifier = Modifier.fillMaxWidth().padding(top = topPadding, bottom = 3.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = topPadding, bottom = 2.dp),
         enableTextSelection = enableTextSelection,
         onLinkLongPress = onLinkLongPress,
         onLinkClick = onLinkClick,
@@ -329,6 +347,8 @@ private fun MarkdownHeading(
         onClick = onClick
     )
 }
+
+private data class Quad(val fontSize: androidx.compose.ui.unit.TextUnit, val lineHeight: androidx.compose.ui.unit.TextUnit, val weight: FontWeight, val topPadding: androidx.compose.ui.unit.Dp)
 
 @Composable
 private fun MarkdownQuote(
@@ -340,21 +360,22 @@ private fun MarkdownQuote(
     onLongPress: () -> Unit,
     onClick: () -> Unit
 ) {
-    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.Top) {
+    // 引用：一条 2dp 细线 + 左侧 12dp 缩进，文字色稍弱，不增加卡片背景。
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
         Spacer(
             modifier = Modifier
                 .width(2.dp)
                 .fillMaxHeight()
-                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.84f))
+                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
         )
         Column(
             modifier = Modifier.padding(start = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
+            verticalArrangement = Arrangement.spacedBy(0.dp)
         ) {
             quote.lines.forEach { line ->
                 MarkdownInteractiveText(
                     source = line,
-                    style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 29.sp),
+                    style = BodyStyle,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     enableTextSelection = enableTextSelection,
                     onLinkLongPress = onLinkLongPress,
@@ -386,14 +407,13 @@ private fun MarkdownList(
             ) {
                 Text(
                     text = item.marker,
-                    style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 29.sp),
-                    fontWeight = if (item.marker.lastOrNull() == '.') FontWeight.SemiBold else FontWeight.Normal,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.width(if (item.marker.lastOrNull() == '.') 28.dp else 20.dp)
+                    style = BodyStyle,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.width(if (item.marker.lastOrNull() == '.') 28.dp else 18.dp)
                 )
                 MarkdownInteractiveText(
                     source = item.text,
-                    style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 29.sp),
+                    style = BodyStyle,
                     modifier = Modifier.weight(1f),
                     enableTextSelection = enableTextSelection,
                     onLinkLongPress = onLinkLongPress,
@@ -417,63 +437,27 @@ private fun MarkdownCodeBlock(
     onLongPress: () -> Unit,
     onClick: () -> Unit
 ) {
-    val context = LocalContext.current
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),
-        shape = RoundedCornerShape(4.dp)
+    // 代码块：极浅背景、左侧缩进，无圆角卡片、无复制按钮（阅读器不应有操作按钮）。
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f))
     ) {
-        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                if (block.language.isNotBlank()) {
-                    Text(
-                        text = block.language.uppercase(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
-                        fontWeight = FontWeight.Medium
-                    )
-                } else {
-                    Spacer(modifier = Modifier.width(1.dp))
-                }
-                IconButton(
-                    onClick = {
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                        clipboard?.setPrimaryClip(ClipData.newPlainText("代码", block.content.text))
-                    },
-                    modifier = Modifier.width(28.dp).height(28.dp)
-                ) {
-                    val tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f)
-                    Canvas(
-                        modifier = Modifier.width(16.dp).height(16.dp)
-                    ) {
-                        val stroke = 1.5.dp.toPx()
-                        drawRoundRect(
-                            color = tint,
-                            topLeft = Offset(4.dp.toPx(), 1.dp.toPx()),
-                            size = Size(10.dp.toPx(), 10.dp.toPx()),
-                            cornerRadius = CornerRadius(2.dp.toPx()),
-                            style = Stroke(width = stroke)
-                        )
-                        drawRoundRect(
-                            color = tint,
-                            topLeft = Offset(1.dp.toPx(), 4.dp.toPx()),
-                            size = Size(10.dp.toPx(), 10.dp.toPx()),
-                            cornerRadius = CornerRadius(2.dp.toPx()),
-                            style = Stroke(width = stroke)
-                        )
-                    }
-                }
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+            if (block.language.isNotBlank()) {
+                Text(
+                    text = block.language.uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
             }
             MarkdownInteractiveText(
                 source = block.content,
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, lineHeight = 22.sp),
+                style = BodyStyle.copy(fontSize = 13.5.sp, lineHeight = 21.sp),
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 3.dp),
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 parseFormatting = false,
                 enableTextSelection = enableTextSelection,
                 onLinkLongPress = onLinkLongPress,
@@ -504,7 +488,7 @@ private fun MarkdownTable(
         List(columnCount) { columnIndex -> table.header.getOrElse(columnIndex) { SourceText("", IntArray(0)) } }
     }
     val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
-    val bodyStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, lineHeight = 21.sp)
+    val bodyStyle = BodyStyle.copy(fontSize = 13.5.sp, lineHeight = 20.sp)
     val headerStyle = bodyStyle.copy(fontWeight = FontWeight.SemiBold)
     val density = androidx.compose.ui.platform.LocalDensity.current
     val columnWidths = remember(header, rows, bodyStyle, headerStyle, density) {
@@ -525,21 +509,32 @@ private fun MarkdownTable(
                     constraints = Constraints()
                 ).size.width
             } ?: 0
-            with(density) { (maxOf(headerWidth, bodyWidth).toDp() + 20.dp).coerceIn(92.dp, 260.dp) }
+            with(density) { (maxOf(headerWidth, bodyWidth).toDp() + 20.dp).coerceIn(80.dp, 240.dp) }
         }
     }
+    // 表格：水平可滚动，外层只有一根细顶线作为表头分隔，无 Surface 卡片。
     Box(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-        Surface(
-            modifier = Modifier.wrapContentWidth(unbounded = true),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f),
-            shape = RoundedCornerShape(4.dp)
-        ) {
-            Column {
+        Column(modifier = Modifier.wrapContentWidth(unbounded = true)) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
+            MarkdownTableRow(
+                cells = header,
+                columnWidths = columnWidths,
+                alignments = table.alignments,
+                header = true,
+                enableTextSelection = enableTextSelection,
+                onLinkLongPress = onLinkLongPress,
+                onLinkClick = onLinkClick,
+                onDoubleClickAt = onDoubleClickAt,
+                onLongPress = onLongPress,
+                onClick = onClick
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+            rows.forEach { row ->
                 MarkdownTableRow(
-                    cells = header,
+                    cells = row,
                     columnWidths = columnWidths,
                     alignments = table.alignments,
-                    header = true,
+                    header = false,
                     enableTextSelection = enableTextSelection,
                     onLinkLongPress = onLinkLongPress,
                     onLinkClick = onLinkClick,
@@ -547,22 +542,8 @@ private fun MarkdownTable(
                     onLongPress = onLongPress,
                     onClick = onClick
                 )
-                rows.forEach { row ->
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
-                    MarkdownTableRow(
-                        cells = row,
-                        columnWidths = columnWidths,
-                        alignments = table.alignments,
-                        header = false,
-                        enableTextSelection = enableTextSelection,
-                        onLinkLongPress = onLinkLongPress,
-                        onLinkClick = onLinkClick,
-                        onDoubleClickAt = onDoubleClickAt,
-                        onLongPress = onLongPress,
-                        onClick = onClick
-                    )
-                }
             }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
         }
     }
 }
@@ -584,7 +565,7 @@ private fun MarkdownTableRow(
         cells.forEachIndexed { index, cell ->
             MarkdownInteractiveText(
                 source = cell,
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, lineHeight = 21.sp),
+                style = BodyStyle.copy(fontSize = 13.5.sp, lineHeight = 20.sp),
                 fontWeight = if (header) FontWeight.SemiBold else FontWeight.Normal,
                 color = if (header) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = when (alignments.getOrElse(index) { TableAlignment.START }) {
@@ -592,7 +573,7 @@ private fun MarkdownTableRow(
                     TableAlignment.CENTER -> TextAlign.Center
                     TableAlignment.END -> TextAlign.End
                 },
-                modifier = Modifier.width(columnWidths[index]).padding(horizontal = 10.dp, vertical = 8.dp),
+                modifier = Modifier.width(columnWidths[index]).padding(horizontal = 10.dp, vertical = 6.dp),
                 enableTextSelection = enableTextSelection,
                 onLinkLongPress = onLinkLongPress,
                 onLinkClick = onLinkClick,
@@ -923,12 +904,18 @@ private fun parseMarkdownInline(source: SourceText, linkColor: Color): InlineCon
             val marker = inlineMarkerAt(value, cursor, endExclusive)
             val closing = marker?.let { findClosingMarker(value, it, cursor + it.length, endExclusive) }
             if (marker != null && closing != null) {
+                // 阅读器式排版原则：行内强调永远不应接近标题视觉重量。
+                // - `**粗体**` 用 Medium（500）而非 Bold（700），保留强调但弱于 H1/H2；
+                // - `***粗斜体***` 用 SemiBold + Italic；
+                // - `*斜体*` 用 Italic（不加粗）；
+                // - `~~删除~~` 用 LineThrough；
+                // - `` `代码` `` 用等宽字体 + 极浅背景。
                 val style = when (marker) {
-                    "***", "___" -> SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic)
-                    "**", "__" -> SpanStyle(fontWeight = FontWeight.Bold)
+                    "***", "___" -> SpanStyle(fontWeight = FontWeight.SemiBold, fontStyle = FontStyle.Italic)
+                    "**", "__" -> SpanStyle(fontWeight = FontWeight.Medium)
                     "*", "_" -> SpanStyle(fontStyle = FontStyle.Italic)
                     "~~" -> SpanStyle(textDecoration = TextDecoration.LineThrough)
-                    else -> SpanStyle(fontFamily = FontFamily.Monospace, background = linkColor.copy(alpha = 0.12f))
+                    else -> SpanStyle(fontFamily = FontFamily.Monospace, background = linkColor.copy(alpha = 0.08f))
                 }
                 builder.pushStyle(style)
                 appendRange(cursor + marker.length, closing)
@@ -1056,7 +1043,7 @@ private fun buildListPreview(text: String, lineTransform: (String) -> String): S
 @Composable
 fun MarkdownSyntaxHint(modifier: Modifier = Modifier) {
     val linkColor = MaterialTheme.colorScheme.primary
-    // 直接渲染 Markdown 而不是显示语法字面字符。`**粗体**` 显示成真正的粗体、
+    // 直接渲染 Markdown 而不是显示语法字面字符。`**粗体**` 显示成 Medium 强调、
     // `*斜体*` 显示成真正的斜体、`` `代码` `` 显示成等宽代码字，让用户直观看到
     // Markdown 的效果，而不是看到一堆星号和反引号。
     val annotated = remember(linkColor) {
