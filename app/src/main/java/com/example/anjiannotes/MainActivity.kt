@@ -2062,7 +2062,12 @@ private fun NoteDetailPage(
                     } else {
                         Modifier.fillMaxSize().verticalScroll(detailScrollState)
                     },
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    // 编辑模式保留 18dp 让标题与正文输入框之间有舒适工作距离；
+                    // 预览模式收紧到 10dp，让文章标题与首段连接更紧，与 MarkdownPreview
+                    // 内部 BlockSpacing=10dp 形成统一的阅读节奏。
+                    verticalArrangement = Arrangement.spacedBy(
+                        if (detailMode == DetailMode.EDIT) 18.dp else 10.dp
+                    )
                 ) {
             if (detailMode == DetailMode.EDIT) {
                 NativeNoteTitleEditor(
@@ -2079,7 +2084,7 @@ private fun NoteDetailPage(
             } else {
                 Text(
                     title.ifBlank { "未命名笔记" },
-                    style = MaterialTheme.typography.headlineSmall.copy(fontSize = 28.sp, lineHeight = 36.sp),
+                    style = MaterialTheme.typography.headlineSmall.copy(fontSize = 26.sp, lineHeight = 34.sp),
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.fillMaxWidth().combinedClickable(
                         onClick = {},

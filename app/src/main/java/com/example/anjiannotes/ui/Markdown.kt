@@ -149,17 +149,17 @@ private val ListPreviewWhitespacePattern = Regex("\\s+")
 private val PreviewLinkBlueLight = Color(0xFF765F82)
 private val PreviewLinkBlueDark = Color(0xFFC7B1CF)
 
-/** 预览页面阅读器式排版的尺寸常量。
+/** 预览页面「电子书阅读器」式排版的尺寸常量。
  *
- * 设计目标：把 Markdown 渲染从“网页式”调成“电子书式”——
- * - 正文是视觉中心：17sp / 行高 1.65（28sp），normal 字重；
- * - 标题建立清晰层级：H1 > H2 > H3 > H4 > 正文，越往下越小、越弱；
- * - 块间留呼吸感但不夸张，避免“每段一个卡片”；
+ * 设计目标：让界面退到背景里，只剩内容——
+ * - 正文不再“网页大字”：16sp / 行高 1.69（27sp），Normal 字重；
+ * - 标题以 SIZE 建立层级，WEIGHT 收敛：H1 Bold，H2/H3/H4 都 SemiBold，靠字号区分深浅；
+ * - 段间 10dp，连续阅读节奏紧凑、统一；
  * - 引用 / 代码 / 表格只在必要时给极浅背景或单线提示，不做卡片化。
  */
-private val BlockSpacing = 14.dp
-private val BodyFontSize = 17.sp
-private val BodyLineHeight = 28.sp
+private val BlockSpacing = 10.dp
+private val BodyFontSize = 16.sp
+private val BodyLineHeight = 27.sp
 
 /** 正文 / 列表 / 引用统一使用此样式，保证阅读节奏一致。 */
 private val BodyStyle = androidx.compose.ui.text.TextStyle(
@@ -293,8 +293,7 @@ private fun MarkdownBlockRenderer(
             onClick = onClick
         )
         MarkdownBlock.Divider -> HorizontalDivider(
-            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
-            modifier = Modifier.padding(vertical = 4.dp)
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
         )
     }
 }
@@ -302,15 +301,17 @@ private fun MarkdownBlockRenderer(
 /**
  * 完整标题层级。
  *
- * 视觉降级链路（sp / weight）：
- *  H1 26 / Bold      ← 文档中的主标题，明显大于正文
- *  H2 22 / Bold      ← 章节级
- *  H3 18 / SemiBold  ← 小节，明显小于 H2 但比正文略大
- *  H4 16 / SemiBold  ← 子小节，仅比正文略大一点
- *  H5 15 / Medium    ← 极弱强调
- *  H6 14 / Medium    ← 接近 label
+ * 视觉降级链路（sp / weight / top padding）：
+ *  H1 24 / Bold     / 20dp  ← 文档主标题，明显大于正文但不像网页 Banner
+ *  H2 20 / SemiBold / 16dp  ← 章节级
+ *  H3 17 / SemiBold / 12dp  ← 小节标题，字号比正文仅大 1sp，靠字重而非尺寸建立层级
+ *  H4 15 / SemiBold / 10dp  ← 子小节，字号比正文小，SemiBold 标识“是标题”
+ *  H5 14 / Medium   /  8dp  ← 极弱强调
+ *  H6 13 / Medium   /  6dp  ← 接近 label
  *
- * 上 padding 给得偏大，让标题在长段连续阅读中“浮起来”，是分节点的视觉锚点。
+ * 设计要点：H1 用 Bold 是唯一“重”字重，H2/H3/H4 全部用 SemiBold，
+ * 不再用 Bold 堆叠加粗——避免“又粗又大”的网页感。
+ * 上 padding 随层级递减，连续阅读中标题自然“浮起”而不会突兀占空间。
  */
 @Composable
 private fun MarkdownHeading(
@@ -323,12 +324,12 @@ private fun MarkdownHeading(
     onClick: () -> Unit
 ) {
     val (fontSize, lineHeight, weight, topPadding) = when (heading.level) {
-        1 -> Quad(26.sp, 34.sp, FontWeight.Bold, 22.dp)
-        2 -> Quad(22.sp, 30.sp, FontWeight.Bold, 18.dp)
-        3 -> Quad(18.sp, 26.sp, FontWeight.SemiBold, 16.dp)
-        4 -> Quad(16.sp, 24.sp, FontWeight.SemiBold, 14.dp)
-        5 -> Quad(15.sp, 22.sp, FontWeight.Medium, 12.dp)
-        else -> Quad(14.sp, 21.sp, FontWeight.Medium, 10.dp)
+        1 -> Quad(24.sp, 32.sp, FontWeight.Bold, 20.dp)
+        2 -> Quad(20.sp, 28.sp, FontWeight.SemiBold, 16.dp)
+        3 -> Quad(17.sp, 24.sp, FontWeight.SemiBold, 12.dp)
+        4 -> Quad(15.sp, 22.sp, FontWeight.SemiBold, 10.dp)
+        5 -> Quad(14.sp, 21.sp, FontWeight.Medium, 8.dp)
+        else -> Quad(13.sp, 19.sp, FontWeight.Medium, 6.dp)
     }
     val style = BodyStyle.copy(
         fontSize = fontSize,
