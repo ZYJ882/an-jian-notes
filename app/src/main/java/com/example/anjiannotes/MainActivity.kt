@@ -2146,7 +2146,7 @@ private fun NoteDetailPage(
                     },
                     // 编辑模式保留 18dp 让标题与正文输入框之间有舒适工作距离；
                     // 预览模式收紧到 10dp，让文章标题与首段连接更紧，与 MarkdownPreview
-                    // 内部 BlockSpacing=10dp 形成统一的阅读节奏。
+                    // 内部 BlockSpacing=12dp 形成统一的阅读节奏。
                     verticalArrangement = Arrangement.spacedBy(
                         if (detailMode == DetailMode.EDIT) 18.dp else 10.dp
                     )
@@ -2166,8 +2166,8 @@ private fun NoteDetailPage(
             } else {
                 Text(
                     title.ifBlank { "未命名笔记" },
-                    style = MaterialTheme.typography.headlineSmall.copy(fontSize = 24.sp, lineHeight = 31.sp),
-                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.headlineSmall.copy(fontSize = 25.sp, lineHeight = 34.sp),
+                    fontWeight = FontWeight.Bold,
                     modifier = Modifier.fillMaxWidth().combinedClickable(
                         onClick = {},
                         onDoubleClick = { enterEdit(InlineEditTarget.TITLE) }
@@ -2222,8 +2222,8 @@ private fun NoteDetailPage(
                     text = previewText,
                     style = MaterialTheme.typography.bodyLarge.copy(
                         fontFamily = LocalMarkdownFontFamily.current,
-                        fontSize = 15.sp,
-                        lineHeight = 24.sp
+                        fontSize = 16.sp,
+                        lineHeight = 28.sp
                     ),
                     onTextLayout = { plainTextLayout = it },
                     modifier = Modifier.fillMaxWidth().pointerInput(content) {

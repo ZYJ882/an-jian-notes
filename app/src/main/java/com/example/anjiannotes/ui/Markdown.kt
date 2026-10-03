@@ -4,14 +4,13 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -24,13 +23,23 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -42,6 +51,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import java.util.concurrent.atomic.AtomicReference
 
@@ -119,7 +129,9 @@ private data class SourceLine(
 private data class InlineContent(
     val text: AnnotatedString,
     val sourceOffsets: IntArray,
-    val links: List<InlineLink>
+    val links: List<InlineLink>,
+    /** 行内代码 span 在展示文本中的位置区间，用于绘制圆角代码片背景。 */
+    val codeRanges: List<IntRange> = emptyList()
 ) {
     fun sourceOffsetAt(displayOffset: Int): Int {
         if (sourceOffsets.isEmpty()) return 0
@@ -150,17 +162,22 @@ private val ListPreviewWhitespacePattern = Regex("\\s+")
 private val PreviewLinkBlueLight = Color(0xFF765F82)
 private val PreviewLinkBlueDark = Color(0xFFC7B1CF)
 
-/** 预览页面「电子书阅读器」式排版的尺寸常量。
+/** 预览页面「舒展阅读」式排版的尺寸常量。
  *
- * 设计目标：让界面退到背景里，只剩内容——
- * - 正文不再“网页大字”：16sp / 行高 1.69（27sp），Normal 字重；
- * - 标题以 SIZE 建立层级，WEIGHT 收敛：H1 Bold，H2/H3/H4 都 SemiBold，靠字号区分深浅；
- * - 段间 10dp，连续阅读节奏紧凑、统一；
- * - 引用 / 代码 / 表格只在必要时给极浅背景或单线提示，不做卡片化。
+ * 设计目标：像现代阅读器一样，靠字号、字重与留白建立层级，让界面退到背景里——
+ * - 正文 16sp / 行高 1.75（28sp），Normal 字重，长文阅读不压迫；
+ * - 标题 H1/H2 用 Bold 与充足上间距，章节在滚动中自然“浮起”；
+ * - 段间 12dp，与标题上间距一起形成清晰的呼吸感；
+ * - 引用 / 代码块 / 表格升级为浅灰圆角卡片，行内代码为圆角代码片，
+ *   与正文形成明确的材质区分。
  */
-private val BlockSpacing = 8.dp
-private val BodyFontSize = 15.sp
-private val BodyLineHeight = 24.sp
+private val BlockSpacing = 12.dp
+private val BodyFontSize = 16.sp
+private val BodyLineHeight = 28.sp
+private val CardCorner = 12.dp
+private val ChipCorner = 4.dp
+private val ChipPaddingHorizontal = 3.dp
+private val ChipPaddingVertical = 1.dp
 
 /** 正文 / 列表 / 引用统一使用此样式，保证阅读节奏一致。 */
 val LocalMarkdownFontFamily = staticCompositionLocalOf { com.example.anjiannotes.ui.theme.NotoSansSC }
@@ -297,6 +314,7 @@ private fun MarkdownBlockRenderer(
             onClick = onClick
         )
         MarkdownBlock.Divider -> HorizontalDivider(
+            modifier = Modifier.padding(vertical = 4.dp),
             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
         )
     }
@@ -306,15 +324,14 @@ private fun MarkdownBlockRenderer(
  * 完整标题层级。
  *
  * 视觉降级链路（sp / weight / top padding）：
- *  H1 24 / Bold     / 20dp  ← 文档主标题，明显大于正文但不像网页 Banner
- *  H2 20 / SemiBold / 16dp  ← 章节级
- *  H3 17 / SemiBold / 12dp  ← 小节标题，字号比正文仅大 1sp，靠字重而非尺寸建立层级
- *  H4 15 / SemiBold / 10dp  ← 子小节，字号比正文小，SemiBold 标识“是标题”
- *  H5 14 / Medium   /  8dp  ← 极弱强调
- *  H6 13 / Medium   /  6dp  ← 接近 label
+ *  H1 24   / Bold     / 20dp  ← 文档主标题，接近页面标题体量
+ *  H2 21   / Bold     / 18dp  ← 章节级，Bold + 上间距与正文拉开
+ *  H3 18   / SemiBold / 14dp  ← 小节标题
+ *  H4 16.5 / SemiBold / 12dp  ← 子小节，比正文略大
+ *  H5 15.5 / SemiBold / 10dp  ← 极弱强调
+ *  H6 14.5 / Medium   /  8dp  ← 接近 label
  *
- * 设计要点：H1 用 Bold 是唯一“重”字重，H2/H3/H4 全部用 SemiBold，
- * 不再用 Bold 堆叠加粗——避免“又粗又大”的网页感。
+ * 设计要点：只有 H1/H2 用 Bold 建立章节感，H3 以下用 SemiBold/Medium 收敛；
  * 上 padding 随层级递减，连续阅读中标题自然“浮起”而不会突兀占空间。
  */
 @Composable
@@ -328,12 +345,12 @@ private fun MarkdownHeading(
     onClick: () -> Unit
 ) {
     val (fontSize, lineHeight, weight, topPadding) = when (heading.level) {
-        1 -> Quad(22.sp, 29.sp, FontWeight.Bold, 18.dp)
-        2 -> Quad(18.sp, 25.sp, FontWeight.SemiBold, 15.dp)
-        3 -> Quad(16.sp, 23.sp, FontWeight.SemiBold, 11.dp)
-        4 -> Quad(15.sp, 21.sp, FontWeight.SemiBold, 9.dp)
-        5 -> Quad(14.sp, 20.sp, FontWeight.Medium, 7.dp)
-        else -> Quad(13.sp, 19.sp, FontWeight.Medium, 5.dp)
+        1 -> Quad(24.sp, 33.sp, FontWeight.Bold, 20.dp)
+        2 -> Quad(21.sp, 29.sp, FontWeight.Bold, 18.dp)
+        3 -> Quad(18.sp, 26.sp, FontWeight.SemiBold, 14.dp)
+        4 -> Quad(16.5.sp, 24.sp, FontWeight.SemiBold, 12.dp)
+        5 -> Quad(15.5.sp, 22.sp, FontWeight.SemiBold, 10.dp)
+        else -> Quad(14.5.sp, 21.sp, FontWeight.Medium, 8.dp)
     }
     val style = bodyStyle().copy(
         fontSize = fontSize,
@@ -343,7 +360,7 @@ private fun MarkdownHeading(
     MarkdownInteractiveText(
         source = heading.text,
         style = style,
-        modifier = Modifier.fillMaxWidth().padding(top = topPadding, bottom = 1.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = topPadding, bottom = 3.dp),
         enableTextSelection = enableTextSelection,
         onLinkLongPress = onLinkLongPress,
         onLinkClick = onLinkClick,
@@ -365,31 +382,30 @@ private fun MarkdownQuote(
     onLongPress: () -> Unit,
     onClick: () -> Unit
 ) {
-    // 引用：一条 2dp 细线 + 左侧 12dp 缩进，文字色稍弱，不增加卡片背景。
-    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-        Spacer(
-            modifier = Modifier
-                .width(2.dp)
-                .fillMaxHeight()
-                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
-        )
-        Column(
-            modifier = Modifier.padding(start = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(0.dp)
-        ) {
-            quote.lines.forEach { line ->
-                MarkdownInteractiveText(
-                    source = line,
-                    style = bodyStyle(),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    enableTextSelection = enableTextSelection,
-                    onLinkLongPress = onLinkLongPress,
-                    onLinkClick = onLinkClick,
-                    onDoubleClickAt = onDoubleClickAt,
-                    onLongPress = onLongPress,
-                    onClick = onClick
-                )
-            }
+    // 引用：浅灰圆角卡片。给「版本信息 / 补充说明」一类内容一个安静的底色容器，
+    // 让引用在长文中更醒目、更好扫读。
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f),
+                shape = RoundedCornerShape(CardCorner)
+            )
+            .padding(horizontal = 14.dp, vertical = 11.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        quote.lines.forEach { line ->
+            MarkdownInteractiveText(
+                source = line,
+                style = bodyStyle(),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.92f),
+                enableTextSelection = enableTextSelection,
+                onLinkLongPress = onLinkLongPress,
+                onLinkClick = onLinkClick,
+                onDoubleClickAt = onDoubleClickAt,
+                onLongPress = onLongPress,
+                onClick = onClick
+            )
         }
     }
 }
@@ -404,17 +420,17 @@ private fun MarkdownList(
     onLongPress: () -> Unit,
     onClick: () -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
         list.items.forEach { item ->
             Row(
-                modifier = Modifier.fillMaxWidth().padding(start = (item.depth.coerceAtMost(5) * 18).dp),
+                modifier = Modifier.fillMaxWidth().padding(start = (item.depth.coerceAtMost(5) * 20).dp),
                 verticalAlignment = Alignment.Top
             ) {
                 Text(
                     text = item.marker,
                     style = bodyStyle(),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.width(if (item.marker.lastOrNull() == '.') 28.dp else 18.dp)
+                    modifier = Modifier.width(if (item.marker.lastOrNull() == '.') 30.dp else 20.dp)
                 )
                 MarkdownInteractiveText(
                     source = item.text,
@@ -442,26 +458,29 @@ private fun MarkdownCodeBlock(
     onLongPress: () -> Unit,
     onClick: () -> Unit
 ) {
-    // 代码块：极浅背景、左侧缩进，无圆角卡片、无复制按钮（阅读器不应有操作按钮）。
+    // 代码块：浅灰圆角卡片 + 语言标签；横向滚动查看长行。
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f))
+            .background(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                shape = RoundedCornerShape(CardCorner)
+            )
     ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
             if (block.language.isNotBlank()) {
                 Text(
                     text = block.language.uppercase(),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
-                    modifier = Modifier.padding(bottom = 4.dp)
+                    modifier = Modifier.padding(bottom = 6.dp)
                 )
             }
             MarkdownInteractiveText(
                 source = block.content,
-                style = bodyStyle().copy(fontSize = 12.5.sp, lineHeight = 19.sp),
+                style = bodyStyle().copy(fontSize = 13.sp, lineHeight = 20.sp),
                 fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f),
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 parseFormatting = false,
                 enableTextSelection = enableTextSelection,
@@ -493,7 +512,7 @@ private fun MarkdownTable(
         List(columnCount) { columnIndex -> table.header.getOrElse(columnIndex) { SourceText("", IntArray(0)) } }
     }
     val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
-    val bodyStyle = bodyStyle().copy(fontSize = 12.5.sp, lineHeight = 18.sp)
+    val bodyStyle = bodyStyle().copy(fontSize = 13.sp, lineHeight = 19.sp)
     val headerStyle = bodyStyle.copy(fontWeight = FontWeight.SemiBold)
     val density = androidx.compose.ui.platform.LocalDensity.current
     val columnWidths = remember(header, rows, bodyStyle, headerStyle, density) {
@@ -514,18 +533,22 @@ private fun MarkdownTable(
                     constraints = Constraints()
                 ).size.width
             } ?: 0
-            with(density) { (maxOf(headerWidth, bodyWidth).toDp() + 20.dp).coerceIn(80.dp, 240.dp) }
+            with(density) { (maxOf(headerWidth, bodyWidth).toDp() + 24.dp).coerceIn(72.dp, 264.dp) }
         }
     }
-    // 表格：水平可滚动，外层只有一根细顶线作为表头分隔，无 Surface 卡片。
+    // 表格：浅灰表头的圆角卡片，行间用极细分隔线；水平可滚动查看宽表。
     Box(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-        Column(modifier = Modifier.wrapContentWidth(unbounded = true)) {
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
+        Column(
+            modifier = Modifier
+                .wrapContentWidth(unbounded = true)
+                .clip(RoundedCornerShape(CardCorner))
+        ) {
             MarkdownTableRow(
                 cells = header,
                 columnWidths = columnWidths,
                 alignments = table.alignments,
                 header = true,
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
                 enableTextSelection = enableTextSelection,
                 onLinkLongPress = onLinkLongPress,
                 onLinkClick = onLinkClick,
@@ -533,13 +556,17 @@ private fun MarkdownTable(
                 onLongPress = onLongPress,
                 onClick = onClick
             )
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
-            rows.forEach { row ->
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.9f))
+            rows.forEachIndexed { rowIndex, row ->
+                if (rowIndex > 0) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+                }
                 MarkdownTableRow(
                     cells = row,
                     columnWidths = columnWidths,
                     alignments = table.alignments,
                     header = false,
+                    containerColor = Color.Unspecified,
                     enableTextSelection = enableTextSelection,
                     onLinkLongPress = onLinkLongPress,
                     onLinkClick = onLinkClick,
@@ -548,7 +575,7 @@ private fun MarkdownTable(
                     onClick = onClick
                 )
             }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
         }
     }
 }
@@ -559,6 +586,7 @@ private fun MarkdownTableRow(
     columnWidths: List<androidx.compose.ui.unit.Dp>,
     alignments: List<TableAlignment>,
     header: Boolean,
+    containerColor: Color,
     enableTextSelection: Boolean,
     onLinkLongPress: (String) -> Unit,
     onLinkClick: (String) -> Unit,
@@ -566,19 +594,26 @@ private fun MarkdownTableRow(
     onLongPress: () -> Unit,
     onClick: () -> Unit
 ) {
-    Row(verticalAlignment = Alignment.Top) {
+    Row(
+        verticalAlignment = Alignment.Top,
+        modifier = if (containerColor == Color.Unspecified) {
+            Modifier
+        } else {
+            Modifier.background(containerColor)
+        }
+    ) {
         cells.forEachIndexed { index, cell ->
             MarkdownInteractiveText(
                 source = cell,
-                style = bodyStyle().copy(fontSize = 12.5.sp, lineHeight = 18.sp),
+                style = bodyStyle().copy(fontSize = 13.sp, lineHeight = 19.sp),
                 fontWeight = if (header) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (header) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (header) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f),
                 textAlign = when (alignments.getOrElse(index) { TableAlignment.START }) {
                     TableAlignment.START -> TextAlign.Start
                     TableAlignment.CENTER -> TextAlign.Center
                     TableAlignment.END -> TextAlign.End
                 },
-                modifier = Modifier.width(columnWidths[index]).padding(horizontal = 10.dp, vertical = 6.dp),
+                modifier = Modifier.width(columnWidths[index]).padding(horizontal = 12.dp, vertical = 9.dp),
                 enableTextSelection = enableTextSelection,
                 onLinkLongPress = onLinkLongPress,
                 onLinkClick = onLinkClick,
@@ -612,6 +647,14 @@ private fun MarkdownInteractiveText(
         if (parseFormatting) parseMarkdownInline(source, linkColor) else rawInlineContent(source)
     }
     val textLayout = remember(source, inline.text) { AtomicReference<TextLayoutResult?>(null) }
+    // 行内代码片：SpanStyle 的 background 只能是直角矩形，因此这里在布局完成后
+    // 用 drawBehind 依据每个字符的包围盒绘制圆角胶囊背景。
+    val chipColor = MaterialTheme.colorScheme.outlineVariant
+    val density = LocalDensity.current
+    val chipRadiusPx = remember(density) { with(density) { ChipCorner.toPx() } }
+    val chipPaddingXPx = remember(density) { with(density) { ChipPaddingHorizontal.toPx() } }
+    val chipPaddingYPx = remember(density) { with(density) { ChipPaddingVertical.toPx() } }
+    var chipRects by remember(inline) { mutableStateOf<List<RoundRect>>(emptyList()) }
     fun displayOffsetAt(position: androidx.compose.ui.geometry.Offset): Int =
         textLayout.get()?.getOffsetForPosition(position) ?: 0
     val interactionModifier = if (enableTextSelection) {
@@ -639,8 +682,26 @@ private fun MarkdownInteractiveText(
         fontFamily = fontFamily,
         color = color,
         textAlign = textAlign,
-        onTextLayout = { textLayout.set(it) },
-        modifier = modifier.then(interactionModifier)
+        onTextLayout = { layout ->
+            textLayout.set(layout)
+            chipRects = if (inline.codeRanges.isEmpty()) {
+                emptyList()
+            } else {
+                computeCodeChipRects(layout, inline.codeRanges, chipPaddingXPx, chipPaddingYPx)
+            }
+        },
+        modifier = modifier
+            .drawBehind {
+                chipRects.forEach { rect ->
+                    drawRoundRect(
+                        color = chipColor,
+                        topLeft = Offset(rect.left, rect.top),
+                        size = Size(rect.width, rect.height),
+                        cornerRadius = CornerRadius(chipRadiusPx, chipRadiusPx)
+                    )
+                }
+            }
+            .then(interactionModifier)
     )
 }
 
@@ -859,7 +920,8 @@ private fun parseTableAlignments(line: SourceLine): List<TableAlignment> {
 private fun rawInlineContent(source: SourceText): InlineContent = InlineContent(
     text = AnnotatedString(source.text),
     sourceOffsets = IntArray(source.text.length) { source.sourceOffsetAt(it) },
-    links = UrlPattern.findAll(source.text).map { match -> InlineLink(match.range.first, match.range.last + 1, match.value) }.toList()
+    links = UrlPattern.findAll(source.text).map { match -> InlineLink(match.range.first, match.range.last + 1, match.value) }.toList(),
+    codeRanges = emptyList()
 )
 
 /** 小型递归 tokenizer，支持常用嵌套强调、链接和转义，并输出显示字符到原文位置的映射。 */
@@ -868,6 +930,7 @@ private fun parseMarkdownInline(source: SourceText, linkColor: Color): InlineCon
     val builder = AnnotatedString.Builder()
     val sourceOffsets = mutableListOf<Int>()
     val links = mutableListOf<InlineLink>()
+    val codeRanges = mutableListOf<IntRange>()
 
     fun appendRaw(index: Int) {
         builder.append(value[index])
@@ -909,22 +972,25 @@ private fun parseMarkdownInline(source: SourceText, linkColor: Color): InlineCon
             val marker = inlineMarkerAt(value, cursor, endExclusive)
             val closing = marker?.let { findClosingMarker(value, it, cursor + it.length, endExclusive) }
             if (marker != null && closing != null) {
-                // 阅读器式排版原则：行内强调永远不应接近标题视觉重量。
-                // - `**粗体**` 用 Medium（500）而非 Bold（700），保留强调但弱于 H1/H2；
-                // - `***粗斜体***` 用 SemiBold + Italic；
+                // 阅读器式排版原则：行内强调不应接近标题视觉重量。
+                // - `**粗体**` 用 SemiBold（内置 Noto Sans SC SemiBold 字重）保留强调但不压过标题；
+                // - `***粗斜体***` 用 Bold + Italic；
                 // - `*斜体*` 用 Italic（不加粗）；
                 // - `~~删除~~` 用 LineThrough；
-                // - `` `代码` `` 用等宽字体 + 极浅背景。
+                // - `` `代码` `` 用等宽字体 + 略缩小字号；圆角灰色代码片
+                //   由 MarkdownInteractiveText 在布局完成后用 drawBehind 绘制。
                 val style = when (marker) {
-                    "***", "___" -> SpanStyle(fontWeight = FontWeight.SemiBold, fontStyle = FontStyle.Italic)
-                    "**", "__" -> SpanStyle(fontWeight = FontWeight.Medium)
+                    "***", "___" -> SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic)
+                    "**", "__" -> SpanStyle(fontWeight = FontWeight.SemiBold)
                     "*", "_" -> SpanStyle(fontStyle = FontStyle.Italic)
                     "~~" -> SpanStyle(textDecoration = TextDecoration.LineThrough)
-                    else -> SpanStyle(fontFamily = FontFamily.Monospace, background = linkColor.copy(alpha = 0.08f))
+                    else -> SpanStyle(fontFamily = FontFamily.Monospace, fontSize = 0.88f.em)
                 }
                 builder.pushStyle(style)
+                val codeDisplayStart = if (marker == "`") builder.length else -1
                 appendRange(cursor + marker.length, closing)
                 builder.pop()
+                if (codeDisplayStart >= 0) codeRanges += codeDisplayStart until builder.length
                 cursor = closing + marker.length
             } else {
                 appendRaw(cursor)
@@ -934,7 +1000,79 @@ private fun parseMarkdownInline(source: SourceText, linkColor: Color): InlineCon
     }
 
     appendRange(0, value.length)
-    return InlineContent(builder.toAnnotatedString(), sourceOffsets.toIntArray(), links)
+    return InlineContent(builder.toAnnotatedString(), sourceOffsets.toIntArray(), links, codeRanges)
+}
+
+/**
+ * 把行内代码 span 映射为圆角矩形列表：跨行的代码 span 会按行拆分成多个矩形，
+ * 避免绘制出一整块跨行色斑。坐标为像素值，在绘制时直接使用。
+ */
+private fun computeCodeChipRects(
+    layout: TextLayoutResult,
+    ranges: List<IntRange>,
+    paddingXPx: Float,
+    paddingYPx: Float
+): List<RoundRect> {
+    if (ranges.isEmpty()) return emptyList()
+    val textLength = layout.layoutInput.text.length
+    if (textLength == 0) return emptyList()
+    val rects = mutableListOf<RoundRect>()
+    ranges.forEach { range ->
+        if (range.isEmpty()) return@forEach
+        val start = range.first.coerceIn(0, textLength - 1)
+        val endExclusive = (range.last + 1).coerceIn(start + 1, textLength)
+        var segmentStart = start
+        var segmentLine = layout.getLineForOffset(start)
+        for (offset in start + 1 until endExclusive) {
+            val line = layout.getLineForOffset(offset)
+            if (line != segmentLine) {
+                addCodeChipRect(layout, segmentStart, offset, segmentLine, rects, paddingXPx, paddingYPx)
+                segmentStart = offset
+                segmentLine = line
+            }
+        }
+        addCodeChipRect(layout, segmentStart, endExclusive, segmentLine, rects, paddingXPx, paddingYPx)
+    }
+    return rects
+}
+
+private fun addCodeChipRect(
+    layout: TextLayoutResult,
+    start: Int,
+    endExclusive: Int,
+    line: Int,
+    out: MutableList<RoundRect>,
+    paddingXPx: Float,
+    paddingYPx: Float
+) {
+    if (endExclusive <= start) return
+    var left = Float.MAX_VALUE
+    var top = Float.MAX_VALUE
+    var right = -Float.MAX_VALUE
+    var bottom = -Float.MAX_VALUE
+    var hasVisibleBox = false
+    for (offset in start until endExclusive) {
+        val box = layout.getBoundingBox(offset)
+        if (box.width <= 0f || box.height <= 0f) continue
+        hasVisibleBox = true
+        if (box.left < left) left = box.left
+        if (box.top < top) top = box.top
+        if (box.right > right) right = box.right
+        if (box.bottom > bottom) bottom = box.bottom
+    }
+    if (!hasVisibleBox) {
+        // 区间内没有可见字形（如换行占位）时，退化为该行行首的一个最小胶囊。
+        left = layout.getLineLeft(line)
+        top = layout.getLineTop(line)
+        right = left + paddingXPx * 2f
+        bottom = layout.getLineBottom(line)
+    }
+    out += RoundRect(
+        left = left - paddingXPx,
+        top = top - paddingYPx,
+        right = right + paddingXPx,
+        bottom = bottom + paddingYPx
+    )
 }
 
 private fun inlineMarkerAt(value: String, cursor: Int, endExclusive: Int): String? {
