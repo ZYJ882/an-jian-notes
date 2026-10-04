@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -39,6 +41,7 @@ import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -165,16 +168,16 @@ private val PreviewLinkBlueDark = Color(0xFFC7B1CF)
 /** 预览页面「舒展阅读」式排版的尺寸常量。
  *
  * 设计目标：像现代阅读器一样，靠字号、字重与留白建立层级，让界面退到背景里——
- * - 正文 16sp / 行高 1.75（28sp），Normal 字重，长文阅读不压迫；
+ * - 正文 17sp / 行高 30sp，贴近手机文档阅读器的舒展节奏；
  * - 标题 H1/H2 用 Bold 与充足上间距，章节在滚动中自然“浮起”；
- * - 段间 12dp，与标题上间距一起形成清晰的呼吸感；
- * - 引用 / 代码块 / 表格升级为浅灰圆角卡片，行内代码为圆角代码片，
+ * - 段间 14dp，与标题上间距一起形成清晰的呼吸感；
+ * - 引用 / 代码块 / 表格使用克制的浅灰容器，行内代码为圆角代码片，
  *   与正文形成明确的材质区分。
  */
-private val BlockSpacing = 12.dp
-private val BodyFontSize = 16.sp
-private val BodyLineHeight = 28.sp
-private val CardCorner = 12.dp
+private val BlockSpacing = 14.dp
+private val BodyFontSize = 17.sp
+private val BodyLineHeight = 30.sp
+private val CardCorner = 8.dp
 private val ChipCorner = 4.dp
 private val ChipPaddingHorizontal = 3.dp
 private val ChipPaddingVertical = 1.dp
@@ -345,12 +348,12 @@ private fun MarkdownHeading(
     onClick: () -> Unit
 ) {
     val (fontSize, lineHeight, weight, topPadding) = when (heading.level) {
-        1 -> Quad(24.sp, 33.sp, FontWeight.Bold, 20.dp)
-        2 -> Quad(21.sp, 29.sp, FontWeight.Bold, 18.dp)
-        3 -> Quad(18.sp, 26.sp, FontWeight.SemiBold, 14.dp)
-        4 -> Quad(16.5.sp, 24.sp, FontWeight.SemiBold, 12.dp)
-        5 -> Quad(15.5.sp, 22.sp, FontWeight.SemiBold, 10.dp)
-        else -> Quad(14.5.sp, 21.sp, FontWeight.Medium, 8.dp)
+        1 -> Quad(28.sp, 37.sp, FontWeight.Bold, 20.dp)
+        2 -> Quad(23.sp, 32.sp, FontWeight.Bold, 18.dp)
+        3 -> Quad(19.sp, 29.sp, FontWeight.SemiBold, 15.dp)
+        4 -> Quad(17.5.sp, 27.sp, FontWeight.SemiBold, 12.dp)
+        5 -> Quad(16.5.sp, 25.sp, FontWeight.SemiBold, 10.dp)
+        else -> Quad(15.5.sp, 24.sp, FontWeight.Medium, 8.dp)
     }
     val style = bodyStyle().copy(
         fontSize = fontSize,
@@ -459,6 +462,7 @@ private fun MarkdownCodeBlock(
     onClick: () -> Unit
 ) {
     // 代码块：浅灰圆角卡片 + 语言标签；横向滚动查看长行。
+    val clipboard = LocalClipboardManager.current
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -467,18 +471,34 @@ private fun MarkdownCodeBlock(
                 shape = RoundedCornerShape(CardCorner)
             )
     ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
-            if (block.language.isNotBlank()) {
-                Text(
-                    text = block.language.uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
-                    modifier = Modifier.padding(bottom = 6.dp)
-                )
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (block.language.isNotBlank()) {
+                    Text(
+                        text = block.language.uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
+                    )
+                }
+                Spacer(modifier = Modifier.weight(1f))
+                IconButton(
+                    onClick = { clipboard.setText(AnnotatedString(block.content.text)) },
+                    modifier = Modifier.width(30.dp)
+                ) {
+                    Text(
+                        text = "⧉",
+                        fontSize = 16.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
             }
             MarkdownInteractiveText(
                 source = block.content,
-                style = bodyStyle().copy(fontSize = 13.sp, lineHeight = 20.sp),
+        style = bodyStyle().copy(fontSize = 15.sp, lineHeight = 25.sp),
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f),
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -512,7 +532,7 @@ private fun MarkdownTable(
         List(columnCount) { columnIndex -> table.header.getOrElse(columnIndex) { SourceText("", IntArray(0)) } }
     }
     val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
-    val bodyStyle = bodyStyle().copy(fontSize = 13.sp, lineHeight = 19.sp)
+    val bodyStyle = bodyStyle().copy(fontSize = 16.sp, lineHeight = 27.sp)
     val headerStyle = bodyStyle.copy(fontWeight = FontWeight.SemiBold)
     val density = androidx.compose.ui.platform.LocalDensity.current
     val columnWidths = remember(header, rows, bodyStyle, headerStyle, density) {
@@ -533,7 +553,7 @@ private fun MarkdownTable(
                     constraints = Constraints()
                 ).size.width
             } ?: 0
-            with(density) { (maxOf(headerWidth, bodyWidth).toDp() + 24.dp).coerceIn(72.dp, 264.dp) }
+            with(density) { (maxOf(headerWidth, bodyWidth).toDp() + 28.dp).coerceIn(88.dp, 320.dp) }
         }
     }
     // 表格：浅灰表头的圆角卡片，行间用极细分隔线；水平可滚动查看宽表。
@@ -605,7 +625,7 @@ private fun MarkdownTableRow(
         cells.forEachIndexed { index, cell ->
             MarkdownInteractiveText(
                 source = cell,
-                style = bodyStyle().copy(fontSize = 13.sp, lineHeight = 19.sp),
+                    style = bodyStyle().copy(fontSize = 16.sp, lineHeight = 27.sp),
                 fontWeight = if (header) FontWeight.SemiBold else FontWeight.Normal,
                 color = if (header) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f),
                 textAlign = when (alignments.getOrElse(index) { TableAlignment.START }) {
@@ -613,7 +633,7 @@ private fun MarkdownTableRow(
                     TableAlignment.CENTER -> TextAlign.Center
                     TableAlignment.END -> TextAlign.End
                 },
-                modifier = Modifier.width(columnWidths[index]).padding(horizontal = 12.dp, vertical = 9.dp),
+                modifier = Modifier.width(columnWidths[index]).padding(horizontal = 14.dp, vertical = 11.dp),
                 enableTextSelection = enableTextSelection,
                 onLinkLongPress = onLinkLongPress,
                 onLinkClick = onLinkClick,

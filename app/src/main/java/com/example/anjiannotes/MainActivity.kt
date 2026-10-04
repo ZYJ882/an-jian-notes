@@ -2214,7 +2214,7 @@ private fun NoteDetailPage(
             } else {
                 Text(
                     title.ifBlank { "未命名笔记" },
-                    style = MaterialTheme.typography.headlineSmall.copy(fontSize = 25.sp, lineHeight = 34.sp),
+                    style = MaterialTheme.typography.headlineSmall.copy(fontSize = 28.sp, lineHeight = 37.sp),
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.fillMaxWidth().combinedClickable(
                         onClick = {},
@@ -2270,8 +2270,8 @@ private fun NoteDetailPage(
                     text = previewText,
                     style = MaterialTheme.typography.bodyLarge.copy(
                         fontFamily = LocalMarkdownFontFamily.current,
-                        fontSize = 16.sp,
-                        lineHeight = 28.sp
+                        fontSize = 17.sp,
+                        lineHeight = 30.sp
                     ),
                     onTextLayout = { plainTextLayout = it },
                     modifier = Modifier.fillMaxWidth().pointerInput(content) {
