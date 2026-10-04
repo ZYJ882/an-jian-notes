@@ -240,6 +240,7 @@ class MainActivity : ComponentActivity() {
                             appearanceMode = appearanceMode,
                             noteFont = noteFont,
                             customFontPath = customFontPath,
+                            externalFileUri = intent.data,
                             onAppearanceChange = app.appearancePreferences::setMode,
                             onFontChange = app.fontPreferences::setFont,
                             onCustomFontPath = app.fontPreferences::setCustomPath
@@ -323,6 +324,7 @@ private fun NotesApp(
     appearanceMode: AppearanceMode,
     noteFont: NoteFont,
     customFontPath: String?,
+    externalFileUri: Uri?,
     onAppearanceChange: (AppearanceMode) -> Unit,
     onFontChange: (NoteFont) -> Unit,
     onCustomFontPath: (String) -> Unit
@@ -394,6 +396,52 @@ private fun NotesApp(
                 feedbackMessage = "已导入 1 条笔记"
             }.onFailure {
                 feedbackMessage = "导入保存失败：${it.message ?: "无法保存笔记"}"
+            }
+        }
+    }
+
+    LaunchedEffect(externalFileUri) {
+        val selectedUri = externalFileUri ?: return@LaunchedEffect
+        runFileOperation("打开文件失败", { readTextImport(context, selectedUri) }) { result ->
+            when (result) {
+                is ImportReadResult.Success -> {
+                    val folderId = writableFolderId()
+                    val pinned = activeFolderId == STARRED_FOLDER_ID
+                    fileIoScope.launch {
+                        runCatching {
+                            val createdAt = System.currentTimeMillis()
+                            val markdown = result.note.formatMode.resolvesToMarkdown(result.note.content)
+                            val id = viewModel.queueSaveNote(
+                                id = 0L,
+                                title = result.note.title,
+                                content = result.note.content,
+                                color = 0xFFF5F0E8,
+                                pinned = pinned,
+                                topPinned = false,
+                                markdown = markdown,
+                                folderId = folderId,
+                                createdAt = createdAt
+                            ).await()
+                            page = AppPage.Detail(
+                                note = NoteEntity(
+                                    id = id,
+                                    title = result.note.title,
+                                    content = result.note.content,
+                                    color = 0xFFF5F0E8,
+                                    createdAt = createdAt,
+                                    updatedAt = createdAt,
+                                    isPinned = pinned,
+                                    isMarkdown = markdown,
+                                    folderId = folderId
+                                ),
+                                folderId = folderId
+                            )
+                        }.onFailure {
+                            feedbackMessage = "打开文件保存失败：${it.message ?: "无法保存笔记"}"
+                        }
+                    }
+                }
+                is ImportReadResult.Failure -> importError = result.message
             }
         }
     }

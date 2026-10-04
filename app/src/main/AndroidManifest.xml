@@ -15,10 +15,18 @@
             android:configChanges="uiMode"
             android:enableOnBackInvokedCallback="true"
             android:windowSoftInputMode="adjustResize"
+            android:grantUriPermissions="true"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="text/*" />
+                <data android:mimeType="application/octet-stream" />
             </intent-filter>
         </activity>
     </application>
