@@ -556,13 +556,38 @@ private fun MarkdownTable(
             with(density) { (maxOf(headerWidth, bodyWidth).toDp() + 28.dp).coerceIn(88.dp, 320.dp) }
         }
     }
-    // 表格：浅灰表头的圆角卡片，行间用极细分隔线；水平可滚动查看宽表。
-    Box(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-        Column(
-            modifier = Modifier
-                .wrapContentWidth(unbounded = true)
-                .clip(RoundedCornerShape(CardCorner))
+    val clipboard = LocalClipboardManager.current
+    val tableCopyText = remember(header, rows) {
+        buildString {
+            appendLine(header.joinToString("\t") { it.text })
+            rows.forEach { row -> appendLine(row.joinToString("\t") { it.text }) }
+        }.trimEnd()
+    }
+    // 表格：右上角提供小型复制按钮；内容保持横向滚动，复制结果为便于二次编辑的 TSV。
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
         ) {
+            Spacer(modifier = Modifier.weight(1f))
+            IconButton(
+                onClick = { clipboard.setText(AnnotatedString(tableCopyText)) },
+                modifier = Modifier.width(30.dp)
+            ) {
+                Text(
+                    text = "⧉",
+                    fontSize = 16.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+        }
+        Box(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+            Column(
+                modifier = Modifier
+                    .wrapContentWidth(unbounded = true)
+                    .clip(RoundedCornerShape(CardCorner))
+            ) {
             MarkdownTableRow(
                 cells = header,
                 columnWidths = columnWidths,
@@ -595,7 +620,8 @@ private fun MarkdownTable(
                     onClick = onClick
                 )
             }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+            }
         }
     }
 }
