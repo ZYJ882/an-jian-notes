@@ -584,6 +584,9 @@ private fun NotesApp(
                 if (!showSearch) {
                     viewModel.setSearchQuery("")
                     if (isGlobalSearch) viewModel.closeGlobalSearch()
+                } else {
+                    // 顶部搜索面向全部笔记，不受当前收藏夹限制；收藏夹仍可通过抽屉单独浏览。
+                    viewModel.openGlobalSearch()
                 }
             },
             onSearchChange = viewModel::setSearchQuery,
@@ -2241,19 +2244,14 @@ private fun NoteDetailPage(
                     }
                 )
             } else if (markdownActive) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 0.dp
-                ) {
-                    MarkdownPreview(
-                        content,
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 4.dp),
-                        onLinkClick = ::openPreviewLink,
-                        onDoubleClickAt = { position -> enterEdit(InlineEditTarget.CONTENT, position) },
-                        initialSourceOffset = initialContentCursor
-                    )
-                }
+                // 阅读内容直接融入页面背景，避免出现像浮在页面上的纯白方块。
+                MarkdownPreview(
+                    content,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 4.dp),
+                    onLinkClick = ::openPreviewLink,
+                    onDoubleClickAt = { position -> enterEdit(InlineEditTarget.CONTENT, position) },
+                    initialSourceOffset = initialContentCursor
+                )
             } else {
                 var plainTextLayout by remember(content) { mutableStateOf<TextLayoutResult?>(null) }
                 val linkColor = MaterialTheme.colorScheme.primary
