@@ -41,6 +41,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -104,10 +106,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.Alignment
@@ -157,12 +163,14 @@ import com.example.anjiannotes.ui.NoteFormatMode
 import com.example.anjiannotes.ui.RememberNoteReadingPosition
 import com.example.anjiannotes.ui.extractFirstLink
 import com.example.anjiannotes.ui.extractLinkAt
+import com.example.anjiannotes.ui.findSearchMatchRanges
 import com.example.anjiannotes.ui.formatForFileName
 import com.example.anjiannotes.ui.linkifyPlainText
 import com.example.anjiannotes.ui.markdownToListPreview
 import com.example.anjiannotes.ui.markdownToPlainText
 import com.example.anjiannotes.ui.plainTextToListPreview
 import com.example.anjiannotes.ui.readTextImport
+import com.example.anjiannotes.ui.searchHighlightColors
 import com.example.anjiannotes.ui.theme.AnJianTheme
 import com.example.anjiannotes.ui.theme.AppearanceMode
 import com.example.anjiannotes.ui.theme.FontPreferences
@@ -591,10 +599,6 @@ private fun NotesApp(
             },
             onSearchChange = viewModel::setSearchQuery,
             onFolderSelected = viewModel::selectFolder,
-            onOpenGlobalSearch = {
-                viewModel.openGlobalSearch()
-                showSearch = true
-            },
             onCreateFolder = { showNewFolderDialog = true },
             onOpenSettings = { page = AppPage.Settings },
             createMenuExpanded = showCreateMenu,
@@ -904,7 +908,6 @@ private fun NotesListPage(
     onSearchToggle: () -> Unit,
     onSearchChange: (String) -> Unit,
     onFolderSelected: (Long) -> Unit,
-    onOpenGlobalSearch: () -> Unit,
     onCreateFolder: () -> Unit,
     onOpenSettings: () -> Unit,
     createMenuExpanded: Boolean,
@@ -954,15 +957,6 @@ private fun NotesListPage(
                         Column(modifier = Modifier.weight(1f)) {
                             Text("我的收藏夹", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                             Text("安笺 · 离线笔记", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        TextButton(
-                            onClick = {
-                                onOpenGlobalSearch()
-                                scope.launch { drawerState.close() }
-                            },
-                            modifier = Modifier.size(44.dp)
-                        ) {
-                            Text("⌕", fontSize = 25.sp, color = MaterialTheme.colorScheme.onSurface)
                         }
                     }
                     Spacer(Modifier.height(14.dp))
@@ -1737,6 +1731,74 @@ private fun CreateMenuItem(title: String, subtitle: String, onClick: () -> Unit)
     )
 }
 
+/** 笔记详情预览页的正文搜索栏：关键字、命中计数与上一个/下一个导航。 */
+@Composable
+private fun NoteSearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    matchIndex: Int,
+    matchTotal: Int,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    Row(
+        modifier = modifier
+            .background(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f),
+                shape = RoundedCornerShape(12.dp)
+            )
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("🔍", fontSize = 16.sp, modifier = Modifier.padding(end = 8.dp))
+        BasicTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { onNext() }),
+            modifier = Modifier.weight(1f).padding(vertical = 8.dp).focusRequester(focusRequester),
+            decorationBox = { innerTextField ->
+                Box {
+                    if (query.isEmpty()) {
+                        Text(
+                            "搜索正文…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                    }
+                    innerTextField()
+                }
+            }
+        )
+        Text(
+            text = when {
+                query.isBlank() -> ""
+                matchTotal == 0 -> "无结果"
+                else -> "${matchIndex + 1}/$matchTotal"
+            },
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 8.dp, end = 4.dp)
+        )
+        TextButton(onClick = onPrevious, enabled = matchTotal > 0, modifier = Modifier.size(40.dp)) {
+            Text("↑", fontSize = 18.sp)
+        }
+        TextButton(onClick = onNext, enabled = matchTotal > 0, modifier = Modifier.size(40.dp)) {
+            Text("↓", fontSize = 18.sp)
+        }
+        TextButton(onClick = onClose, modifier = Modifier.size(40.dp)) {
+            Text("✕", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 private fun NoteDetailPage(
@@ -1818,6 +1880,12 @@ private fun NoteDetailPage(
     val characterCount = title.length + content.length
     val detailScrollState = rememberScrollState()
     var pendingScrollRestore by remember(note?.id, seed) { mutableStateOf<Int?>(null) }
+    // 预览页正文搜索状态：开关、关键字、当前命中序号（全局）与命中总数。
+    // 搜索状态仅属于当前详情页实例；使用无键 remember，避免大型详情函数的 FIR 数据流图膨胀。
+    var searchVisible by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var searchActiveOrdinal by remember { mutableStateOf(0) }
+    var searchTotal by remember { mutableStateOf(0) }
 
     LaunchedEffect(detailMode, focusTarget) {
         if (detailMode == DetailMode.EDIT) {
@@ -1965,13 +2033,15 @@ private fun NoteDetailPage(
         // 无论是否输入过，新建页离开前都必须经由已有单一保存队列写入一次 Room。
         // 这里不创建第二套保存机制，仅让现有 worker 获得一个需要保存的最终 revision。
         if (shouldForceFinalDraftSave(isNewNote, savedNoteId) && savedRevision >= editRevision) {
+            val editorText = nativeContentEditor?.text
+            val finalContent = editorText?.toString() ?: contentValue.text
             latestDraft = NoteDraftSnapshot(
                 title = title,
-                content = nativeContentEditor?.text?.toString() ?: contentValue.text,
+                content = finalContent,
                 color = color,
                 isPinned = pinned,
                 isTopPinned = topPinned,
-                isMarkdown = formatMode.resolvesToMarkdown(nativeContentEditor?.text?.toString() ?: contentValue.text),
+                isMarkdown = formatMode.resolvesToMarkdown(finalContent),
                 folderId = selectedFolderId
             )
             hasUserEdited = true
@@ -2031,6 +2101,15 @@ private fun NoteDetailPage(
             delay(1_400)
             if (autoSaveState == AutoSaveState.SAVED) autoSaveState = AutoSaveState.IDLE
         }
+    }
+
+    LaunchedEffect(searchTotal) {
+        if (searchTotal > 0 && searchActiveOrdinal >= searchTotal) searchActiveOrdinal = 0
+    }
+
+    fun moveSearchMatch(step: Int) {
+        if (searchTotal <= 0) return
+        searchActiveOrdinal = ((searchActiveOrdinal + step) % searchTotal + searchTotal) % searchTotal
     }
 
     fun toggleDetailMode() {
@@ -2104,6 +2183,20 @@ private fun NoteDetailPage(
                         TextButton(onClick = { nativeContentEditor?.performNativeUndo() }) { Text("↶") }
                         TextButton(onClick = { nativeContentEditor?.performNativeRedo() }) { Text("↷") }
                         TextButton(onClick = ::toggleDetailMode) { Text("预览") }
+                    }
+                    if (detailMode == DetailMode.PREVIEW && !focusMode) {
+                        TextButton(
+                            onClick = {
+                                searchVisible = !searchVisible
+                                if (!searchVisible) {
+                                    searchQuery = ""
+                                    searchActiveOrdinal = 0
+                                }
+                            },
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            Text("🔍", fontSize = 19.sp, color = MaterialTheme.colorScheme.onBackground)
+                        }
                     }
                     Box {
                         TextButton(onClick = { showDetailMenu = true }, modifier = Modifier.size(48.dp)) {
@@ -2188,7 +2281,27 @@ private fun NoteDetailPage(
         }
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
-            Box(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
+            Column(modifier = Modifier.fillMaxSize()) {
+            if (detailMode == DetailMode.PREVIEW && searchVisible && !focusMode) {
+                NoteSearchBar(
+                    query = searchQuery,
+                    onQueryChange = {
+                        searchQuery = it
+                        searchActiveOrdinal = 0
+                    },
+                    matchIndex = searchActiveOrdinal,
+                    matchTotal = searchTotal,
+                    onPrevious = { moveSearchMatch(-1) },
+                    onNext = { moveSearchMatch(1) },
+                    onClose = {
+                        searchVisible = false
+                        searchQuery = ""
+                        searchActiveOrdinal = 0
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp)
+                )
+            }
+            Box(modifier = Modifier.fillMaxWidth().weight(1f).padding(horizontal = 20.dp)) {
                 Column(
                     modifier = if (detailMode == DetailMode.EDIT) {
                         Modifier.fillMaxSize()
@@ -2250,13 +2363,60 @@ private fun NoteDetailPage(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 4.dp),
                     onLinkClick = ::openPreviewLink,
                     onDoubleClickAt = { position -> enterEdit(InlineEditTarget.CONTENT, position) },
-                    initialSourceOffset = initialContentCursor
+                    initialSourceOffset = initialContentCursor,
+                    searchQuery = searchQuery,
+                    searchActiveOrdinal = searchActiveOrdinal,
+                    onSearchMatchCountChange = { matchCount -> searchTotal = matchCount }
                 )
             } else {
                 var plainTextLayout by remember(content) { mutableStateOf<TextLayoutResult?>(null) }
                 val linkColor = MaterialTheme.colorScheme.primary
                 val previewText = remember(content, linkColor) {
                     linkifyPlainText(content.ifBlank { "空白笔记" }, linkColor)
+                }
+                // 纯文本笔记的正文搜索：命中计数、高亮与滚动复用页面滚动状态。
+                val plainMatches = remember(content, searchQuery, searchVisible) {
+                    if (!searchVisible || searchQuery.isBlank()) {
+                        emptyList()
+                    } else {
+                        findSearchMatchRanges(content, searchQuery)
+                    }
+                }
+                val searchColors = searchHighlightColors()
+                val highlightedPreviewText = remember(previewText, plainMatches, searchActiveOrdinal, searchColors) {
+                    if (plainMatches.isEmpty()) {
+                        previewText
+                    } else {
+                        buildAnnotatedString {
+                            append(previewText)
+                            plainMatches.forEachIndexed { matchIndex, range ->
+                                addStyle(
+                                    SpanStyle(
+                                        background = if (matchIndex == searchActiveOrdinal) {
+                                            searchColors.second
+                                        } else {
+                                            searchColors.first
+                                        }
+                                    ),
+                                    range.first,
+                                    range.last + 1
+                                )
+                            }
+                        }
+                    }
+                }
+                LaunchedEffect(plainMatches.size) {
+                    searchTotal = plainMatches.size
+                }
+                LaunchedEffect(searchActiveOrdinal, plainMatches, plainTextLayout) {
+                    val range = plainMatches.getOrNull(searchActiveOrdinal) ?: return@LaunchedEffect
+                    val layout = plainTextLayout ?: return@LaunchedEffect
+                    val layoutTextLength = layout.layoutInput.text.length
+                    if (layoutTextLength == 0) return@LaunchedEffect
+                    val offset = range.first.coerceIn(0, layoutTextLength - 1)
+                    val line = layout.getLineForOffset(offset)
+                    val target = layout.getLineTop(line).roundToInt()
+                    detailScrollState.scrollTo((target - 96).coerceAtLeast(0))
                 }
                 LaunchedEffect(initialContentCursor, plainTextLayout, content) {
                     val cursor = initialContentCursor ?: return@LaunchedEffect
@@ -2265,7 +2425,7 @@ private fun NoteDetailPage(
                     detailScrollState.scrollTo((target - 96).coerceAtLeast(0))
                 }
                 Text(
-                    text = previewText,
+                    text = highlightedPreviewText,
                     style = MaterialTheme.typography.bodyLarge.copy(
                         fontFamily = LocalMarkdownFontFamily.current,
                         fontSize = 17.sp,
@@ -2313,6 +2473,7 @@ private fun NoteDetailPage(
                             .fillMaxHeight()
                     )
                 }
+            }
             }
         }
     }

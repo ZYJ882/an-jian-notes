@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+
 package com.example.anjiannotes.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -39,11 +41,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.foundation.clickable
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
@@ -202,6 +205,9 @@ fun MarkdownPreview(
     markdown: String,
     modifier: Modifier = Modifier,
     enableTextSelection: Boolean = true,
+    searchQuery: String = "",
+    searchActiveOrdinal: Int = -1,
+    onSearchMatchCountChange: (Int) -> Unit = {},
     onLinkLongPress: (String) -> Unit = {},
     onLinkClick: (String) -> Unit = {},
     onDoubleClickAt: (Int) -> Unit = {},
@@ -210,6 +216,14 @@ fun MarkdownPreview(
     onClick: () -> Unit = {}
 ) {
     val document = remember(markdown) { MarkdownParser.parse(markdown) }
+    // 正文搜索：基于展示文本计算命中区间，支持高亮与「跳到当前命中」的滚动定位。
+    val searchIndex = remember(document, searchQuery, searchActiveOrdinal) {
+        computeMarkdownSearchIndex(document.blocks, searchQuery, searchActiveOrdinal)
+    }
+    val searchScrollRequester = remember { BringIntoViewRequester() }
+    LaunchedEffect(searchIndex.totalMatches) {
+        onSearchMatchCountChange(searchIndex.totalMatches)
+    }
     val initialBlockIndex = remember(document, initialSourceOffset) {
         initialSourceOffset?.let { offset -> document.blocks.indexOfFirst { it.containsSourceOffset(offset) } }
             ?.takeIf { it >= 0 }
@@ -239,6 +253,9 @@ fun MarkdownPreview(
                         MarkdownBlockRenderer(
                             block = block,
                             enableTextSelection = enableTextSelection,
+                            search = searchIndex.blockSegments.getOrNull(index)?.let {
+                                BlockSearch(it, searchScrollRequester)
+                            },
                             onLinkLongPress = onLinkLongPress,
                             onLinkClick = onLinkClick,
                             onDoubleClickAt = onDoubleClickAt,
@@ -257,6 +274,7 @@ fun MarkdownPreview(
 private fun MarkdownBlockRenderer(
     block: MarkdownBlock,
     enableTextSelection: Boolean,
+    search: BlockSearch?,
     onLinkLongPress: (String) -> Unit,
     onLinkClick: (String) -> Unit,
     onDoubleClickAt: (Int) -> Unit,
@@ -267,6 +285,7 @@ private fun MarkdownBlockRenderer(
         is MarkdownBlock.Heading -> MarkdownHeading(
             heading = block,
             enableTextSelection = enableTextSelection,
+            search = search,
             onLinkLongPress = onLinkLongPress,
             onLinkClick = onLinkClick,
             onDoubleClickAt = onDoubleClickAt,
@@ -277,6 +296,8 @@ private fun MarkdownBlockRenderer(
             source = block.text,
             style = bodyStyle(),
             enableTextSelection = enableTextSelection,
+            search = search?.segmentAt(0),
+            searchScrollRequester = search?.scrollRequester,
             onLinkLongPress = onLinkLongPress,
             onLinkClick = onLinkClick,
             onDoubleClickAt = onDoubleClickAt,
@@ -286,6 +307,7 @@ private fun MarkdownBlockRenderer(
         is MarkdownBlock.Quote -> MarkdownQuote(
             quote = block,
             enableTextSelection = enableTextSelection,
+            search = search,
             onLinkLongPress = onLinkLongPress,
             onLinkClick = onLinkClick,
             onDoubleClickAt = onDoubleClickAt,
@@ -295,6 +317,7 @@ private fun MarkdownBlockRenderer(
         is MarkdownBlock.ListBlock -> MarkdownList(
             list = block,
             enableTextSelection = enableTextSelection,
+            search = search,
             onLinkLongPress = onLinkLongPress,
             onLinkClick = onLinkClick,
             onDoubleClickAt = onDoubleClickAt,
@@ -304,6 +327,7 @@ private fun MarkdownBlockRenderer(
         is MarkdownBlock.Code -> MarkdownCodeBlock(
             block = block,
             enableTextSelection = enableTextSelection,
+            search = search,
             onLinkLongPress = onLinkLongPress,
             onLinkClick = onLinkClick,
             onDoubleClickAt = onDoubleClickAt,
@@ -313,6 +337,7 @@ private fun MarkdownBlockRenderer(
         is MarkdownBlock.Table -> MarkdownTable(
             table = block,
             enableTextSelection = enableTextSelection,
+            search = search,
             onLinkLongPress = onLinkLongPress,
             onLinkClick = onLinkClick,
             onDoubleClickAt = onDoubleClickAt,
@@ -344,6 +369,7 @@ private fun MarkdownBlockRenderer(
 private fun MarkdownHeading(
     heading: MarkdownBlock.Heading,
     enableTextSelection: Boolean,
+    search: BlockSearch?,
     onLinkLongPress: (String) -> Unit,
     onLinkClick: (String) -> Unit,
     onDoubleClickAt: (Int) -> Unit,
@@ -368,6 +394,8 @@ private fun MarkdownHeading(
         style = style,
         modifier = Modifier.fillMaxWidth().padding(top = topPadding, bottom = 3.dp),
         enableTextSelection = enableTextSelection,
+        search = search?.segmentAt(0),
+        searchScrollRequester = search?.scrollRequester,
         onLinkLongPress = onLinkLongPress,
         onLinkClick = onLinkClick,
         onDoubleClickAt = onDoubleClickAt,
@@ -382,6 +410,7 @@ private data class Quad(val fontSize: androidx.compose.ui.unit.TextUnit, val lin
 private fun MarkdownQuote(
     quote: MarkdownBlock.Quote,
     enableTextSelection: Boolean,
+    search: BlockSearch?,
     onLinkLongPress: (String) -> Unit,
     onLinkClick: (String) -> Unit,
     onDoubleClickAt: (Int) -> Unit,
@@ -400,12 +429,14 @@ private fun MarkdownQuote(
             .padding(horizontal = 14.dp, vertical = 11.dp),
         verticalArrangement = Arrangement.spacedBy(3.dp)
     ) {
-        quote.lines.forEach { line ->
+        quote.lines.forEachIndexed { lineIndex, line ->
             MarkdownInteractiveText(
                 source = line,
                 style = bodyStyle(),
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.92f),
                 enableTextSelection = enableTextSelection,
+                search = search?.segmentAt(lineIndex),
+                searchScrollRequester = search?.scrollRequester,
                 onLinkLongPress = onLinkLongPress,
                 onLinkClick = onLinkClick,
                 onDoubleClickAt = onDoubleClickAt,
@@ -420,6 +451,7 @@ private fun MarkdownQuote(
 private fun MarkdownList(
     list: MarkdownBlock.ListBlock,
     enableTextSelection: Boolean,
+    search: BlockSearch?,
     onLinkLongPress: (String) -> Unit,
     onLinkClick: (String) -> Unit,
     onDoubleClickAt: (Int) -> Unit,
@@ -427,7 +459,7 @@ private fun MarkdownList(
     onClick: () -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        list.items.forEach { item ->
+        list.items.forEachIndexed { itemIndex, item ->
             Row(
                 modifier = Modifier.fillMaxWidth().padding(start = (item.depth.coerceAtMost(5) * 20).dp),
                 verticalAlignment = Alignment.Top
@@ -443,6 +475,8 @@ private fun MarkdownList(
                     style = bodyStyle(),
                     modifier = Modifier.weight(1f),
                     enableTextSelection = enableTextSelection,
+                    search = search?.segmentAt(itemIndex),
+                    searchScrollRequester = search?.scrollRequester,
                     onLinkLongPress = onLinkLongPress,
                     onLinkClick = onLinkClick,
                     onDoubleClickAt = onDoubleClickAt,
@@ -458,6 +492,7 @@ private fun MarkdownList(
 private fun MarkdownCodeBlock(
     block: MarkdownBlock.Code,
     enableTextSelection: Boolean,
+    search: BlockSearch?,
     onLinkLongPress: (String) -> Unit,
     onLinkClick: (String) -> Unit,
     onDoubleClickAt: (Int) -> Unit,
@@ -507,6 +542,8 @@ private fun MarkdownCodeBlock(
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 parseFormatting = false,
                 enableTextSelection = enableTextSelection,
+                search = search?.segmentAt(0),
+                searchScrollRequester = search?.scrollRequester,
                 onLinkLongPress = onLinkLongPress,
                 onLinkClick = onLinkClick,
                 onDoubleClickAt = onDoubleClickAt,
@@ -521,6 +558,7 @@ private fun MarkdownCodeBlock(
 private fun MarkdownTable(
     table: MarkdownBlock.Table,
     enableTextSelection: Boolean,
+    search: BlockSearch?,
     onLinkLongPress: (String) -> Unit,
     onLinkClick: (String) -> Unit,
     onDoubleClickAt: (Int) -> Unit,
@@ -595,6 +633,8 @@ private fun MarkdownTable(
                 header = true,
                 containerColor = MaterialTheme.colorScheme.surfaceVariant,
                 enableTextSelection = enableTextSelection,
+                search = search,
+                segmentOffset = 0,
                 onLinkLongPress = onLinkLongPress,
                 onLinkClick = onLinkClick,
                 onDoubleClickAt = onDoubleClickAt,
@@ -613,6 +653,8 @@ private fun MarkdownTable(
                     header = false,
                     containerColor = Color.Unspecified,
                     enableTextSelection = enableTextSelection,
+                    search = search,
+                    segmentOffset = columnCount + rowIndex * columnCount,
                     onLinkLongPress = onLinkLongPress,
                     onLinkClick = onLinkClick,
                     onDoubleClickAt = onDoubleClickAt,
@@ -634,6 +676,8 @@ private fun MarkdownTableRow(
     header: Boolean,
     containerColor: Color,
     enableTextSelection: Boolean,
+    search: BlockSearch?,
+    segmentOffset: Int,
     onLinkLongPress: (String) -> Unit,
     onLinkClick: (String) -> Unit,
     onDoubleClickAt: (Int) -> Unit,
@@ -661,6 +705,8 @@ private fun MarkdownTableRow(
                 },
                 modifier = Modifier.width(columnWidths[index]).padding(horizontal = 14.dp, vertical = 11.dp),
                 enableTextSelection = enableTextSelection,
+                search = search?.segmentAt(segmentOffset + index),
+                searchScrollRequester = search?.scrollRequester,
                 onLinkLongPress = onLinkLongPress,
                 onLinkClick = onLinkClick,
                 onDoubleClickAt = onDoubleClickAt,
@@ -671,6 +717,7 @@ private fun MarkdownTableRow(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MarkdownInteractiveText(
     source: SourceText,
@@ -682,6 +729,8 @@ private fun MarkdownInteractiveText(
     textAlign: TextAlign? = null,
     parseFormatting: Boolean = true,
     enableTextSelection: Boolean,
+    search: SegmentSearch? = null,
+    searchScrollRequester: BringIntoViewRequester? = null,
     onLinkLongPress: (String) -> Unit,
     onLinkClick: (String) -> Unit,
     onDoubleClickAt: (Int) -> Unit,
@@ -693,6 +742,54 @@ private fun MarkdownInteractiveText(
         if (parseFormatting) parseMarkdownInline(source, linkColor) else rawInlineContent(source)
     }
     val textLayout = remember(source, inline.text) { AtomicReference<TextLayoutResult?>(null) }
+    // 正文搜索高亮：在展示文本上叠加命中背景色；当前命中使用更醒目的强调色。
+    val highlightColors = searchHighlightColors()
+    val activeRange = search?.activeRange
+    val annotatedText = if (search == null || search.ranges.isEmpty()) {
+        inline.text
+    } else {
+        remember(inline.text, search, highlightColors) {
+            buildAnnotatedString {
+                append(inline.text)
+                search.ranges.forEach { range ->
+                    addStyle(
+                        SpanStyle(
+                            background = if (range == search.activeRange) {
+                                highlightColors.second
+                            } else {
+                                highlightColors.first
+                            }
+                        ),
+                        range.first,
+                        range.last + 1
+                    )
+                }
+            }
+        }
+    }
+    if (activeRange != null && searchScrollRequester != null) {
+        LaunchedEffect(activeRange, inline.text) {
+            // 等待文本布局完成（最多几帧），再把当前命中的行精确滚入可视区域。
+            repeat(8) {
+                withFrameNanos { }
+                val layout = textLayout.get() ?: return@repeat
+                val textLength = layout.layoutInput.text.length
+                if (textLength == 0) return@LaunchedEffect
+                val start = activeRange.first.coerceIn(0, textLength - 1)
+                val end = activeRange.last.coerceIn(start, textLength - 1)
+                val startBox = layout.getBoundingBox(start)
+                val endBox = layout.getBoundingBox(end)
+                val rect = Rect(
+                    left = minOf(startBox.left, endBox.left),
+                    top = layout.getLineTop(layout.getLineForOffset(start)),
+                    right = maxOf(startBox.right, endBox.right),
+                    bottom = layout.getLineBottom(layout.getLineForOffset(end))
+                )
+                searchScrollRequester.bringIntoView(rect)
+                return@LaunchedEffect
+            }
+        }
+    }
     // 行内代码片：SpanStyle 的 background 只能是直角矩形，因此这里在布局完成后
     // 用 drawBehind 依据每个字符的包围盒绘制圆角胶囊背景。
     val chipColor = MaterialTheme.colorScheme.outlineVariant
@@ -722,7 +819,7 @@ private fun MarkdownInteractiveText(
         }
     }
     Text(
-        text = inline.text,
+        text = annotatedText,
         style = style,
         fontWeight = fontWeight,
         fontFamily = fontFamily,
@@ -737,6 +834,13 @@ private fun MarkdownInteractiveText(
             }
         },
         modifier = modifier
+            .then(
+                if (activeRange != null && searchScrollRequester != null) {
+                    Modifier.bringIntoViewRequester(searchScrollRequester)
+                } else {
+                    Modifier
+                }
+            )
             .drawBehind {
                 chipRects.forEach { rect ->
                     drawRoundRect(
@@ -1151,6 +1255,88 @@ internal fun markdownPreviewBlockCount(markdown: String): Int = MarkdownParser.p
 internal fun markdownInlineDisplayText(markdown: String): String {
     val source = SourceText(markdown, IntArray(markdown.length) { it })
     return parseMarkdownInline(source, Color.Black).text.text
+}
+
+/** 详情页正文搜索：单个文本段上的命中信息。 */
+internal data class SegmentSearch(
+    /** 该文本段内所有命中区间（展示文本偏移，互不重叠）。 */
+    val ranges: List<IntRange>,
+    /** 全局当前命中的区间；仅当本次命中落在此段时非空。 */
+    val activeRange: IntRange? = null
+)
+
+/** 一个 block 的搜索上下文：各文本段命中信息 + 共享的滚动定位 requester。 */
+internal data class BlockSearch(
+    val segments: List<SegmentSearch>,
+    val scrollRequester: BringIntoViewRequester
+) {
+    fun segmentAt(index: Int): SegmentSearch? = segments.getOrNull(index)
+}
+
+/** 整篇文档的搜索结果：按 block 顺序存放各段命中信息与命中总数。 */
+internal data class MarkdownSearchIndex(
+    val blockSegments: List<List<SegmentSearch>>,
+    val totalMatches: Int
+)
+
+/** 枚举一个 block 在渲染时出现的文本段；顺序必须与渲染顺序一致（表格单元格按列数补齐）。 */
+private fun blockSearchSegments(block: MarkdownBlock): List<SourceText> = when (block) {
+    is MarkdownBlock.Heading -> listOf(block.text)
+    is MarkdownBlock.Paragraph -> listOf(block.text)
+    is MarkdownBlock.Quote -> block.lines
+    is MarkdownBlock.ListBlock -> block.items.map { it.text }
+    is MarkdownBlock.Code -> listOf(block.content)
+    is MarkdownBlock.Table -> {
+        val columnCount = block.header.size.coerceAtLeast(1)
+        block.header + block.rows.map { row ->
+            List(columnCount) { column -> row.getOrElse(column) { SourceText("", IntArray(0)) } }
+        }.flatten()
+    }
+    MarkdownBlock.Divider -> emptyList()
+}
+
+/** 命中计算所基于的展示文本：代码块取原文，其余按行内 Markdown 渲染后的纯文本。 */
+private fun blockSearchDisplayText(block: MarkdownBlock, segment: SourceText): String =
+    if (block is MarkdownBlock.Code) {
+        segment.text
+    } else {
+        parseMarkdownInline(segment, Color.Black).text.text
+    }
+
+/** 计算整篇文档的搜索命中索引；activeOrdinal 为全局命中序号（0 起，越界视为无当前命中）。 */
+internal fun computeMarkdownSearchIndex(
+    blocks: List<MarkdownBlock>,
+    query: String,
+    activeOrdinal: Int
+): MarkdownSearchIndex {
+    val trimmedQuery = query.trim()
+    if (trimmedQuery.isEmpty()) return MarkdownSearchIndex(emptyList(), 0)
+    var ordinal = 0
+    var totalMatches = 0
+    val blockSegments = blocks.map { block ->
+        blockSearchSegments(block).map { segment ->
+            val ranges = findSearchMatchRanges(blockSearchDisplayText(block, segment), trimmedQuery)
+            totalMatches += ranges.size
+            var activeRange: IntRange? = null
+            ranges.forEach { range ->
+                if (ordinal == activeOrdinal) activeRange = range
+                ordinal++
+            }
+            SegmentSearch(ranges, activeRange)
+        }
+    }
+    return MarkdownSearchIndex(blockSegments, totalMatches)
+}
+
+/** 搜索命中配色：first 为普通命中，second 为当前命中；深浅色主题分别取色保证可读。 */
+@Composable
+fun searchHighlightColors(): Pair<Color, Color> {
+    val darkTheme = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+    return if (darkTheme) {
+        Color(0xFF6E5A0E) to Color(0xFF9C6500)
+    } else {
+        Color(0xFFFFF176) to Color(0xFFFFAB40)
+    }
 }
 
 internal fun markdownInlineLinkAt(markdown: String, displayOffset: Int): String? {
