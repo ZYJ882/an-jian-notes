@@ -3,6 +3,7 @@ package com.example.anjiannotes
 import android.app.Application
 import androidx.room.Room
 import com.example.anjiannotes.data.FolderSelectionPreferences
+import com.example.anjiannotes.data.AppSortingPreferences
 import com.example.anjiannotes.data.NotesDatabase
 import com.example.anjiannotes.data.NotePositionStore
 import com.example.anjiannotes.data.WebDavBackupClient
@@ -14,6 +15,7 @@ class AnJianApplication : Application() {
     val appearancePreferences: AppearancePreferences by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { AppearancePreferences(this) }
     val fontPreferences: FontPreferences by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { FontPreferences(this) }
     val folderSelectionPreferences: FolderSelectionPreferences by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { FolderSelectionPreferences(this) }
+    val appSortingPreferences: AppSortingPreferences by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { AppSortingPreferences(this) }
     val notePositionStore: NotePositionStore by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { NotePositionStore(this) }
     val webDavConfigStore: WebDavConfigStore by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { WebDavConfigStore(this) }
     val webDavBackupClient: WebDavBackupClient by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { WebDavBackupClient(this) }
@@ -24,7 +26,8 @@ class AnJianApplication : Application() {
                 NotesDatabase.MIGRATION_1_2,
                 NotesDatabase.MIGRATION_2_3,
                 NotesDatabase.MIGRATION_3_4,
-                NotesDatabase.MIGRATION_4_5
+                NotesDatabase.MIGRATION_4_5,
+                NotesDatabase.MIGRATION_5_6
             )
             .build()
     }

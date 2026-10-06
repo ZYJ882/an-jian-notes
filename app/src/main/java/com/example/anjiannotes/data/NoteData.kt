@@ -32,7 +32,9 @@ data class FolderEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
     val createdAt: Long = System.currentTimeMillis(),
-    val sortOrder: Long = System.currentTimeMillis()
+    val sortOrder: Long = System.currentTimeMillis(),
+    /** 最近一次在抽屉中点开该收藏夹的时间；0 表示从未点开。保留字段：收藏夹列表当前按手动基准顺序（sortOrder）排序，不读取该值。 */
+    val lastOpenedAt: Long = 0
 )
 
 val DEFAULT_FOLDER = FolderEntity(
@@ -53,7 +55,9 @@ data class NoteEntity(
     val isPinned: Boolean = false,
     val isTopPinned: Boolean = false,
     val isMarkdown: Boolean = false,
-    val folderId: Long = DEFAULT_FOLDER_ID
+    val folderId: Long = DEFAULT_FOLDER_ID,
+    /** 最近一次从列表打开该笔记的时间；0 表示从未打开，供“最近打开置顶”排序使用。 */
+    val lastOpenedAt: Long = 0
 )
 
 /** 将空格、逗号和常见中文分隔符视为多个独立关键词。 */
@@ -107,10 +111,18 @@ interface NoteDao {
           AND (:query = ''
             OR title LIKE '%' || :query || '%'
             OR content LIKE '%' || :query || '%')
-        ORDER BY isTopPinned DESC, updatedAt DESC
+        ORDER BY isTopPinned DESC,
+            CASE WHEN :sortByOpen = 1 AND lastOpenedAt > 0 THEN 0 ELSE 1 END,
+            CASE WHEN :sortByOpen = 1 AND lastOpenedAt > 0 THEN -lastOpenedAt ELSE -updatedAt END
         """
     )
-    fun observeNotes(query: String, folderId: Long, showStarred: Boolean, showAll: Boolean): Flow<List<NoteEntity>>
+    fun observeNotes(
+        query: String,
+        folderId: Long,
+        showStarred: Boolean,
+        showAll: Boolean,
+        sortByOpen: Boolean
+    ): Flow<List<NoteEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(note: NoteEntity): Long
@@ -129,6 +141,9 @@ interface NoteDao {
 
     @Query("DELETE FROM notes WHERE folderId = :folderId")
     suspend fun deleteByFolderId(folderId: Long): Int
+
+    @Query("UPDATE notes SET lastOpenedAt = :timestamp WHERE id = :id")
+    suspend fun touchLastOpened(id: Long, timestamp: Long)
 
     @Query("SELECT * FROM notes ORDER BY id ASC")
     suspend fun getAll(): List<NoteEntity>
@@ -162,9 +177,15 @@ interface FolderDao {
 
     @Query("DELETE FROM folders WHERE id = :id")
     suspend fun deleteById(id: Long)
+
+    @Query("UPDATE folders SET name = :name WHERE id = :id")
+    suspend fun renameById(id: Long, name: String)
+
+    @Query("UPDATE folders SET sortOrder = :sortOrder WHERE id = :id")
+    suspend fun updateSortOrder(id: Long, sortOrder: Long)
 }
 
-@Database(entities = [NoteEntity::class, FolderEntity::class], version = 5, exportSchema = false)
+@Database(entities = [NoteEntity::class, FolderEntity::class], version = 6, exportSchema = false)
 abstract class NotesDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao
     abstract fun folderDao(): FolderDao
@@ -198,6 +219,14 @@ abstract class NotesDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE notes ADD COLUMN isTopPinned INTEGER NOT NULL DEFAULT 0")
             }
         }
+
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // 新增“最近打开/使用”时间戳，旧行默认 0（从未打开），旧数据无需回填。
+                db.execSQL("ALTER TABLE notes ADD COLUMN lastOpenedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE folders ADD COLUMN lastOpenedAt INTEGER NOT NULL DEFAULT 0")
+            }
+        }
     }
 }
 
@@ -206,18 +235,55 @@ class NotesRepository(
     private val noteDao: NoteDao,
     private val folderDao: FolderDao
 ) {
-    fun observeNotes(query: String, folderId: Long): Flow<List<NoteEntity>> {
+    fun observeNotes(query: String, folderId: Long, sortByOpen: Boolean): Flow<List<NoteEntity>> {
         val terms = parseSearchTerms(query)
         return noteDao.observeNotes(
             query = terms.firstOrNull().orEmpty(),
             folderId = folderId,
             showStarred = folderId == STARRED_FOLDER_ID,
-            showAll = folderId == ALL_FOLDERS_ID
+            showAll = folderId == ALL_FOLDERS_ID,
+            sortByOpen = sortByOpen
         ).map { notes ->
             if (terms.size < 2) notes else notes.filter { it.matchesSearchTerms(terms) }
         }
     }
     fun observeFolders(): Flow<List<FolderEntity>> = folderDao.observeFolders()
+
+    /** 从列表打开笔记时刷新“最近打开”时间戳；失败不影响打开流程。 */
+    suspend fun touchNoteOpened(noteId: Long) {
+        if (noteId > 0) noteDao.touchLastOpened(noteId, System.currentTimeMillis())
+    }
+
+    /** 重命名收藏夹；星标为虚拟入口不可重命名。 */
+    suspend fun renameFolder(folderId: Long, rawName: String) {
+        val cleanedName = rawName.trim()
+        require(cleanedName.isNotBlank()) { "请输入收藏夹名称" }
+        require(folderId != STARRED_FOLDER_ID) { "该收藏夹不可重命名" }
+        folderDao.renameById(folderId, cleanedName)
+    }
+
+    /** 置顶收藏夹：将其 sortOrder 提到当前最小值之前；已是最前时保持不变。 */
+    suspend fun moveFolderToTop(folderId: Long) {
+        require(folderId != STARRED_FOLDER_ID) { "该收藏夹不可排序" }
+        val folders = folderDao.getAll().sortedWith(compareBy({ it.sortOrder }, { it.createdAt }))
+        val target = folders.firstOrNull { it.id == folderId } ?: return
+        val minSortOrder = folders.minOf { it.sortOrder }
+        if (target.sortOrder <= minSortOrder) return
+        folderDao.updateSortOrder(folderId, minSortOrder - 1)
+    }
+
+    /** 上移（offset = -1）或下移（offset = +1）收藏夹，与相邻项交换 sortOrder。 */
+    suspend fun moveFolderByOffset(folderId: Long, offset: Int) {
+        require(folderId != STARRED_FOLDER_ID) { "该收藏夹不可排序" }
+        val folders = folderDao.getAll().sortedWith(compareBy({ it.sortOrder }, { it.createdAt }))
+        val index = folders.indexOfFirst { it.id == folderId }
+        val neighborIndex = index + offset
+        if (index < 0 || neighborIndex !in folders.indices) return
+        database.withTransaction {
+            folderDao.updateSortOrder(folders[index].id, folders[neighborIndex].sortOrder)
+            folderDao.updateSortOrder(folders[neighborIndex].id, folders[index].sortOrder)
+        }
+    }
 
     suspend fun ensureDefaultFolder() {
         folderDao.insert(DEFAULT_FOLDER)

@@ -88,6 +88,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -228,7 +229,8 @@ class MainActivity : ComponentActivity() {
                         NotesRepository(database, database.noteDao(), database.folderDao()),
                         app.webDavConfigStore,
                         app.webDavBackupClient,
-                        app.folderSelectionPreferences
+                        app.folderSelectionPreferences,
+                        app.appSortingPreferences
                     )
                 }
             }
@@ -344,6 +346,7 @@ private fun NotesApp(
     val notes by viewModel.notes.collectAsStateWithLifecycle()
     val query by viewModel.query.collectAsStateWithLifecycle()
     val folders by viewModel.folders.collectAsStateWithLifecycle()
+    val noteListSortByOpen by viewModel.noteListSortByRecentOpen.collectAsStateWithLifecycle()
     val activeFolderId by viewModel.activeFolderId.collectAsStateWithLifecycle()
     val isGlobalSearch by viewModel.isGlobalSearch.collectAsStateWithLifecycle()
     val webDavConfig by viewModel.webDavConfig.collectAsStateWithLifecycle()
@@ -353,6 +356,9 @@ private fun NotesApp(
     var showCreateMenu by remember { mutableStateOf(false) }
     var noteToDelete by remember { mutableStateOf<NoteEntity?>(null) }
     var folderToDelete by remember { mutableStateOf<FolderEntity?>(null) }
+    var folderMenuFor by remember { mutableStateOf<FolderEntity?>(null) }
+    var folderToRename by remember { mutableStateOf<FolderEntity?>(null) }
+    var folderToSort by remember { mutableStateOf<FolderEntity?>(null) }
     var importError by remember { mutableStateOf<String?>(null) }
     var showNewFolderDialog by remember { mutableStateOf(false) }
     var showBackupMenu by remember { mutableStateOf(false) }
@@ -626,11 +632,13 @@ private fun NotesApp(
                 }
             },
             onOpenNote = { note, contentCursor ->
+                // 打开即刷新“最近打开”时间戳，供“笔记按最近打开置顶”排序使用。
+                viewModel.noteOpened(note.id)
                 page = AppPage.Detail(note = note, folderId = note.folderId, initialContentCursor = contentCursor)
             },
             onToggleStar = viewModel::toggleStar,
             onToggleTopPin = viewModel::toggleTopPin,
-            onDeleteFolder = { folderToDelete = it },
+            onFolderLongPress = { folderMenuFor = it },
             onBatchDelete = { ids ->
                 viewModel.deleteNotes(ids) { deletedCount ->
                     feedbackMessage = "已删除 $deletedCount 条笔记"
@@ -651,6 +659,8 @@ private fun NotesApp(
             onBack = { page = AppPage.List },
             onOpenAppearance = { page = AppPage.Appearance },
             appearanceMode = appearanceMode,
+            noteListSortByOpen = noteListSortByOpen,
+            onNoteListSortByOpenChange = viewModel::setNoteListSortByRecentOpen,
             onBackupClick = { showBackupMenu = true },
             onWebDavClick = { showWebDavDialog = true },
             webDavConfigured = webDavConfig != null
@@ -724,6 +734,49 @@ private fun NotesApp(
                     }
                 )
             }
+        )
+    }
+    folderMenuFor?.let { menuFolder ->
+        FolderActionsMenuDialog(
+            folder = menuFolder,
+            onDismiss = { folderMenuFor = null },
+            onRename = {
+                folderMenuFor = null
+                folderToRename = menuFolder
+            },
+            onSort = {
+                folderMenuFor = null
+                folderToSort = menuFolder
+            },
+            onDelete = {
+                folderMenuFor = null
+                folderToDelete = menuFolder
+            }
+        )
+    }
+    folderToRename?.let { renameTarget ->
+        FolderRenameDialog(
+            folder = renameTarget,
+            onDismiss = { folderToRename = null },
+            onConfirm = { name ->
+                folderToRename = null
+                viewModel.renameFolder(
+                    folderId = renameTarget.id,
+                    name = name,
+                    onSuccess = { newName -> feedbackMessage = "已重命名为「$newName」" },
+                    onFailure = { message -> feedbackMessage = message }
+                )
+            }
+        )
+    }
+    folderToSort?.let { sortTarget ->
+        FolderSortDialog(
+            folderId = sortTarget.id,
+            baseOrder = folders.filterNot { it.id == STARRED_FOLDER_ID },
+            onDismiss = { folderToSort = null },
+            onTop = { viewModel.moveFolderToTop(sortTarget.id) },
+            onUp = { viewModel.moveFolderUp(sortTarget.id) },
+            onDown = { viewModel.moveFolderDown(sortTarget.id) }
         )
     }
     importError?.let { message ->
@@ -918,7 +971,7 @@ private fun NotesListPage(
     onOpenNote: (NoteEntity, Int?) -> Unit,
     onToggleStar: (NoteEntity) -> Unit,
     onToggleTopPin: (NoteEntity) -> Unit,
-    onDeleteFolder: (FolderEntity) -> Unit,
+    onFolderLongPress: (FolderEntity) -> Unit,
     onBatchDelete: (Set<Long>) -> Unit,
     onBatchStar: (Set<Long>) -> Unit,
     onBatchTopPin: (Set<Long>, Boolean) -> Unit
@@ -983,31 +1036,16 @@ private fun NotesListPage(
                     ) {
                         items(folders.size, key = { folders[it].id }) { index ->
                             val folder = folders[index]
-                            NavigationDrawerItem(
-                                label = {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            folder.name,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        if (folder.id != DEFAULT_FOLDER_ID && folder.id != STARRED_FOLDER_ID) {
-                                            TextButton(onClick = { onDeleteFolder(folder) }) {
-                                                Text("删除")
-                                            }
-                                        }
-                                    }
-                                },
+                            FolderDrawerItem(
+                                label = folder.name,
                                 selected = folder.id == activeFolderId,
                                 onClick = {
                                     onFolderSelected(folder.id)
                                     scope.launch { drawerState.close() }
                                 },
-                                modifier = Modifier.fillMaxWidth()
+                                onLongClick = if (folder.id != STARRED_FOLDER_ID) {
+                                    { onFolderLongPress(folder) }
+                                } else null
                             )
                         }
                     }
@@ -1198,6 +1236,147 @@ private fun FolderDeleteDialog(
     onConfirm = onConfirm
 )
 
+/** 抽屉收藏夹条目：视觉仿 NavigationDrawerItem，额外支持长按呼出操作菜单。 */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun FolderDrawerItem(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(28.dp),
+        color = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = onLongClick
+                )
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelLarge,
+                color = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+/** 长按收藏夹弹出的操作菜单：重命名 / 排序 / 删除（默认收藏夹与星标入口不可删除，不出现删除项）。 */
+@Composable
+private fun FolderActionsMenuDialog(
+    folder: FolderEntity,
+    onDismiss: () -> Unit,
+    onRename: () -> Unit,
+    onSort: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val canDelete = folder.id != DEFAULT_FOLDER_ID && folder.id != STARRED_FOLDER_ID
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(folder.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                TextButton(onClick = onRename, modifier = Modifier.fillMaxWidth()) {
+                    Text("重命名", modifier = Modifier.fillMaxWidth())
+                }
+                TextButton(onClick = onSort, modifier = Modifier.fillMaxWidth()) {
+                    Text("排序", modifier = Modifier.fillMaxWidth())
+                }
+                if (canDelete) {
+                    TextButton(onClick = onDelete, modifier = Modifier.fillMaxWidth()) {
+                        Text("删除", modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = {}
+    )
+}
+
+/** 重命名收藏夹；风格与新建收藏夹对话框一致。 */
+@Composable
+private fun FolderRenameDialog(
+    folder: FolderEntity,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var name by remember(folder.id, folder.name) { mutableStateOf(folder.name) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("重命名收藏夹") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("收藏夹名称") },
+                singleLine = true
+            )
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = {
+            TextButton(onClick = { if (name.trim().isNotBlank()) onConfirm(name) }) { Text("保存") }
+        }
+    )
+}
+
+/** 手动排序收藏夹：上移 / 下移 / 置顶，基于 sortOrder 基准顺序实时生效。 */
+@Composable
+private fun FolderSortDialog(
+    folderId: Long,
+    baseOrder: List<FolderEntity>,
+    onDismiss: () -> Unit,
+    onTop: () -> Unit,
+    onUp: () -> Unit,
+    onDown: () -> Unit
+) {
+    val folder = baseOrder.firstOrNull { it.id == folderId }
+    val index = baseOrder.indexOfFirst { it.id == folderId }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (folder == null) "收藏夹排序" else "排序 · ${folder.name}", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    if (folder == null) "该收藏夹不存在或已被删除。"
+                    else "当前位置：第 ${index + 1} 个 / 共 ${baseOrder.size} 个",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "调整收藏夹在抽屉中的显示顺序，改动立即生效。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (folder != null && index >= 0) {
+                    TextButton(onClick = onUp, enabled = index > 0, modifier = Modifier.fillMaxWidth()) {
+                        Text("↑  上移一位", modifier = Modifier.fillMaxWidth())
+                    }
+                    TextButton(onClick = onDown, enabled = index < baseOrder.lastIndex, modifier = Modifier.fillMaxWidth()) {
+                        Text("↓  下移一位", modifier = Modifier.fillMaxWidth())
+                    }
+                    TextButton(onClick = onTop, enabled = index > 0, modifier = Modifier.fillMaxWidth()) {
+                        Text("⇧  移到最前", modifier = Modifier.fillMaxWidth())
+                    }
+                }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("完成") } },
+        confirmButton = {}
+    )
+}
+
 @Composable
 private fun FolderPickerDialog(
     folders: List<FolderEntity>,
@@ -1232,6 +1411,8 @@ private fun SettingsPage(
     onBack: () -> Unit,
     onOpenAppearance: () -> Unit,
     appearanceMode: AppearanceMode,
+    noteListSortByOpen: Boolean,
+    onNoteListSortByOpenChange: (Boolean) -> Unit,
     onBackupClick: () -> Unit,
     onWebDavClick: () -> Unit,
     webDavConfigured: Boolean
@@ -1258,6 +1439,18 @@ private fun SettingsPage(
                 title = "外观",
                 items = listOf(
                     SettingsEntry("◐", "外观", "当前：${appearanceMode.label}", onOpenAppearance)
+                )
+            )
+            SettingsToggleGroup(
+                title = "列表排序",
+                items = listOf(
+                    SettingsToggleEntry(
+                        symbol = "⇅",
+                        title = "笔记按最近打开置顶",
+                        subtitle = "最近打开的笔记排在列表最前；关闭时按最近修改排序",
+                        checked = noteListSortByOpen,
+                        onCheckedChange = onNoteListSortByOpenChange
+                    )
                 )
             )
             SettingsGroup(
@@ -1466,6 +1659,67 @@ private fun SettingsGroup(title: String, items: List<SettingsEntry>) {
                             Text(item.subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Text("›", fontSize = 24.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f))
+                    }
+                    if (index != items.lastIndex) {
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f),
+                            modifier = Modifier.padding(start = 52.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private data class SettingsToggleEntry(
+    val symbol: String,
+    val title: String,
+    val subtitle: String,
+    val checked: Boolean,
+    val onCheckedChange: (Boolean) -> Unit
+)
+
+/** 与 SettingsGroup 同款卡片的开关设置组；整行可点切换。 */
+@Composable
+private fun SettingsToggleGroup(title: String, items: List<SettingsToggleEntry>) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            title.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp)
+        )
+        Surface(
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+            shape = MaterialTheme.shapes.medium,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.14f))
+        ) {
+            Column {
+                items.forEachIndexed { index, item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(60.dp)
+                            .clickable { item.onCheckedChange(!item.checked) }
+                            .padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier.width(24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(item.symbol, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                        }
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                            Text(item.title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface)
+                            Text(item.subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = item.checked,
+                            onCheckedChange = item.onCheckedChange
+                        )
                     }
                     if (index != items.lastIndex) {
                         HorizontalDivider(

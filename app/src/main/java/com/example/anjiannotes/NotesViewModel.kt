@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.anjiannotes.data.ALL_FOLDERS_ID
+import com.example.anjiannotes.data.AppSortingPreferences
 import com.example.anjiannotes.data.BackupCodec
 import com.example.anjiannotes.data.DEFAULT_FOLDER_ID
 import com.example.anjiannotes.data.FolderSelectionPreferences
@@ -41,29 +42,35 @@ class NotesViewModel(
     private val repository: NotesRepository,
     private val webDavConfigStore: WebDavConfigStore,
     private val webDavBackupClient: WebDavBackupClient,
-    private val folderSelectionPreferences: FolderSelectionPreferences
+    private val folderSelectionPreferences: FolderSelectionPreferences,
+    private val appSortingPreferences: AppSortingPreferences
 ) : ViewModel() {
     private val searchQuery = MutableStateFlow("")
     private val selectedFolderId = MutableStateFlow(folderSelectionPreferences.load())
     private val configuredWebDav = MutableStateFlow(webDavConfigStore.load())
     private val webDavTaskState = MutableStateFlow(WebDavTask.IDLE)
+    private val noteSortByOpen = MutableStateFlow(appSortingPreferences.loadNoteListByRecentOpen())
 
     val query: StateFlow<String> = searchQuery.asStateFlow()
     val activeFolderId: StateFlow<Long> = selectedFolderId.asStateFlow()
     val isGlobalSearch: StateFlow<Boolean> = selectedFolderId
         .map { it == ALL_FOLDERS_ID }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), selectedFolderId.value == ALL_FOLDERS_ID)
+    /** 设置项：笔记列表是否按“最近打开”置顶；关闭时按最近修改排序（原有默认）。 */
+    val noteListSortByRecentOpen: StateFlow<Boolean> = noteSortByOpen.asStateFlow()
     val webDavConfig: StateFlow<WebDavConfig?> = configuredWebDav.asStateFlow()
     val webDavTask: StateFlow<WebDavTask> = webDavTaskState.asStateFlow()
+    /** 抽屉收藏夹列表：星标入口固定在最前，其后按手动基准顺序（sortOrder 升序）。 */
     val folders: StateFlow<List<FolderEntity>> = repository.observeFolders()
         .map { folders -> listOf(STARRED_FOLDER) + folders }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val notes: StateFlow<List<NoteEntity>> = combine(
         searchQuery.debounce(180),
-        selectedFolderId
-    ) { query, folderId -> query to folderId }
-        .flatMapLatest { (query, folderId) -> repository.observeNotes(query, folderId) }
+        selectedFolderId,
+        noteSortByOpen
+    ) { query, folderId, sortByOpen -> Triple(query, folderId, sortByOpen) }
+        .flatMapLatest { (query, folderId, sortByOpen) -> repository.observeNotes(query, folderId, sortByOpen) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     init {
@@ -115,6 +122,17 @@ class NotesViewModel(
     fun selectFolder(folderId: Long) {
         selectedFolderId.value = folderId
         if (folderId != ALL_FOLDERS_ID) folderSelectionPreferences.save(folderId)
+    }
+
+    /** 打开笔记时刷新“最近打开”时间戳，供“最近打开置顶”排序使用。 */
+    fun noteOpened(noteId: Long) {
+        if (noteId <= 0) return
+        viewModelScope.launch { runCatching { repository.touchNoteOpened(noteId) } }
+    }
+
+    fun setNoteListSortByRecentOpen(value: Boolean) {
+        noteSortByOpen.value = value
+        appSortingPreferences.saveNoteListByRecentOpen(value)
     }
 
     fun openGlobalSearch() {
@@ -385,6 +403,25 @@ class NotesViewModel(
         }
     }
 
+    fun renameFolder(folderId: Long, name: String, onSuccess: (String) -> Unit, onFailure: (String) -> Unit) {
+        launchResult("收藏夹重命名失败，请重试", onSuccess, onFailure) {
+            repository.renameFolder(folderId, name)
+            name.trim()
+        }
+    }
+
+    fun moveFolderToTop(folderId: Long) {
+        viewModelScope.launch { runCatching { repository.moveFolderToTop(folderId) } }
+    }
+
+    fun moveFolderUp(folderId: Long) {
+        viewModelScope.launch { runCatching { repository.moveFolderByOffset(folderId, -1) } }
+    }
+
+    fun moveFolderDown(folderId: Long) {
+        viewModelScope.launch { runCatching { repository.moveFolderByOffset(folderId, +1) } }
+    }
+
     fun deleteNote(id: Long) {
         viewModelScope.launch { repository.delete(id) }
     }
@@ -402,11 +439,12 @@ class NotesViewModelFactory(
     private val repository: NotesRepository,
     private val webDavConfigStore: WebDavConfigStore,
     private val webDavBackupClient: WebDavBackupClient,
-    private val folderSelectionPreferences: FolderSelectionPreferences
+    private val folderSelectionPreferences: FolderSelectionPreferences,
+    private val appSortingPreferences: AppSortingPreferences
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         require(modelClass.isAssignableFrom(NotesViewModel::class.java))
-        return NotesViewModel(repository, webDavConfigStore, webDavBackupClient, folderSelectionPreferences) as T
+        return NotesViewModel(repository, webDavConfigStore, webDavBackupClient, folderSelectionPreferences, appSortingPreferences) as T
     }
 }
