@@ -266,9 +266,20 @@ private enum class InlineEditTarget { TITLE, CONTENT }
 private enum class DetailMode { PREVIEW, EDIT }
 private enum class AutoSaveState { IDLE, SAVING, SAVED }
 
-/** 新建草稿离开详情页时必须至少写入一次；已有笔记仍沿用原有的脏数据判断。 */
-internal fun shouldForceFinalDraftSave(isNewNote: Boolean, savedNoteId: Long): Boolean =
-    isNewNote && savedNoteId == 0L
+/** 新建草稿是否为空：标题与正文均无有效字符（含纯空白）即视为空，不应留下空笔记。 */
+internal fun isNewDraftEmpty(draftTitle: String, draftContent: String): Boolean =
+    draftTitle.isBlank() && draftContent.isBlank()
+
+/**
+ * 新建草稿离开详情页的策略：仅有有效内容的新建页才需要强制写入一次；
+ * 空草稿一律不落库（未写入过直接返回，已写入过的空记录则删除）。
+ */
+internal fun shouldForceFinalDraftSave(
+    isNewNote: Boolean,
+    savedNoteId: Long,
+    draftTitle: String,
+    draftContent: String
+): Boolean = isNewNote && savedNoteId == 0L && !isNewDraftEmpty(draftTitle, draftContent)
 
 /** 每次编辑事件同步生成的不可变保存快照，避免组合重绘前读取到旧文本。 */
 private data class NoteDraftSnapshot(
@@ -699,6 +710,7 @@ private fun NotesApp(
                 viewModel.queueSaveNote(id, title, content, color, pinned, topPinned, markdown, folderId, createdAt)
             },
             onDelete = { note -> noteToDelete = note },
+            onDiscardEmptyDraft = { noteId -> viewModel.deleteNote(noteId) },
             onExport = { title, content, markdown -> launchNoteExport(title, content, markdown) },
             onCopyToFolder = { note, folderId ->
                 viewModel.copyNoteToFolder(
@@ -2066,6 +2078,7 @@ private fun NoteDetailPage(
     onBack: (Long, Long) -> Unit,
     onSave: (Long, String, String, Long, Boolean, Boolean, Boolean, Long, Long) -> Deferred<Long>,
     onDelete: (NoteEntity) -> Unit,
+    onDiscardEmptyDraft: (Long) -> Unit,
     onExport: (String, String, Boolean) -> Unit,
     onCopyToFolder: (NoteEntity, Long) -> Unit
 ) {
@@ -2284,22 +2297,24 @@ private fun NoteDetailPage(
 
     suspend fun finalizePendingChanges(): Boolean {
         debounceJob?.cancel()
-        // 无论是否输入过，新建页离开前都必须经由已有单一保存队列写入一次 Room。
-        // 这里不创建第二套保存机制，仅让现有 worker 获得一个需要保存的最终 revision。
-        if (shouldForceFinalDraftSave(isNewNote, savedNoteId) && savedRevision >= editRevision) {
+        // 有有效内容的新建页离开前仍经由已有单一保存队列写入一次 Room；这里不创建
+        // 第二套保存机制。空草稿（标题与正文均无有效字符）不再强制写入，避免产生空笔记。
+        if (savedRevision >= editRevision) {
             val editorText = nativeContentEditor?.text
             val finalContent = editorText?.toString() ?: contentValue.text
-            latestDraft = NoteDraftSnapshot(
-                title = title,
-                content = finalContent,
-                color = color,
-                isPinned = pinned,
-                isTopPinned = topPinned,
-                isMarkdown = formatMode.resolvesToMarkdown(finalContent),
-                folderId = selectedFolderId
-            )
-            hasUserEdited = true
-            editRevision = savedRevision + 1
+            if (shouldForceFinalDraftSave(isNewNote, savedNoteId, title, finalContent)) {
+                latestDraft = NoteDraftSnapshot(
+                    title = title,
+                    content = finalContent,
+                    color = color,
+                    isPinned = pinned,
+                    isTopPinned = topPinned,
+                    isMarkdown = formatMode.resolvesToMarkdown(finalContent),
+                    folderId = selectedFolderId
+                )
+                hasUserEdited = true
+                editRevision = savedRevision + 1
+            }
         }
         editorLog("final save before leave dirty=${hasUserEdited && savedRevision < editRevision}")
         while (hasUserEdited && savedRevision < editRevision) {
@@ -2327,9 +2342,21 @@ private fun NoteDetailPage(
                 return@launch
             }
             if (isNewNote) {
-                // 新建笔记第一次返回即在 Room 写入确认后回到主页，不再中转预览页。
-                editorLog("new draft saved; leaving detail")
-                onBack(selectedFolderId, savedNoteId)
+                if (isNewDraftEmpty(latestDraft.title, latestDraft.content)) {
+                    // 空草稿不留在列表里：从未写入过就直接返回；输入后又清空的
+                    // 情况已落过库，离开前删除这条空记录，避免出现“未命名空笔记”。
+                    if (savedNoteId > 0L) {
+                        editorLog("new draft empty; discard saved empty note id=$savedNoteId")
+                        onDiscardEmptyDraft(savedNoteId)
+                    } else {
+                        editorLog("new draft empty; nothing persisted; leaving detail")
+                    }
+                    onBack(selectedFolderId, 0L)
+                } else {
+                    // 新建笔记第一次返回即在 Room 写入确认后回到主页，不再中转预览页。
+                    editorLog("new draft saved; leaving detail")
+                    onBack(selectedFolderId, savedNoteId)
+                }
             } else if (detailMode == DetailMode.EDIT) {
                 // 已有笔记保留原有交互：第一次返回仅结束编辑，第二次返回离开详情。
                 detailMode = DetailMode.PREVIEW
