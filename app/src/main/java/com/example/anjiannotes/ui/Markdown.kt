@@ -160,6 +160,9 @@ private val MarkdownDividerPattern = Regex("^\\s{0,3}(?:---+|\\*\\*\\*+|___+)\\s
 private val MarkdownLinkPattern = Regex("\\[([^\\]]+)]\\((https?://[^\\s)]+)\\)", RegexOption.IGNORE_CASE)
 private val UrlPattern = Regex("https?://[^\\s)]+", RegexOption.IGNORE_CASE)
 private val MarkdownTableSeparatorPattern = Regex("^:?-{3,}:?$")
+private val MarkdownTablePreviewSeparatorCellPattern = Regex("^:?-+:?$")
+/** markdownToPlainText 专用的粗体剥离（语义与列表预览的 \1 反向引用版本不同，独立常量避免行为漂移）。 */
+private val PlainTextStrongPattern = Regex("(?:\\*\\*|__)(.*?)(?:\\*\\*|__)")
 private val ListPreviewSourceLimit = 640
 private val ListPreviewOutputLimit = 360
 private val ListPreviewLinePrefixPattern = Regex("^\\s{0,3}(?:#{1,6}|>|[-+*]|\\d+\\.)\\s+")
@@ -216,9 +219,15 @@ fun MarkdownPreview(
     onClick: () -> Unit = {}
 ) {
     val document = remember(markdown) { MarkdownParser.parse(markdown) }
-    // 正文搜索：基于展示文本计算命中区间，支持高亮与「跳到当前命中」的滚动定位。
-    val searchIndex = remember(document, searchQuery, searchActiveOrdinal) {
-        computeMarkdownSearchIndex(document.blocks, searchQuery, searchActiveOrdinal)
+    // 正文搜索：命中区间基于「渲染后的展示文本」。展示文本只随文档变化、与搜索词无关，
+    // 因此按文档缓存；搜索词每次变化只做 indexOf 匹配，不再对全文档重复做行内解析。
+    val blockDisplayTexts = remember(document) {
+        document.blocks.map { block ->
+            blockSearchSegments(block).map { segment -> blockSearchDisplayText(block, segment) }
+        }
+    }
+    val searchIndex = remember(blockDisplayTexts, searchQuery, searchActiveOrdinal) {
+        computeMarkdownSearchIndexFromTexts(blockDisplayTexts, searchQuery, searchActiveOrdinal)
     }
     val searchScrollRequester = remember { BringIntoViewRequester() }
     LaunchedEffect(searchIndex.totalMatches) {
@@ -1280,7 +1289,7 @@ internal data class MarkdownSearchIndex(
 )
 
 /** 枚举一个 block 在渲染时出现的文本段；顺序必须与渲染顺序一致（表格单元格按列数补齐）。 */
-private fun blockSearchSegments(block: MarkdownBlock): List<SourceText> = when (block) {
+internal fun blockSearchSegments(block: MarkdownBlock): List<SourceText> = when (block) {
     is MarkdownBlock.Heading -> listOf(block.text)
     is MarkdownBlock.Paragraph -> listOf(block.text)
     is MarkdownBlock.Quote -> block.lines
@@ -1296,16 +1305,35 @@ private fun blockSearchSegments(block: MarkdownBlock): List<SourceText> = when (
 }
 
 /** 命中计算所基于的展示文本：代码块取原文，其余按行内 Markdown 渲染后的纯文本。 */
-private fun blockSearchDisplayText(block: MarkdownBlock, segment: SourceText): String =
+internal fun blockSearchDisplayText(block: MarkdownBlock, segment: SourceText): String =
     if (block is MarkdownBlock.Code) {
         segment.text
     } else {
         parseMarkdownInline(segment, Color.Black).text.text
     }
 
-/** 计算整篇文档的搜索命中索引；activeOrdinal 为全局命中序号（0 起，越界视为无当前命中）。 */
+/**
+ * 计算整篇文档的搜索命中索引；activeOrdinal 为全局命中序号（0 起，越界视为无当前命中）。
+ *
+ * 展示文本（行内 Markdown 渲染后的纯文本）只依赖文档本身，与搜索词无关：
+ * 先按文档缓存 displayTexts，再走 [computeMarkdownSearchIndexFromTexts]，
+ * 避免每敲一个搜索字符就对全文档重新做一次行内解析。
+ */
 internal fun computeMarkdownSearchIndex(
     blocks: List<MarkdownBlock>,
+    query: String,
+    activeOrdinal: Int
+): MarkdownSearchIndex = computeMarkdownSearchIndexFromTexts(
+    displayTexts = blocks.map { block ->
+        blockSearchSegments(block).map { segment -> blockSearchDisplayText(block, segment) }
+    },
+    query = query,
+    activeOrdinal = activeOrdinal
+)
+
+/** 基于预计算的展示文本计算搜索命中索引；展示文本与搜索词解耦，可随文档缓存复用。 */
+internal fun computeMarkdownSearchIndexFromTexts(
+    displayTexts: List<List<String>>,
     query: String,
     activeOrdinal: Int
 ): MarkdownSearchIndex {
@@ -1313,9 +1341,9 @@ internal fun computeMarkdownSearchIndex(
     if (trimmedQuery.isEmpty()) return MarkdownSearchIndex(emptyList(), 0)
     var ordinal = 0
     var totalMatches = 0
-    val blockSegments = blocks.map { block ->
-        blockSearchSegments(block).map { segment ->
-            val ranges = findSearchMatchRanges(blockSearchDisplayText(block, segment), trimmedQuery)
+    val blockSegments = displayTexts.map { texts ->
+        texts.map { text ->
+            val ranges = findSearchMatchRanges(text, trimmedQuery)
             totalMatches += ranges.size
             var activeRange: IntRange? = null
             ranges.forEach { range ->
@@ -1383,23 +1411,81 @@ fun linkifyPlainText(text: String, linkColor: Color): AnnotatedString = buildAnn
 fun markdownToPlainText(markdown: String): String = markdown
     .lineSequence()
     .joinToString(" ") { line ->
-        line.replace(Regex("^\\s{0,3}(#{1,6}|>|[-+*]|\\d+\\.)\\s+"), "")
-            .replace(Regex("\\[([^\\]]+)]\\((https?://[^\\s)]+)\\)"), "${'$'}1")
-            .replace(Regex("(?:\\*\\*|__)(.*?)(?:\\*\\*|__)"), "${'$'}1")
-            .replace(Regex("~~(.*?)~~"), "${'$'}1")
-            .replace(Regex("`(.*?)`"), "${'$'}1")
-            .replace(Regex("(?:\\*|_)(.*?)(?:\\*|_)"), "${'$'}1")
+        line.replace(ListPreviewLinePrefixPattern, "")
+            .replace(MarkdownLinkPattern, "${'$'}1")
+            .replace(PlainTextStrongPattern, "${'$'}1")
+            .replace(ListPreviewStrikePattern, "${'$'}1")
+            .replace(ListPreviewCodePattern, "${'$'}1")
+            .replace(ListPreviewEmphasisPattern, "${'$'}1")
     }
-    .replace(Regex("\\s+"), " ")
+    .replace(ListPreviewWhitespacePattern, " ")
     .trim()
 
 fun markdownToListPreview(markdown: String): String = buildListPreview(markdown) { line ->
-    line.replace(ListPreviewLinePrefixPattern, "")
-        .replace(MarkdownLinkPattern, "${'$'}1")
-        .replace(ListPreviewStrongPattern, "${'$'}1")
-        .replace(ListPreviewStrikePattern, "${'$'}1")
-        .replace(ListPreviewCodePattern, "${'$'}1")
-        .replace(ListPreviewEmphasisPattern, "${'$'}1")
+    if (isMarkdownTableSeparatorLine(line)) {
+        // 表格分隔行（|---|---|、|:--:|--:|）只是语法标记，摘要里整行剔除。
+        ""
+    } else {
+        markdownTableLineToPreview(line)
+            .replace(ListPreviewLinePrefixPattern, "")
+            .replace(MarkdownLinkPattern, "${'$'}1")
+            .replace(ListPreviewStrongPattern, "${'$'}1")
+            .replace(ListPreviewStrikePattern, "${'$'}1")
+            .replace(ListPreviewCodePattern, "${'$'}1")
+            .replace(ListPreviewEmphasisPattern, "${'$'}1")
+    }
+}
+
+/**
+ * 列表预览中的表格行：去掉首尾竖线，把单元格之间的竖线换成空格，
+ * 让「| 游戏 | 平台 |」这类表格在摘要里读作「游戏 平台」，不再散落管道符。
+ * 字面转义竖线（\|）保留为竖线本身；不含竖线且拆不出表格结构的普通行原样返回。
+ */
+private fun markdownTableLineToPreview(line: String): String {
+    val trimmed = normalizePreviewPipes(line.trim())
+    if (!trimmed.contains('|')) return line
+    val cells = splitPreviewTableCells(line) ?: return line
+    val hasEdgePipe = trimmed.startsWith("|") || trimmed.endsWith("|")
+    if (cells.size < 2 && !hasEdgePipe) return line
+    return cells.joinToString(" ")
+}
+
+/** 全角竖线（｜）按半角竖线处理：中文输入法打出的表格同样能在预览里拆成单词。 */
+private fun normalizePreviewPipes(text: String): String = text.replace('｜', '|')
+
+/** 按未转义竖线拆分表格单元格；不含竖线的行返回 null。 */
+private fun splitPreviewTableCells(line: String): List<String>? {
+    val trimmed = normalizePreviewPipes(line.trim())
+    if (!trimmed.contains('|')) return null
+    val content = trimmed.removePrefix("|").removeSuffix("|")
+    val cells = mutableListOf<String>()
+    val value = StringBuilder()
+    var escaped = false
+    content.forEach { character ->
+        when {
+            escaped -> {
+                value.append(character)
+                escaped = false
+            }
+            character == '\\' -> escaped = true
+            character == '|' -> {
+                cells += value.toString().trim()
+                value.clear()
+            }
+            else -> value.append(character)
+        }
+    }
+    if (escaped) value.append('\\')
+    cells += value.toString().trim()
+    return cells
+}
+
+/** 表格分隔行（如 |---|---|、|:--:|--:|、|-|-|）仅是语法标记，预览中整行剔除。 */
+private fun isMarkdownTableSeparatorLine(line: String): Boolean {
+    val cells = splitPreviewTableCells(line) ?: return false
+    val meaningful = cells.filter { it.isNotEmpty() }
+    // 连续竖线与首尾竖线拆出的空单元格只是分隔符痕迹，不参与判断。
+    return meaningful.size >= 2 && meaningful.all { MarkdownTablePreviewSeparatorCellPattern.matches(it) }
 }
 
 fun plainTextToListPreview(text: String): String = buildListPreview(text) { it }

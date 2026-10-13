@@ -26,6 +26,14 @@ class NotePositionStore(context: Context) {
         )
     }
 
+    /**
+     * 冷启动预热：读取一个不存在的探测键，触发偏好文件的首次加载。
+     * 之后主线程上的 load() 命中内存缓存，不在启动关键路径上做磁盘 I/O。
+     */
+    fun warmUp() {
+        preferences.getInt(WARMUP_PROBE_KEY, -1)
+    }
+
     fun saveReadingScroll(noteId: Long, scrollPx: Int) {
         if (noteId <= 0L) return
         preferences.edit().putInt(readingKey(noteId), scrollPx.coerceAtLeast(0)).apply()
@@ -54,5 +62,6 @@ class NotePositionStore(context: Context) {
 
     private companion object {
         const val PREFERENCES_NAME = "note_position_preferences"
+        const val WARMUP_PROBE_KEY = "__warmup_probe__"
     }
 }

@@ -1,7 +1,6 @@
 package com.example.anjiannotes.ui.theme
 
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
@@ -103,12 +102,12 @@ fun AnJianTheme(
     )
 }
 
-/** 统一用一个 240ms 进度动画完成主题切换，避免为每种颜色分别调度动画。 */
+/** 统一用一个进度动画完成主题切换，避免为每种颜色分别调度动画；时长走全局动效规范。 */
 @Composable
 private fun animatedColorScheme(useDarkTheme: Boolean): ColorScheme {
     val progress by animateFloatAsState(
         targetValue = if (useDarkTheme) 1f else 0f,
-        animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
+        animationSpec = tween(durationMillis = MotionTokens.DurationMedium, easing = MotionTokens.Easing),
         label = "theme-color-progress"
     )
     return ComfortableLightColors.blendTo(ComfortableDarkColors, progress)

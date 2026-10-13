@@ -31,6 +31,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ScrollState
@@ -150,6 +154,7 @@ import com.example.anjiannotes.data.DEFAULT_FOLDER_ID
 import com.example.anjiannotes.data.FolderEntity
 import com.example.anjiannotes.data.NoteEntity
 import com.example.anjiannotes.data.findSearchMatch
+import com.example.anjiannotes.data.parseSearchTerms
 import com.example.anjiannotes.data.NotePositionStore
 import com.example.anjiannotes.data.NotesRepository
 import com.example.anjiannotes.data.STARRED_FOLDER_ID
@@ -175,6 +180,7 @@ import com.example.anjiannotes.ui.searchHighlightColors
 import com.example.anjiannotes.ui.theme.AnJianTheme
 import com.example.anjiannotes.ui.theme.AppearanceMode
 import com.example.anjiannotes.ui.theme.FontPreferences
+import com.example.anjiannotes.ui.theme.MotionTokens
 import com.example.anjiannotes.ui.theme.NoteFont
 import com.example.anjiannotes.ui.theme.NotoSansSC
 import java.io.File
@@ -265,6 +271,9 @@ class MainActivity : ComponentActivity() {
 private enum class InlineEditTarget { TITLE, CONTENT }
 private enum class DetailMode { PREVIEW, EDIT }
 private enum class AutoSaveState { IDLE, SAVING, SAVED }
+
+/** 导出文件名清洗：剔除各平台文件系统保留字符。预编译，避免每次导出重复编译。 */
+private val ExportUnsafeFileNamePattern = Regex("[\\\\/:*?\\\"<>|]")
 
 /** 新建草稿是否为空：标题与正文均无有效字符（含纯空白）即视为空，不应留下空笔记。 */
 internal fun isNewDraftEmpty(draftTitle: String, draftContent: String): Boolean =
@@ -505,7 +514,7 @@ private fun NotesApp(
         val extension = if (markdown) "md" else "txt"
         val safeTitle = title.trim()
             .ifBlank { "未命名笔记" }
-            .replace(Regex("[\\\\/:*?\\\"<>|]"), "_")
+            .replace(ExportUnsafeFileNamePattern, "_")
             .take(80)
             .ifBlank { "未命名笔记" }
         pendingNoteExport = NoteExportPayload(
@@ -990,6 +999,9 @@ private fun NotesListPage(
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    // 搜索关键词只按查询串解析一次：列表内所有卡片共享同一份 terms，
+    // 避免每敲一个字符就对每张可见卡片重复执行 split。
+    val searchTerms = remember(query) { parseSearchTerms(query) }
     val activeFolderName = if (globalSearch) "全局搜索" else folders.firstOrNull { it.id == activeFolderId }?.name ?: "全部笔记"
     val noteListState = rememberLazyListState()
     var selectedNoteIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
@@ -1175,12 +1187,17 @@ private fun NotesListPage(
                                 contentType = { "note" }
                             ) { note ->
                                 NoteCard(
+                                    // 位置变化（星标/置顶/删除/排序）时平滑滑动就位；
+                                    // spring 阻尼比 1.0 无回弹，刚度 Medium 保证快速收敛。
+                                    modifier = Modifier.animateItem(
+                                        placementSpec = spring(stiffness = Spring.StiffnessMedium)
+                                    ),
                                     note = note,
                                     selected = note.id in selectedNoteIds,
                                     selectionMode = selectionMode,
-                                    searchQuery = query,
+                                    searchTerms = searchTerms,
                                     onOpen = {
-                                        if (selectionMode) toggleSelection(note.id) else onOpenNote(note, note.findSearchMatch(query)?.contentOffset)
+                                        if (selectionMode) toggleSelection(note.id) else onOpenNote(note, note.findSearchMatch(searchTerms)?.contentOffset)
                                     },
                                     onLongPress = { toggleSelection(note.id) },
                                     onToggleStar = { onToggleStar(note) },
@@ -2429,13 +2446,24 @@ private fun NoteDetailPage(
         if (focusMode) focusMode = false else latestFinalizeAndLeave()
     }
 
+    // 首次进入的轻量淡入：graphicsLayer alpha 只触发重绘、不触发重组与重新测量，
+    // 且恒定向 1f 收敛，离开详情页时无退场成本。
+    var pageEntered by remember(note?.id, seed) { mutableStateOf(false) }
+    LaunchedEffect(note?.id, seed) { pageEntered = true }
+    val pageEnterAlpha by animateFloatAsState(
+        targetValue = if (pageEntered) 1f else 0f,
+        animationSpec = tween(durationMillis = MotionTokens.DurationMedium, easing = MotionTokens.Easing),
+        label = "detail-enter-alpha"
+    )
+
     Scaffold(
+        modifier = Modifier.graphicsLayer { alpha = pageEnterAlpha },
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             AnimatedVisibility(
                 visible = !focusMode,
-                enter = fadeIn(animationSpec = tween(160)),
-                exit = fadeOut(animationSpec = tween(160))
+                enter = fadeIn(animationSpec = tween(MotionTokens.DurationMedium, easing = MotionTokens.Easing)),
+                exit = fadeOut(animationSpec = tween(MotionTokens.DurationMedium, easing = MotionTokens.Easing))
             ) {
             TopAppBar(
                 title = {},
@@ -2458,7 +2486,15 @@ private fun NoteDetailPage(
                     when {
                         saveError != null -> Text("保存失败", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(end = 4.dp))
                         autoSaveState == AutoSaveState.SAVING -> Text("保存中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 4.dp))
-                        autoSaveState == AutoSaveState.SAVED -> Text("✓", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 4.dp))
+                        else -> AnimatedVisibility(
+                            // 「✓ 已保存」快速缩放入场、随即淡出：只走 alpha/scale，不触发重新布局。
+                            visible = autoSaveState == AutoSaveState.SAVED,
+                            enter = fadeIn(animationSpec = tween(MotionTokens.DurationFast, easing = MotionTokens.Easing)) +
+                                scaleIn(animationSpec = tween(MotionTokens.DurationFast, easing = MotionTokens.Easing), initialScale = 0.85f),
+                            exit = fadeOut(animationSpec = tween(MotionTokens.DurationMicro, easing = MotionTokens.Easing))
+                        ) {
+                            Text("✓", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 4.dp))
+                        }
                     }
                     if (detailMode == DetailMode.EDIT) {
                         TextButton(onClick = { nativeContentEditor?.performNativeUndo() }) { Text("↶") }
@@ -3082,23 +3118,32 @@ private fun NativeNoteEditor(
 
 @Composable
 private fun EmptyNotes(query: String, onCreate: () -> Unit) {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-            shape = MaterialTheme.shapes.large
-        ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 28.dp, vertical = 24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+    // 空状态淡入：只走 alpha，不引入布局动画。
+    var visible by remember(query) { mutableStateOf(false) }
+    LaunchedEffect(query) { visible = true }
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(animationSpec = tween(MotionTokens.DurationMedium, easing = MotionTokens.Easing)),
+        exit = fadeOut(animationSpec = tween(MotionTokens.DurationMicro, easing = MotionTokens.Easing))
+    ) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                shape = MaterialTheme.shapes.large
             ) {
-                Text(if (query.isBlank()) "从一条笔记开始" else "没有匹配的笔记", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                Text(
-                    if (query.isBlank()) "点击底部输入栏，随手记录此刻想法。" else "尝试换个关键词，或清除搜索条件。",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (query.isBlank()) TextButton(onClick = onCreate) { Text("写下第一条") }
+                Column(
+                    modifier = Modifier.padding(horizontal = 28.dp, vertical = 24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(if (query.isBlank()) "从一条笔记开始" else "没有匹配的笔记", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (query.isBlank()) "点击底部输入栏，随手记录此刻想法。" else "尝试换个关键词，或清除搜索条件。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (query.isBlank()) TextButton(onClick = onCreate) { Text("写下第一条") }
+                }
             }
         }
     }
@@ -3308,19 +3353,20 @@ private fun NoteCard(
     note: NoteEntity,
     selected: Boolean,
     selectionMode: Boolean,
-    searchQuery: String,
+    searchTerms: List<String>,
     onOpen: () -> Unit,
     onLongPress: () -> Unit,
     onToggleStar: () -> Unit,
-    onToggleTopPin: () -> Unit
+    onToggleTopPin: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    val searchMatch = remember(note.id, note.updatedAt, searchQuery) { note.findSearchMatch(searchQuery) }
+    val searchMatch = remember(note.id, note.updatedAt, searchTerms) { note.findSearchMatch(searchTerms) }
     val summary = remember(note.id, note.updatedAt, note.isMarkdown, searchMatch) {
         searchMatch?.snippet?.ifBlank { NoteListPreviewCache.get(note) } ?: NoteListPreviewCache.get(note)
     }
     val formattedDate = remember(note.updatedAt) { formatDate(note.updatedAt) }
     Card(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .combinedClickable(onClick = onOpen, onLongClick = onLongPress),
         shape = RoundedCornerShape(6.dp),

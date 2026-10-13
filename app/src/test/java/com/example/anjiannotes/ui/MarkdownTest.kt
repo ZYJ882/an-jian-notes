@@ -132,4 +132,113 @@ class MarkdownTest {
         assertEquals(2, document.blocks.size)
         assertTrue(markdownToPlainText(markdown).contains("优化动画"))
     }
+
+    @Test
+    fun markdownToListPreview_rendersTableRowsAsPlainWords() {
+        val markdown = """
+            | 游戏 | 平台 | 官方链接 | 实测状态 |
+            | --- | --- | --- | --- |
+            | 视眈眈（Out of Sight） | PC | [商店页](https://store.epicgames.com/zh-CN/p/xxx) | 已通关 |
+        """.trimIndent()
+
+        val preview = markdownToListPreview(markdown)
+
+        assertTrue(preview, !preview.contains("|"))
+        assertTrue(preview, !preview.contains("---"))
+        assertTrue(preview, preview.contains("游戏 平台 官方链接 实测状态"))
+        assertTrue(preview, preview.contains("视眈眈（Out of Sight） PC"))
+        assertTrue(preview, preview.contains("商店页"))
+    }
+
+    @Test
+    fun markdownToListPreview_removesTableSeparatorOnlyLines() {
+        val markdown = """
+            标题行
+            |---|---|
+            | :--- | ---: |
+        """.trimIndent()
+
+        val preview = markdownToListPreview(markdown)
+
+        assertTrue(preview, !preview.contains("|"))
+        assertTrue(preview, preview.contains("标题行"))
+    }
+
+    @Test
+    fun markdownToListPreview_keepsEscapedPipeInsideTableCell() {
+        val markdown = """
+            | 选项 | 说明 |
+            | --- | --- |
+            | A \| B | 第二列 |
+        """.trimIndent()
+
+        val preview = markdownToListPreview(markdown)
+
+        assertTrue(preview, preview.contains("A | B 第二列"))
+    }
+
+    @Test
+    fun markdownToListPreview_stripsEdgePipesOfSingleColumnRow() {
+        assertEquals("单独一列", markdownToListPreview("| 单独一列 |"))
+    }
+
+    @Test
+    fun markdownToListPreview_keepsOrdinaryTextLinesUntouched() {
+        assertEquals("简洁的普通笔记", markdownToListPreview("简洁的普通笔记"))
+        assertEquals("价格是 5", markdownToListPreview("价格是 5"))
+    }
+
+    @Test
+    fun markdownToListPreview_convertsFullWidthPipeTableRows() {
+        val markdown = "｜游戏｜平台｜实测状态｜\n｜---｜---｜---｜\n｜视眈眈｜PC｜已通关｜"
+
+        val preview = markdownToListPreview(markdown)
+
+        assertTrue(preview, !preview.contains("｜"))
+        assertTrue(preview, !preview.contains("|"))
+        assertTrue(preview, preview.contains("游戏 平台 实测状态"))
+        assertTrue(preview, preview.contains("视眈眈 PC 已通关"))
+    }
+
+    @Test
+    fun searchIndexFromCachedDisplayTexts_matchesBlockBasedComputation() {
+        // 展示文本缓存路径必须与按 block 直接计算完全一致：命中总数、每块区间与当前命中都不漂移。
+        val markdown = """
+            # 会议记录
+            **今天**讨论了 *发布* 计划
+            - 第一项 `代码`
+            - 第二项
+            | 列甲 | 列乙 |
+            | --- | --- |
+            | 今天 | 明天 |
+        """.trimIndent()
+        val blocks = MarkdownParser.parse(markdown).blocks
+
+        val fromBlocks = computeMarkdownSearchIndex(blocks, query = "今天", activeOrdinal = 1)
+        val displayTexts = blocks.map { block ->
+            blockSearchSegments(block).map { segment -> blockSearchDisplayText(block, segment) }
+        }
+        val fromTexts = computeMarkdownSearchIndexFromTexts(displayTexts, query = "今天", activeOrdinal = 1)
+
+        assertEquals(fromBlocks.totalMatches, fromTexts.totalMatches)
+        assertEquals(fromBlocks.blockSegments.size, fromTexts.blockSegments.size)
+        fromBlocks.blockSegments.forEachIndexed { index, segments ->
+            assertEquals(segments.size, fromTexts.blockSegments[index].size)
+            segments.forEachIndexed { segmentIndex, segment ->
+                assertEquals(segment.ranges, fromTexts.blockSegments[index][segmentIndex].ranges)
+                assertEquals(segment.activeRange, fromTexts.blockSegments[index][segmentIndex].activeRange)
+            }
+        }
+        assertTrue(fromTexts.totalMatches > 0)
+    }
+
+    @Test
+    fun searchIndexFromCachedDisplayTexts_blankQueryYieldsNoMatches() {
+        val blocks = MarkdownParser.parse("普通正文\n\n第二段").blocks
+
+        val index = computeMarkdownSearchIndex(blocks, query = "   ", activeOrdinal = 0)
+
+        assertEquals(0, index.totalMatches)
+        assertTrue(index.blockSegments.all { segments -> segments.all { it.ranges.isEmpty() } })
+    }
 }

@@ -2,6 +2,8 @@
 <resources>
     <style name="Theme.AnJianNotes" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
+        <!-- 启动窗口背景与 Compose 首帧背景同色（浅色 background #F6F3F1），消除冷启动白闪。 -->
+        <item name="android:windowBackground">@color/window_background</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>

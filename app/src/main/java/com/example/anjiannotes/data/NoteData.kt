@@ -60,9 +60,18 @@ data class NoteEntity(
     val lastOpenedAt: Long = 0
 )
 
+/** 搜索关键词拆分：空格、逗号和常见中文分隔符。正则预编译，避免每次搜索输入重复编译。 */
+internal val SearchTermSplitPattern = Regex("[\\s,，;；、]+")
+
+/** 连续空白归一化。预编译，供搜索摘要与阅读摘要复用。 */
+internal val SearchWhitespacePattern = Regex("\\s+")
+
+/** 标题命中时正文摘要的取样窗口：只压缩窗口内空白，不再对整篇正文做字典扫描。 */
+private const val SearchSnippetSampleWindow = 256
+
 /** 将空格、逗号和常见中文分隔符视为多个独立关键词。 */
 internal fun parseSearchTerms(query: String): List<String> =
-    query.trim().split(Regex("[\\s,，;；、]+"))
+    query.trim().split(SearchTermSplitPattern)
         .filter(String::isNotBlank)
 
 /** 每个关键词可出现在标题或正文中；所有关键词都命中才保留该笔记。 */
@@ -77,15 +86,23 @@ internal data class NoteSearchMatch(
     val snippet: String
 )
 
-internal fun NoteEntity.findSearchMatch(query: String): NoteSearchMatch? {
-    val terms = parseSearchTerms(query)
+internal fun NoteEntity.findSearchMatch(query: String): NoteSearchMatch? =
+    findSearchMatch(parseSearchTerms(query))
+
+internal fun NoteEntity.findSearchMatch(terms: List<String>): NoteSearchMatch? {
     if (terms.isEmpty() || !matchesSearchTerms(terms)) return null
     val contentOffset = terms.asSequence()
         .map { term -> content.indexOf(term, ignoreCase = true) }
         .firstOrNull { it >= 0 }
         ?.takeIf { it >= 0 }
-    val normalizedContent = content.replace(Regex("\\s+"), " ").trim()
-    val snippet = if (contentOffset != null) searchSnippet(content, contentOffset) else normalizedContent.take(92)
+    // 标题命中（正文未命中）时，只需正文开头的取样窗口即可生成摘要；
+    // 只对窗口内的空白做归一化，避免每次搜索都对整篇正文执行一次全量替换。
+    val headSnippet = content
+        .take(SearchSnippetSampleWindow)
+        .replace(SearchWhitespacePattern, " ")
+        .trim()
+        .take(92)
+    val snippet = if (contentOffset != null) searchSnippet(content, contentOffset) else headSnippet
     return NoteSearchMatch(contentOffset, snippet)
 }
 
@@ -95,7 +112,7 @@ internal fun searchSnippet(content: String, matchOffset: Int, maxLength: Int = 9
     val end = (start + maxLength).coerceAtMost(content.length)
     val prefix = if (start > 0) "…" else ""
     val suffix = if (end < content.length) "…" else ""
-    return prefix + content.substring(start, end).replace(Regex("\\s+"), " ").trim() + suffix
+    return prefix + content.substring(start, end).replace(SearchWhitespacePattern, " ").trim() + suffix
 }
 
 @Dao
@@ -185,7 +202,7 @@ interface FolderDao {
     suspend fun updateSortOrder(id: Long, sortOrder: Long)
 }
 
-@Database(entities = [NoteEntity::class, FolderEntity::class], version = 6, exportSchema = false)
+@Database(entities = [NoteEntity::class, FolderEntity::class], version = 7, exportSchema = false)
 abstract class NotesDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao
     abstract fun folderDao(): FolderDao
@@ -225,6 +242,16 @@ abstract class NotesDatabase : RoomDatabase() {
                 // 新增“最近打开/使用”时间戳，旧行默认 0（从未打开），旧数据无需回填。
                 db.execSQL("ALTER TABLE notes ADD COLUMN lastOpenedAt INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE folders ADD COLUMN lastOpenedAt INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // 仅新增查询索引：加速列表按收藏夹/星标筛选与收藏夹手动排序，
+                // 不新增列、不改表结构、不动任何数据，导入的旧备份不受影响。
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_notes_folderId ON notes(folderId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_notes_isPinned ON notes(isPinned)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_folders_sortOrder ON folders(sortOrder, createdAt)")
             }
         }
     }

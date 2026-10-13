@@ -59,6 +59,29 @@ class SearchSupportTest {
     }
 
     @Test
+    fun findSearchMatch_headSnippetOnlySamplesOpeningWindow() {
+        // 标题命中时摘要只取样正文开头窗口：超长正文不应触发全量空白归一化。
+        val note = NoteEntity(
+            title = "长笔记标题",
+            content = "开头摘要。".padEnd(4_000, '补')
+        )
+
+        val match = requireNotNull(note.findSearchMatch("长笔记标题"))
+        assertEquals(null, match.contentOffset)
+        assertEquals("开头摘要。" + "补".repeat(87), match.snippet)
+    }
+
+    @Test
+    fun findSearchMatch_termsOverloadMatchesQueryOverload() {
+        val note = NoteEntity(title = "观测日志", content = "今天看到太阳是一颗恒星")
+
+        val fromQuery = note.findSearchMatch("观测 太阳")
+        val fromTerms = note.findSearchMatch(parseSearchTerms("观测 太阳"))
+
+        assertEquals(fromQuery, fromTerms)
+    }
+
+    @Test
     fun fiveThousandNotes_keepMultiTermFilteringDeterministic() {
         val notes = List(5_000) { index ->
             NoteEntity(
