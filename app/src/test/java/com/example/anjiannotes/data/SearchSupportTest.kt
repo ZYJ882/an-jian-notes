@@ -72,6 +72,31 @@ class SearchSupportTest {
     }
 
     @Test
+    fun findSearchMatch_headSnippetFallsBackWhenWindowIsAllWhitespace() {
+        // 极端边界：正文以超过 256 字符的连续空白开头，取样窗口 trim 后为空。
+        // 摘要必须回退到全量归一化，不能出现空摘要（卡片摘要区域空白）。
+        val note = NoteEntity(
+            title = "空白开头的笔记",
+            content = "\n".repeat(400) + "正文真正内容从这一段开始，前面全是空白。"
+        )
+
+        val match = requireNotNull(note.findSearchMatch("空白开头"))
+        assertEquals(null, match.contentOffset)
+        assertTrue("摘要不应为空", match.snippet.isNotEmpty())
+        assertTrue(match.snippet.startsWith("正文真正内容"))
+    }
+
+    @Test
+    fun findSearchMatch_titleOnlyOnBlankContentHasExplicitSnippet() {
+        // 正文为空的纯标题命中：给出明确文案而非空串。
+        val note = NoteEntity(title = "只有标题的笔记", content = "   \n\t ")
+
+        val match = requireNotNull(note.findSearchMatch("只有标题"))
+        assertEquals(null, match.contentOffset)
+        assertEquals("标题匹配", match.snippet)
+    }
+
+    @Test
     fun findSearchMatch_termsOverloadMatchesQueryOverload() {
         val note = NoteEntity(title = "观测日志", content = "今天看到太阳是一颗恒星")
 

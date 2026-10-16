@@ -51,6 +51,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -63,6 +64,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
@@ -142,6 +144,8 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -160,6 +164,14 @@ import com.example.anjiannotes.data.NotesRepository
 import com.example.anjiannotes.data.STARRED_FOLDER_ID
 import com.example.anjiannotes.data.WebDavConfig
 import com.example.anjiannotes.data.WebDavRemoteSnapshot
+import com.example.anjiannotes.ui.DialogAction
+import com.example.anjiannotes.ui.DialogActionButtons
+import com.example.anjiannotes.ui.DialogContentColumn
+import com.example.anjiannotes.ui.rememberIsWatchWindow
+import com.example.anjiannotes.ui.screenHorizontalPadding
+import com.example.anjiannotes.ui.contentMaxWidth
+import com.example.anjiannotes.ui.contentWidthCap
+import com.example.anjiannotes.ui.drawerMaxWidth
 import com.example.anjiannotes.ui.EditorSeed
 import com.example.anjiannotes.ui.ImportReadResult
 import com.example.anjiannotes.ui.MarkdownPreview
@@ -1019,7 +1031,7 @@ private fun NotesListPage(
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
-            ModalDrawerSheet(modifier = Modifier.fillMaxWidth(0.76f)) {
+            ModalDrawerSheet(modifier = Modifier.fillMaxWidth(0.76f).contentWidthCap(drawerMaxWidth())) {
                 Column(modifier = Modifier.fillMaxSize().padding(vertical = 20.dp)) {
                     Row(
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
@@ -1116,22 +1128,29 @@ private fun NotesListPage(
                     },
                     actions = {
                         if (selectionMode) {
-                            TextButton(
-                                onClick = { selectedNoteIds = notes.mapTo(linkedSetOf()) { it.id } },
-                                enabled = notes.isNotEmpty() && selectedNoteIds.size < notes.size
-                            ) { Text("全选") }
-                            TextButton(onClick = {
-                                val ids = selectedNoteIds
-                                selectedNoteIds = emptySet()
-                                onBatchStar(ids)
-                            }) { Text("星标") }
-                            TextButton(onClick = {
-                                val ids = selectedNoteIds
-                                selectedNoteIds = emptySet()
-                                onBatchTopPin(ids, !allSelectedNotesAreTopPinned)
-                            }) { Text(if (allSelectedNotesAreTopPinned) "取消置顶" else "置顶") }
-                            TextButton(onClick = { pendingBatchDeleteIds = selectedNoteIds }) {
-                                Text("删除", color = MaterialTheme.colorScheme.error)
+                            // 批量操作按钮随宽度滚动：小屏上一行放不下「全选/星标/置顶/删除」时
+                            // 横向滑动而非直接裁掉（与详情页顶栏一致的保护）。
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(
+                                    onClick = { selectedNoteIds = notes.mapTo(linkedSetOf()) { it.id } },
+                                    enabled = notes.isNotEmpty() && selectedNoteIds.size < notes.size
+                                ) { Text("全选") }
+                                TextButton(onClick = {
+                                    val ids = selectedNoteIds
+                                    selectedNoteIds = emptySet()
+                                    onBatchStar(ids)
+                                }) { Text("星标") }
+                                TextButton(onClick = {
+                                    val ids = selectedNoteIds
+                                    selectedNoteIds = emptySet()
+                                    onBatchTopPin(ids, !allSelectedNotesAreTopPinned)
+                                }) { Text(if (allSelectedNotesAreTopPinned) "取消置顶" else "置顶") }
+                                TextButton(onClick = { pendingBatchDeleteIds = selectedNoteIds }) {
+                                    Text("删除", color = MaterialTheme.colorScheme.error)
+                                }
                             }
                         } else {
                             TextButton(onClick = onSearchToggle) {
@@ -1152,67 +1171,77 @@ private fun NotesListPage(
                 )
             }
         ) { padding ->
-            Column(
-                modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp)
+            // 宽屏（Medium/Expanded）内容封顶并居中：长文本行不横贯平板，
+            // 阅读区保持 60–75 字符行长；手机竖屏与手表 widthIn 为恒等变换，布局零变化。
+            Box(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                contentAlignment = Alignment.TopCenter
             ) {
-                if (showSearch && !selectionMode) {
-                    OutlinedTextField(
-                        value = query,
-                        onValueChange = onSearchChange,
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                        label = { Text("搜索标题或正文") },
-                        singleLine = true
-                    )
-                }
-                if (notes.isEmpty()) {
-                    EmptyNotes(query = query, onCreate = onNewNote)
-                } else {
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        androidx.compose.foundation.lazy.LazyColumn(
-                            state = noteListState,
-                            verticalArrangement = Arrangement.spacedBy(5.dp),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            item {
-                                Text(
-                                    text = if (globalSearch && query.isNotBlank()) "全局匹配 ${notes.size} 条" else "共 ${notes.size} 条笔记",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(bottom = 2.dp)
-                                )
-                            }
-                            items(
-                                items = notes,
-                                key = { it.id },
-                                contentType = { "note" }
-                            ) { note ->
-                                NoteCard(
-                                    // 位置变化（星标/置顶/删除/排序）时平滑滑动就位；
-                                    // spring 阻尼比 1.0 无回弹，刚度 Medium 保证快速收敛。
-                                    modifier = Modifier.animateItem(
-                                        placementSpec = spring(stiffness = Spring.StiffnessMedium)
-                                    ),
-                                    note = note,
-                                    selected = note.id in selectedNoteIds,
-                                    selectionMode = selectionMode,
-                                    searchTerms = searchTerms,
-                                    onOpen = {
-                                        if (selectionMode) toggleSelection(note.id) else onOpenNote(note, note.findSearchMatch(searchTerms)?.contentOffset)
-                                    },
-                                    onLongPress = { toggleSelection(note.id) },
-                                    onToggleStar = { onToggleStar(note) },
-                                    onToggleTopPin = { onToggleTopPin(note) }
-                                )
-                            }
-                            item { Spacer(Modifier.height(20.dp)) }
-                        }
-                        DraggableNoteListScrollbar(
-                            listState = noteListState,
-                            thumbColor = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .fillMaxHeight()
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .contentWidthCap(contentMaxWidth())
+                        .padding(horizontal = screenHorizontalPadding())
+                ) {
+                    if (showSearch && !selectionMode) {
+                        OutlinedTextField(
+                            value = query,
+                            onValueChange = onSearchChange,
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                            label = { Text("搜索标题或正文", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            singleLine = true
                         )
+                    }
+                    if (notes.isEmpty()) {
+                        EmptyNotes(query = query, onCreate = onNewNote)
+                    } else {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            androidx.compose.foundation.lazy.LazyColumn(
+                                state = noteListState,
+                                verticalArrangement = Arrangement.spacedBy(5.dp),
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                item {
+                                    Text(
+                                        text = if (globalSearch && query.isNotBlank()) "全局匹配 ${notes.size} 条" else "共 ${notes.size} 条笔记",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(bottom = 2.dp)
+                                    )
+                                }
+                                items(
+                                    items = notes,
+                                    key = { it.id },
+                                    contentType = { "note" }
+                                ) { note ->
+                                    NoteCard(
+                                        // 位置变化（星标/置顶/删除/排序）时平滑滑动就位；
+                                        // spring 阻尼比 1.0 无回弹，刚度 Medium 保证快速收敛。
+                                        modifier = Modifier.animateItem(
+                                            placementSpec = spring(stiffness = Spring.StiffnessMedium)
+                                        ),
+                                        note = note,
+                                        selected = note.id in selectedNoteIds,
+                                        selectionMode = selectionMode,
+                                        searchTerms = searchTerms,
+                                        onOpen = {
+                                            if (selectionMode) toggleSelection(note.id) else onOpenNote(note, note.findSearchMatch(searchTerms)?.contentOffset)
+                                        },
+                                        onLongPress = { toggleSelection(note.id) },
+                                        onToggleStar = { onToggleStar(note) },
+                                        onToggleTopPin = { onToggleTopPin(note) }
+                                    )
+                                }
+                                item { Spacer(Modifier.height(20.dp)) }
+                            }
+                            DraggableNoteListScrollbar(
+                                listState = noteListState,
+                                thumbColor = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .fillMaxHeight()
+                            )
+                        }
                     }
                 }
             }
@@ -1376,7 +1405,8 @@ private fun FolderSortDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (folder == null) "收藏夹排序" else "排序 · ${folder.name}", maxLines = 1, overflow = TextOverflow.Ellipsis) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // 排序操作项可内部滚动：小屏上不与按钮争夺屏幕高度。
+            DialogContentColumn(spacing = 10.dp) {
                 Text(
                     if (folder == null) "该收藏夹不存在或已被删除。"
                     else "当前位置：第 ${index + 1} 个 / 共 ${baseOrder.size} 个",
@@ -1418,7 +1448,8 @@ private fun FolderPickerDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            // 收藏夹较多时列表可内部滚动，按钮不会被顶出屏幕（小屏尤其重要）。
+            DialogContentColumn(spacing = 6.dp) {
                 folders.forEach { folder ->
                     TextButton(
                         onClick = { onSelected(folder.id) },
@@ -1456,14 +1487,23 @@ private fun SettingsPage(
             )
         }
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
+        val compact = rememberIsWatchWindow()
+        // 宽屏内容封顶居中：设置项不横贯平板；手机竖屏与手表不封顶，布局不变。
+        Box(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentAlignment = Alignment.TopCenter
         ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .contentWidthCap(contentMaxWidth())
+                    .verticalScroll(rememberScrollState())
+                    .padding(
+                        horizontal = screenHorizontalPadding(),
+                        vertical = if (compact) 12.dp else 20.dp
+                    ),
+                verticalArrangement = Arrangement.spacedBy(if (compact) 12.dp else 18.dp)
+            ) {
             SettingsGroup(
                 title = "外观",
                 items = listOf(
@@ -1500,6 +1540,7 @@ private fun SettingsPage(
                     SettingsEntry("i", "安装", "安笺 ${BuildConfig.VERSION_NAME} · 离线笔记", onClick = {})
                 )
             )
+            }
         }
     }
 }
@@ -1536,14 +1577,19 @@ private fun AppearanceSettingsPage(
                 onCustomFontPath(target.absolutePath)
             }
         }
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 20.dp, vertical = 20.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+        // 宽屏内容封顶居中：外观选项不横贯平板；手机竖屏与手表不封顶，布局不变。
+        Box(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentAlignment = Alignment.TopCenter
         ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .contentWidthCap(contentMaxWidth())
+                    .padding(horizontal = screenHorizontalPadding(), vertical = if (rememberIsWatchWindow()) 12.dp else 20.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
             Text(
                 "选择主题后会立即应用到当前页面和所有组件。",
                 style = MaterialTheme.typography.bodyMedium,
@@ -1600,6 +1646,7 @@ private fun AppearanceSettingsPage(
             TextButton(onClick = { fontPicker.launch(arrayOf("font/ttf", "font/otf", "application/octet-stream")) }) {
                 Text("重新导入字体")
             }
+            }
         }
     }
 }
@@ -1654,6 +1701,7 @@ private data class SettingsEntry(
 
 @Composable
 private fun SettingsGroup(title: String, items: List<SettingsEntry>) {
+    val compact = rememberIsWatchWindow()
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
             title.uppercase(),
@@ -1671,9 +1719,9 @@ private fun SettingsGroup(title: String, items: List<SettingsEntry>) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(60.dp)
+                            .height(if (compact) 56.dp else 60.dp)
                             .clickable(onClick = item.onClick)
-                            .padding(horizontal = 16.dp),
+                            .padding(horizontal = if (compact) 12.dp else 16.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
@@ -1684,8 +1732,8 @@ private fun SettingsGroup(title: String, items: List<SettingsEntry>) {
                             Text(item.symbol, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
                         }
                         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                            Text(item.title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface)
-                            Text(item.subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(item.title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(item.subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         Text("›", fontSize = 24.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f))
                     }
@@ -1712,6 +1760,7 @@ private data class SettingsToggleEntry(
 /** 与 SettingsGroup 同款卡片的开关设置组；整行可点切换。 */
 @Composable
 private fun SettingsToggleGroup(title: String, items: List<SettingsToggleEntry>) {
+    val compact = rememberIsWatchWindow()
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
             title.uppercase(),
@@ -1729,9 +1778,9 @@ private fun SettingsToggleGroup(title: String, items: List<SettingsToggleEntry>)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(60.dp)
+                            .height(if (compact) 56.dp else 60.dp)
                             .clickable { item.onCheckedChange(!item.checked) }
-                            .padding(horizontal = 16.dp),
+                            .padding(horizontal = if (compact) 12.dp else 16.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
@@ -1742,8 +1791,8 @@ private fun SettingsToggleGroup(title: String, items: List<SettingsToggleEntry>)
                             Text(item.symbol, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
                         }
                         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                            Text(item.title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface)
-                            Text(item.subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(item.title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(item.subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         Switch(
                             checked = item.checked,
@@ -1780,76 +1829,180 @@ private fun WebDavBackupDialog(
     val busy = task != WebDavTask.IDLE
     fun currentConfig() = WebDavConfig(endpoint, username, password, remoteDirectory, syncDeleteRemoteFiles)
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("WebDAV 增量备份") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("服务器上会保存 notes/*.md、folders.json 与 metadata.json。密码使用设备加密密钥保存在本机。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                OutlinedTextField(
-                    value = endpoint,
-                    onValueChange = { endpoint = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("服务器地址") },
-                    placeholder = { Text("https://dav.example.com/remote.php/dav/files/name") },
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = username,
-                    onValueChange = { username = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("用户名") },
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("密码或应用专用密码") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = remoteDirectory,
-                    onValueChange = { remoteDirectory = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("远程备份目录") },
-                    singleLine = true
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(
-                        checked = syncDeleteRemoteFiles,
-                        onCheckedChange = { syncDeleteRemoteFiles = it },
-                        enabled = !busy
-                    )
-                    Column {
-                        Text("同步删除远程备份文件")
-                        Text("删除本地笔记后，下次备份会清理远端冗余文件", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    // 表单字段在两种外壳间共享，状态提升到本函数；小屏走全屏页、常规走 AlertDialog。
+    val form: @Composable ColumnScope.() -> Unit = {
+        WebDavConfigForm(
+            endpoint = endpoint,
+            onEndpointChange = { endpoint = it },
+            username = username,
+            onUsernameChange = { username = it },
+            password = password,
+            onPasswordChange = { password = it },
+            remoteDirectory = remoteDirectory,
+            onRemoteDirectoryChange = { remoteDirectory = it },
+            syncDeleteRemoteFiles = syncDeleteRemoteFiles,
+            onSyncDeleteRemoteFilesChange = { syncDeleteRemoteFiles = it },
+            busy = busy,
+            task = task
+        )
+    }
+    // FlowRow 自动换行：四个操作在窄手机/手表上超过一行宽度时折行，不再被裁切。
+    val actions = listOf(
+        DialogAction("测试连接", enabled = !busy, onClick = { onTest(currentConfig()) }),
+        DialogAction("仅保存", enabled = !busy, onClick = { onSave(currentConfig()) }),
+        DialogAction("从 WebDAV 恢复", enabled = !busy, onClick = { onRestore(currentConfig()) }),
+        DialogAction("立即备份", emphasized = true, enabled = !busy, onClick = { onSync(currentConfig()) })
+    )
+
+    if (rememberIsWatchWindow()) {
+        // Watch 档（窗口宽度 < 320dp，手表/分屏小窗）：整表单 + 4 个操作无法在矮屏内平铺，
+        // 改用全屏对话框——标题与操作区常驻、表单内部滚动，任何按钮都不会被顶出屏幕。
+        Dialog(
+            onDismissRequest = onDismiss,
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "WebDAV 增量备份",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") }
                     }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    // weight(1f) 已把表单限制在标题与操作区之间的剩余空间，
+                    // 表单自身滚动即可，无需再叠加高度上限（避免留白）。
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState())
+                            .imePadding()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) { form() }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    DialogActionButtons(
+                        actions = actions,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
                 }
+            }
+        }
+    } else {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("WebDAV 增量备份") },
+            text = {
+                // 限高 + 内部滚动：矮屏（横屏手机、手表兼容窗口）下按钮不会被顶出屏幕。
+                DialogContentColumn(spacing = 10.dp, content = form)
+            },
+            dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") } },
+            confirmButton = { DialogActionButtons(actions = actions) }
+        )
+    }
+}
+
+/** WebDAV 备份表单字段：全屏页与对话框两种外壳共用，状态由调用方提升。 */
+@Composable
+private fun WebDavConfigForm(
+    endpoint: String,
+    onEndpointChange: (String) -> Unit,
+    username: String,
+    onUsernameChange: (String) -> Unit,
+    password: String,
+    onPasswordChange: (String) -> Unit,
+    remoteDirectory: String,
+    onRemoteDirectoryChange: (String) -> Unit,
+    syncDeleteRemoteFiles: Boolean,
+    onSyncDeleteRemoteFilesChange: (Boolean) -> Unit,
+    busy: Boolean,
+    task: WebDavTask
+) {
+    // 表单自带纵向节奏：两种外壳（全屏页 / 对话框）都不再需要额外间距。
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            "服务器上会保存 notes/*.md、folders.json 与 metadata.json。密码使用设备加密密钥保存在本机。",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        OutlinedTextField(
+            value = endpoint,
+            onValueChange = onEndpointChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("服务器地址", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            // 占位符单行省略：多行占位符会把输入框撑高、URL 断行显示，小屏上尤其难看。
+            placeholder = {
                 Text(
-                    when (task) {
-                        WebDavTask.BACKUP -> "正在备份，请勿重复操作"
-                        WebDavTask.RESTORE -> "正在读取远程备份，请稍候"
-                        WebDavTask.IDLE -> "手动备份工具：不会自动覆盖本地数据"
-                    },
+                    "https://dav.example.com/remote.php/dav/files/name",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            },
+            singleLine = true
+        )
+        OutlinedTextField(
+            value = username,
+            onValueChange = onUsernameChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("用户名", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            singleLine = true
+        )
+        OutlinedTextField(
+            value = password,
+            onValueChange = onPasswordChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("密码或应用专用密码", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            visualTransformation = PasswordVisualTransformation(),
+            singleLine = true
+        )
+        OutlinedTextField(
+            value = remoteDirectory,
+            onValueChange = onRemoteDirectoryChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("远程备份目录", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            singleLine = true
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(
+                checked = syncDeleteRemoteFiles,
+                onCheckedChange = onSyncDeleteRemoteFilesChange,
+                enabled = !busy
+            )
+            Column {
+                Text("同步删除远程备份文件")
+                Text(
+                    "删除本地笔记后，下次备份会清理远端冗余文件",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-        },
-        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") } },
-        confirmButton = {
-            Column(horizontalAlignment = Alignment.End) {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = { onTest(currentConfig()) }, enabled = !busy) { Text("测试连接") }
-                    TextButton(onClick = { onSave(currentConfig()) }, enabled = !busy) { Text("仅保存") }
-                    TextButton(onClick = { onRestore(currentConfig()) }, enabled = !busy) { Text("从 WebDAV 恢复") }
-                    TextButton(onClick = { onSync(currentConfig()) }, enabled = !busy) { Text("立即备份", fontWeight = FontWeight.SemiBold) }
-                }
-            }
         }
-    )
+        Text(
+            when (task) {
+                WebDavTask.BACKUP -> "正在备份，请勿重复操作"
+                WebDavTask.RESTORE -> "正在读取远程备份，请稍候"
+                WebDavTask.IDLE -> "手动备份工具：不会自动覆盖本地数据"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
 }
 
 @Composable
@@ -1932,22 +2085,29 @@ private fun QuickCaptureBar(
 ) {
     val pillShape = RoundedCornerShape(30.dp)
     val shadowColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.18f)
+    val compact = rememberIsWatchWindow()
+    val barHeight = if (compact) 52.dp else 56.dp
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
             .imePadding()
-            .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp)
+            .padding(
+                start = if (compact) 12.dp else 16.dp,
+                end = if (compact) 12.dp else 16.dp,
+                top = 8.dp,
+                bottom = 16.dp
+            )
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .height(56.dp)
+                    .height(barHeight)
                     .shadow(
                         elevation = 6.dp,
                         shape = pillShape,
@@ -1976,7 +2136,7 @@ private fun QuickCaptureBar(
             Box {
                 Surface(
                     modifier = Modifier
-                        .size(56.dp)
+                        .size(barHeight)
                         .shadow(
                             elevation = 5.dp,
                             shape = CircleShape,
@@ -2028,13 +2188,15 @@ private fun NoteSearchBar(
 ) {
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    val compact = rememberIsWatchWindow()
+    val navButtonSize = if (compact) 36.dp else 40.dp
     Row(
         modifier = modifier
             .background(
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f),
                 shape = RoundedCornerShape(12.dp)
             )
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = if (compact) 8.dp else 12.dp, vertical = if (compact) 4.dp else 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text("🔍", fontSize = 16.sp, modifier = Modifier.padding(end = 8.dp))
@@ -2070,13 +2232,13 @@ private fun NoteSearchBar(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 8.dp, end = 4.dp)
         )
-        TextButton(onClick = onPrevious, enabled = matchTotal > 0, modifier = Modifier.size(40.dp)) {
+        TextButton(onClick = onPrevious, enabled = matchTotal > 0, modifier = Modifier.size(navButtonSize)) {
             Text("↑", fontSize = 18.sp)
         }
-        TextButton(onClick = onNext, enabled = matchTotal > 0, modifier = Modifier.size(40.dp)) {
+        TextButton(onClick = onNext, enabled = matchTotal > 0, modifier = Modifier.size(navButtonSize)) {
             Text("↓", fontSize = 18.sp)
         }
-        TextButton(onClick = onClose, modifier = Modifier.size(40.dp)) {
+        TextButton(onClick = onClose, modifier = Modifier.size(navButtonSize)) {
             Text("✕", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -2615,15 +2777,20 @@ private fun NoteDetailPage(
                         searchQuery = ""
                         searchActiveOrdinal = 0
                     },
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp)
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = screenHorizontalPadding(), vertical = 4.dp)
                 )
             }
-            Box(modifier = Modifier.fillMaxWidth().weight(1f).padding(horizontal = 20.dp)) {
+            // contentAlignment = TopCenter：Medium/Expanded 下正文列封顶后水平居中，
+            // 滚动条用显式 align(CenterEnd) 不受居中影响；手机竖屏与手表不封顶，表现不变。
+            Box(
+                modifier = Modifier.fillMaxWidth().weight(1f).padding(horizontal = screenHorizontalPadding()),
+                contentAlignment = Alignment.TopCenter
+            ) {
                 Column(
                     modifier = if (detailMode == DetailMode.EDIT) {
-                        Modifier.fillMaxSize()
+                        Modifier.fillMaxSize().contentWidthCap(contentMaxWidth())
                     } else {
-                        Modifier.fillMaxSize().verticalScroll(detailScrollState)
+                        Modifier.fillMaxSize().contentWidthCap(contentMaxWidth()).verticalScroll(detailScrollState)
                     },
                     // 编辑模式保留 18dp 让标题与正文输入框之间有舒适工作距离；
                     // 预览模式收紧到 10dp，让文章标题与首段连接更紧，与 MarkdownPreview
@@ -2645,9 +2812,14 @@ private fun NoteDetailPage(
                     }
                 )
             } else {
+                val compact = rememberIsWatchWindow()
                 Text(
                     title.ifBlank { "未命名笔记" },
-                    style = MaterialTheme.typography.headlineSmall.copy(fontSize = 28.sp, lineHeight = 37.sp),
+                    // 小屏收小标题字号：手表一屏容纳更多正文。
+                    style = MaterialTheme.typography.headlineSmall.copy(
+                        fontSize = if (compact) 22.sp else 28.sp,
+                        lineHeight = if (compact) 30.sp else 37.sp
+                    ),
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.fillMaxWidth().combinedClickable(
                         onClick = {},
@@ -3119,8 +3291,12 @@ private fun NativeNoteEditor(
 @Composable
 private fun EmptyNotes(query: String, onCreate: () -> Unit) {
     // 空状态淡入：只走 alpha，不引入布局动画。
-    var visible by remember(query) { mutableStateOf(false) }
-    LaunchedEffect(query) { visible = true }
+    // key 取 query.isBlank() 而非 query：搜索时每敲一字 query 都会变，
+    // 用 query 作 key 会导致淡入反复重播（闪烁）；这里只在
+    // 「无笔记」与「无匹配」两种空状态互相切换时才重播一次。
+    var visible by remember(query.isBlank()) { mutableStateOf(false) }
+    LaunchedEffect(query.isBlank()) { visible = true }
+    val compact = rememberIsWatchWindow()
     AnimatedVisibility(
         visible = visible,
         enter = fadeIn(animationSpec = tween(MotionTokens.DurationMedium, easing = MotionTokens.Easing)),
@@ -3132,11 +3308,18 @@ private fun EmptyNotes(query: String, onCreate: () -> Unit) {
                 shape = MaterialTheme.shapes.large
             ) {
                 Column(
-                    modifier = Modifier.padding(horizontal = 28.dp, vertical = 24.dp),
+                    modifier = Modifier.padding(
+                        horizontal = if (compact) 20.dp else 28.dp,
+                        vertical = if (compact) 16.dp else 24.dp
+                    ),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp)
                 ) {
-                    Text(if (query.isBlank()) "从一条笔记开始" else "没有匹配的笔记", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (query.isBlank()) "从一条笔记开始" else "没有匹配的笔记",
+                        style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
                     Text(
                         if (query.isBlank()) "点击底部输入栏，随手记录此刻想法。" else "尝试换个关键词，或清除搜索条件。",
                         style = MaterialTheme.typography.bodyMedium,
@@ -3360,6 +3543,7 @@ private fun NoteCard(
     onToggleTopPin: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val compact = rememberIsWatchWindow()
     val searchMatch = remember(note.id, note.updatedAt, searchTerms) { note.findSearchMatch(searchTerms) }
     val summary = remember(note.id, note.updatedAt, note.isMarkdown, searchMatch) {
         searchMatch?.snippet?.ifBlank { NoteListPreviewCache.get(note) } ?: NoteListPreviewCache.get(note)
@@ -3382,8 +3566,14 @@ private fun NoteCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp).heightIn(min = 104.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp)
+            // 小屏收紧卡片内边距与最小高度：手表一屏要放下更多条目。
+            modifier = Modifier
+                .padding(
+                    horizontal = if (compact) 12.dp else 16.dp,
+                    vertical = if (compact) 10.dp else 14.dp
+                )
+                .heightIn(min = if (compact) 84.dp else 104.dp),
+            verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 5.dp)
         ) {
             Text(
                 note.title.ifBlank { "未命名笔记" },

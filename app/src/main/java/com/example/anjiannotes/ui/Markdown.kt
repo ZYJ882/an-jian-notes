@@ -221,13 +221,26 @@ fun MarkdownPreview(
     val document = remember(markdown) { MarkdownParser.parse(markdown) }
     // 正文搜索：命中区间基于「渲染后的展示文本」。展示文本只随文档变化、与搜索词无关，
     // 因此按文档缓存；搜索词每次变化只做 indexOf 匹配，不再对全文档重复做行内解析。
+    // 展示文本用 lazy 包裹：未进入搜索时（空 query）完全不触发展内解析，
+    // 避免每次打开详情页首帧都为用不到的搜索索引全量计算（长文首帧卡顿）。
     val blockDisplayTexts = remember(document) {
-        document.blocks.map { block ->
-            blockSearchSegments(block).map { segment -> blockSearchDisplayText(block, segment) }
+        lazy {
+            document.blocks.map { block ->
+                blockSearchSegments(block).map { segment -> blockSearchDisplayText(block, segment) }
+            }
         }
     }
+    // 空 query 时直接返回空索引，不读取 blockDisplayTexts（lazy 不被强制求值）。
     val searchIndex = remember(blockDisplayTexts, searchQuery, searchActiveOrdinal) {
-        computeMarkdownSearchIndexFromTexts(blockDisplayTexts, searchQuery, searchActiveOrdinal)
+        if (searchQuery.isBlank()) {
+            MarkdownSearchIndex(emptyList(), 0)
+        } else {
+            computeMarkdownSearchIndexFromTexts(
+                blockDisplayTexts.value,
+                searchQuery,
+                searchActiveOrdinal
+            )
+        }
     }
     val searchScrollRequester = remember { BringIntoViewRequester() }
     LaunchedEffect(searchIndex.totalMatches) {

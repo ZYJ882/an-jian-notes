@@ -3,6 +3,7 @@ package com.example.anjiannotes.data
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
@@ -27,7 +28,12 @@ val STARRED_FOLDER = FolderEntity(
     sortOrder = Long.MIN_VALUE
 )
 
-@Entity(tableName = "folders")
+// 索引名与 MIGRATION_6_7 / MIGRATION_7_8 中 CREATE INDEX 使用的名字保持一致：
+// Room 升级校验会逐字段比对实体声明的索引与数据库实际索引，名字不同即视为 schema 不匹配。
+@Entity(
+    tableName = "folders",
+    indices = [Index(value = ["sortOrder", "createdAt"], name = "idx_folders_sortOrder")]
+)
 data class FolderEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
@@ -44,7 +50,13 @@ val DEFAULT_FOLDER = FolderEntity(
     sortOrder = 0
 )
 
-@Entity(tableName = "notes")
+@Entity(
+    tableName = "notes",
+    indices = [
+        Index(value = ["folderId"], name = "idx_notes_folderId"),
+        Index(value = ["isPinned"], name = "idx_notes_isPinned")
+    ]
+)
 data class NoteEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val title: String = "",
@@ -102,6 +114,13 @@ internal fun NoteEntity.findSearchMatch(terms: List<String>): NoteSearchMatch? {
         .replace(SearchWhitespacePattern, " ")
         .trim()
         .take(92)
+        // 极端边界回退：正文以超过取样窗口（256 字符）的连续空白开头时，
+        // 窗口内全是空白、trim 后为空。此时才对整篇正文做一次归一化，
+        // 保证摘要永不为空（该路径极罕见，全量替换的成本可接受）；
+        // 正文本身为空（仅标题命中）时给出明确文案，避免卡片摘要区域空白。
+        .ifBlank {
+            if (content.isBlank()) "标题匹配" else content.replace(SearchWhitespacePattern, " ").trim().take(92)
+        }
     val snippet = if (contentOffset != null) searchSnippet(content, contentOffset) else headSnippet
     return NoteSearchMatch(contentOffset, snippet)
 }
@@ -202,7 +221,7 @@ interface FolderDao {
     suspend fun updateSortOrder(id: Long, sortOrder: Long)
 }
 
-@Database(entities = [NoteEntity::class, FolderEntity::class], version = 7, exportSchema = false)
+@Database(entities = [NoteEntity::class, FolderEntity::class], version = 8, exportSchema = false)
 abstract class NotesDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao
     abstract fun folderDao(): FolderDao
@@ -249,6 +268,18 @@ abstract class NotesDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 // 仅新增查询索引：加速列表按收藏夹/星标筛选与收藏夹手动排序，
                 // 不新增列、不改表结构、不动任何数据，导入的旧备份不受影响。
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_notes_folderId ON notes(folderId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_notes_isPinned ON notes(isPinned)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_folders_sortOrder ON folders(sortOrder, createdAt)")
+            }
+        }
+
+        // 2.14.0：索引正式写入 @Entity 声明（Room 升级校验会比对实体索引与库内索引）。
+        // 全新安装由 createAllTables 直接建索引；历史库走到这里补齐：
+        // - v6 升级：6→7 已建过，本条 IF NOT EXISTS 空转；
+        // - v7 库（2.12.0/2.13.0 全新安装，实体当时未声明索引故无索引）：本条补齐。
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE INDEX IF NOT EXISTS idx_notes_folderId ON notes(folderId)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS idx_notes_isPinned ON notes(isPinned)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS idx_folders_sortOrder ON folders(sortOrder, createdAt)")

@@ -16,6 +16,7 @@
 | 导入与导出 | 支持 TXT、Markdown、剪切板导入；支持 JSON、TXT 与 Markdown ZIP 本地备份和恢复。 |
 | WebDAV | 支持 HTTPS WebDAV 增量备份，笔记以可直接阅读的 Markdown 文件保存，并附带 JSON 元数据。 |
 | 外观主题 | 提供浅色、深色与跟随系统三种模式，切换后即时生效。 |
+| 窗口尺寸适配 | 按当前窗口尺寸分类切换布局（Material3 断点 + 手表专用档）：Watch（< 320dp）手表/分屏小窗最紧凑策略，Compact（320–599dp）手机竖屏布局不变，Medium/Expanded（≥ 600dp）横屏/折叠屏/平板内边距放宽且内容限宽居中。控件尺寸一律 dp、文字一律 sp，禁止 px 写死与全局缩放（有源码守护测试）。 |
 
 ## 源码结构
 
@@ -27,8 +28,10 @@
 | `app/src/main/java/com/example/anjiannotes/data/BackupSupport.kt` | JSON、TXT 与 Markdown ZIP 的备份编解码。 |
 | `app/src/main/java/com/example/anjiannotes/data/WebDavSupport.kt` | WebDAV 配置存储、加密与增量上传。 |
 | `app/src/main/java/com/example/anjiannotes/ui/` | Markdown 渲染、文本导入及格式识别。 |
+| `app/src/main/java/com/example/anjiannotes/ui/WindowSizeClass.kt` | 窗口尺寸分类（宽度四档 + 高度三档，Material3 断点）与响应式判定。 |
+| `app/src/main/java/com/example/anjiannotes/ui/AdaptiveLayout.kt` | 分类驱动的布局分档（内边距、内容限宽）与对话框自适应组件。 |
 | `app/src/main/java/com/example/anjiannotes/ui/theme/` | Material 3 主题、配色与外观偏好持久化。 |
-| `app/src/test/` | 备份、Markdown、导入和数据模型的单元测试。 |
+| `app/src/test/` | 备份、Markdown、导入、数据模型、窗口尺寸分类与单位纪律守护的单元测试。 |
 
 ## 构建要求
 
@@ -68,6 +71,9 @@ app/build/outputs/apk/debug/app-debug.apk
 3. 连续输入多次后立即返回；最终内容应为最后一次输入结果。
 4. 输入内容后删除为空白再返回；已编辑笔记应保存最终空白状态，不应保留旧内容。
 5. 分别验证 Markdown ZIP、TXT 和 JSON 的备份恢复，以及 WebDAV 增量备份。
+6. 适配验证：在开发者选项里强制设定最小宽度（或使用模拟器/折叠屏/平板）为 320dp 以下、600dp、840dp 三档，确认页面内边距、内容限宽与对话框形态随窗口切换；手机竖屏（360–412dp）应与日常使用完全一致。
+
+单元测试覆盖上述保存语义、备份编解码、窗口尺寸分类边界与单位纪律守护（`./gradlew test`，守护测试会扫描主源码，任何 px 写死、sp/dp 混用或全局缩放都会直接失败）。
 
 ## 源码包说明
 
