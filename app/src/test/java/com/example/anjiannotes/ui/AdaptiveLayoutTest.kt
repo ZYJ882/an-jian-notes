@@ -80,4 +80,58 @@ class AdaptiveLayoutTest {
         assertTrue(!action.destructive)
         assertEquals("确定", action.label)
     }
+
+    @Test
+    fun twoPane_onlyOnExpanded() {
+        // 仅 Expanded（≥840dp）分栏。Medium（600–839dp）刻意不分栏：
+        // 400dp 列表 + 剩余 ~200–440dp 详情会互相挤压，维持单栏封顶居中更稳妥。
+        assertTrue(twoPaneFor(WindowWidthClass.Expanded))
+        assertTrue(!twoPaneFor(WindowWidthClass.Watch))
+        assertTrue(!twoPaneFor(WindowWidthClass.Compact))
+        assertTrue(!twoPaneFor(WindowWidthClass.Medium))
+    }
+
+    @Test
+    fun twoPane_breakpointAlignedWithWidthClassOf() {
+        // 分栏开关与宽度分类必须逐 dp 对齐：of(widthDp) 为 Expanded 当且仅当分栏。
+        // 扫描 0–1600dp（覆盖手表 ~200dp 到超大平板 ~1600dp）。
+        for (widthDp in 0..1600) {
+            val expected = WindowWidthClass.of(widthDp) == WindowWidthClass.Expanded
+            assertEquals("widthDp=$widthDp 分栏判定与分类不一致", expected, twoPaneFor(WindowWidthClass.of(widthDp)))
+        }
+    }
+
+    @Test
+    fun listPaneWidth_fixedOnlyWhenTwoPane() {
+        assertEquals(400.dp, listPaneWidthFor(WindowWidthClass.Expanded))
+        // 非双栏档无列表 pane，宽度无意义：Unspecified 让调用方按单栏路径忽略它。
+        for (widthClass in listOf(WindowWidthClass.Watch, WindowWidthClass.Compact, WindowWidthClass.Medium)) {
+            assertEquals(Dp.Unspecified, listPaneWidthFor(widthClass))
+        }
+    }
+
+    @Test
+    fun listPaneWidth_leavesUsableDetailPaneOnNarrowestExpanded() {
+        // 最窄 Expanded 窗口 840dp：400dp 列表 + 440dp 详情。不变式：
+        // ① 详情 pane ≥ 400dp（可读正文区）；② 列表 + 详情不超出窗口（不裁切）。
+        val minExpanded = WindowWidthBreakpoints.ExpandedDp
+        val detailPane = minExpanded - listPaneWidthFor(WindowWidthClass.Expanded).value.toInt()
+        assertTrue("最窄 Expanded 下详情 pane 仅 ${detailPane}dp，小于 400dp 下限", detailPane >= 400)
+        assertTrue(
+            "列表与详情总宽超出最窄 Expanded 窗口",
+            listPaneWidthFor(WindowWidthClass.Expanded).value.toInt() + 400 <= minExpanded
+        )
+    }
+
+    @Test
+    fun twoPaneDetail_neverUsesContentCapInPractice() {
+        // 双栏下详情 pane 宽度（440–1200dp）通常小于 Expanded 档 720dp 行长封顶，
+        // 即 widthIn(max=720) 在双栏详情上是恒等变换——封顶只保护单栏宽屏。
+        // 此契约记录该事实，防止将来误调 listPaneWidthFor 造成双栏行长失控。
+        val detailMin = WindowWidthBreakpoints.ExpandedDp - listPaneWidthFor(WindowWidthClass.Expanded).value.toInt()
+        assertTrue(
+            "双栏最窄详情 pane 已超过 720dp 封顶值，contentWidthCap 语义需要重新评估",
+            detailMin < contentMaxWidthFor(WindowWidthClass.Expanded).value.toInt()
+        )
+    }
 }

@@ -167,11 +167,13 @@ import com.example.anjiannotes.data.WebDavRemoteSnapshot
 import com.example.anjiannotes.ui.DialogAction
 import com.example.anjiannotes.ui.DialogActionButtons
 import com.example.anjiannotes.ui.DialogContentColumn
-import com.example.anjiannotes.ui.rememberIsWatchWindow
 import com.example.anjiannotes.ui.screenHorizontalPadding
+import com.example.anjiannotes.ui.rememberIsWatchWindow
 import com.example.anjiannotes.ui.contentMaxWidth
 import com.example.anjiannotes.ui.contentWidthCap
 import com.example.anjiannotes.ui.drawerMaxWidth
+import com.example.anjiannotes.ui.listPaneWidth
+import com.example.anjiannotes.ui.rememberTwoPane
 import com.example.anjiannotes.ui.EditorSeed
 import com.example.anjiannotes.ui.ImportReadResult
 import com.example.anjiannotes.ui.MarkdownPreview
@@ -201,6 +203,7 @@ import java.util.Date
 import java.util.LinkedHashMap
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -280,12 +283,12 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class InlineEditTarget { TITLE, CONTENT }
-private enum class DetailMode { PREVIEW, EDIT }
-private enum class AutoSaveState { IDLE, SAVING, SAVED }
+internal enum class InlineEditTarget { TITLE, CONTENT }
+internal enum class DetailMode { PREVIEW, EDIT }
+internal enum class AutoSaveState { IDLE, SAVING, SAVED }
 
 /** 导出文件名清洗：剔除各平台文件系统保留字符。预编译，避免每次导出重复编译。 */
-private val ExportUnsafeFileNamePattern = Regex("[\\\\/:*?\\\"<>|]")
+internal val ExportUnsafeFileNamePattern = Regex("[\\\\/:*?\\\"<>|]")
 
 /** 新建草稿是否为空：标题与正文均无有效字符（含纯空白）即视为空，不应留下空笔记。 */
 internal fun isNewDraftEmpty(draftTitle: String, draftContent: String): Boolean =
@@ -303,7 +306,7 @@ internal fun shouldForceFinalDraftSave(
 ): Boolean = isNewNote && savedNoteId == 0L && !isNewDraftEmpty(draftTitle, draftContent)
 
 /** 每次编辑事件同步生成的不可变保存快照，避免组合重绘前读取到旧文本。 */
-private data class NoteDraftSnapshot(
+internal data class NoteDraftSnapshot(
     val title: String,
     val content: String,
     val color: Long,
@@ -313,7 +316,7 @@ private data class NoteDraftSnapshot(
     val folderId: Long
 )
 
-private data class NoteListPreviewKey(
+internal data class NoteListPreviewKey(
     val id: Long,
     val updatedAt: Long,
     val isMarkdown: Boolean
@@ -323,7 +326,7 @@ private data class NoteListPreviewKey(
  * 列表项离开并重新进入可视区时，Compose 可能需要重新组合该项。
  * 缓存已生成的轻量摘要，避免再次执行多轮 Markdown 正则替换。
  */
-private object NoteListPreviewCache {
+internal object NoteListPreviewCache {
     private const val MAX_ENTRIES = 128
     private val values = object : LinkedHashMap<NoteListPreviewKey, String>(MAX_ENTRIES, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<NoteListPreviewKey, String>?): Boolean =
@@ -342,11 +345,11 @@ private object NoteListPreviewCache {
     }
 }
 
-private val NoteDateFormatter = ThreadLocal.withInitial {
+internal val NoteDateFormatter = ThreadLocal.withInitial {
     SimpleDateFormat("yyyy年M月d日 HH:mm", Locale.CHINA)
 }
 
-private sealed interface AppPage {
+internal sealed interface AppPage {
     data object List : AppPage
     data class Detail(
         val note: NoteEntity?,
@@ -357,6 +360,24 @@ private sealed interface AppPage {
     ) : AppPage
     data object Settings : AppPage
     data object Appearance : AppPage
+}
+
+/**
+ * 双栏模式下详情 pane 的离开意图。
+ *
+ * 详情页的离开必须经过自身的最终保存确认（finalizeAndLeave），因此「切换选中 /
+ * 提升为整页 / 降级回双栏」都由宿主先记录意图、再请求离开，详情保存完成后回调
+ * onBack 时统一应用，避免组合直接销毁导致防抖窗内的最后编辑丢失。
+ */
+internal sealed interface DetailExitIntent {
+    /** 切换到另一篇笔记（双栏内点选）。 */
+    data class Switch(val target: AppPage.Detail) : DetailExitIntent
+
+    /** 窗口缩窄（旋转/分屏/合上折叠屏）：把双栏选中态提升为整页导航。 */
+    data object Promote : DetailExitIntent
+
+    /** 窗口展宽（旋转回来/展开折叠屏）：把整页导航降级回双栏选中态。 */
+    data object Demote : DetailExitIntent
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -384,6 +405,16 @@ private fun NotesApp(
     val webDavConfig by viewModel.webDavConfig.collectAsStateWithLifecycle()
     val webDavTask by viewModel.webDavTask.collectAsStateWithLifecycle()
     var page by remember { mutableStateOf<AppPage>(AppPage.List) }
+    // 双栏（平板 ≥840dp）：selectedDetail 为详情 pane 当前选中目标（null = 空态占位）。
+    // 切换选中/窗口变化引起的详情离开都先记录意图再请求离开（见 DetailExitIntent），
+    // 由详情自身完成最终保存后于 onBack 统一应用，避免组合销毁丢失防抖窗内的编辑。
+    val twoPane = rememberTwoPane()
+    var selectedDetail by remember { mutableStateOf<AppPage.Detail?>(null) }
+    var pendingDetailIntent by remember { mutableStateOf<DetailExitIntent?>(null) }
+    var detailLeaveRequest by remember { mutableStateOf(0) }
+    // 编辑器保存作用域提升到 NotesApp：详情 pane 离开组合时，未落盘的防抖保存不随之取消
+    // （queueSaveNote 本身在 viewModelScope 执行，写入与组合生命周期解耦）。
+    val appEditorScope = rememberCoroutineScope()
     var showSearch by remember { mutableStateOf(false) }
     var showCreateMenu by remember { mutableStateOf(false) }
     var noteToDelete by remember { mutableStateOf<NoteEntity?>(null) }
@@ -421,6 +452,76 @@ private fun NotesApp(
     fun writableFolderId(): Long = when (activeFolderId) {
         STARRED_FOLDER_ID, ALL_FOLDERS_ID -> DEFAULT_FOLDER_ID
         else -> activeFolderId
+    }
+
+    /** 打开详情目标：单栏走整页导航；双栏先冲刷当前详情的未保存内容再切换选中。 */
+    fun openDetailTarget(target: AppPage.Detail) {
+        if (!twoPane) {
+            page = target
+            return
+        }
+        val current = selectedDetail
+        // 同一篇已入库笔记的重复点选视为无变化：pane 已在展示该笔记，重新赋值会因
+        // seed 变化重置详情 remember 状态，把编辑中的内容覆盖为旧快照。
+        // 新草稿（note == null）之间或草稿与笔记之间一律走冲刷路径。
+        val sameNote = current != null && target.note != null && current.note?.id == target.note?.id
+        if (current != null && !sameNote) {
+            pendingDetailIntent = DetailExitIntent.Switch(target)
+            detailLeaveRequest += 1
+        } else if (current == null) {
+            selectedDetail = target
+            pendingDetailIntent = null
+        }
+    }
+
+    /** 详情离开后的善后与意图应用：整页导航与双栏 pane 共用。 */
+    fun handleDetailBack(wasNewNote: Boolean, returnedFolderId: Long, returnedNoteId: Long) {
+        if (wasNewNote && returnedNoteId > 0L) {
+            // “已保存”仅会在 Room 写入完成后显示；返回时定位到新笔记所在收藏夹，
+            // 并清除旧搜索条件，避免首个草稿因列表筛选而看似消失。
+            if (activeFolderId != STARRED_FOLDER_ID && activeFolderId != returnedFolderId) {
+                viewModel.selectFolder(returnedFolderId)
+            }
+            if (query.isNotBlank()) viewModel.setSearchQuery("")
+        } else if (activeFolderId == STARRED_FOLDER_ID && returnedFolderId != STARRED_FOLDER_ID) {
+            viewModel.selectFolder(returnedFolderId)
+        }
+        when (val intent = pendingDetailIntent) {
+            null -> {
+                // 详情自身发起离开（系统返回/返回箭头/专注模式退出后的返回）
+                selectedDetail = null
+                if (!twoPane) page = AppPage.List
+            }
+            is DetailExitIntent.Switch -> {
+                // 与 Demote 同理：目标快照刷新为列表最新实体，避免展示点选瞬间的旧内容。
+                val target = intent.target
+                val latest = target.note?.id?.let { id -> notes.firstOrNull { it.id == id } }
+                selectedDetail = target.copy(note = latest ?: target.note)
+                page = AppPage.List
+            }
+            DetailExitIntent.Promote -> {
+                // 新草稿不提升为整页：草稿已入库并出现在列表，点选即可打开；
+                // 若用空 seed 重建详情会用空白内容覆盖已保存草稿的显示。
+                val target = selectedDetail
+                if (target != null && target.note != null) {
+                    page = target
+                } else {
+                    selectedDetail = null
+                    page = AppPage.List
+                }
+            }
+            DetailExitIntent.Demote -> {
+                // 整页导航持有的 NoteEntity 是打开时的快照，编辑已由 finalizeAndLeave
+                // 落库；从当前列表 Flow 取最新实体替换，避免 pane 显示编辑前的旧内容。
+                // 列表被筛选不含该笔记时回退旧快照（内容已在库中，不影响正确性）。
+                val detail = page as? AppPage.Detail
+                val latest = detail?.note?.id?.let { id -> notes.firstOrNull { it.id == id } }
+                selectedDetail = detail?.copy(note = latest ?: detail.note)
+                page = AppPage.List
+            }
+        }
+        pendingDetailIntent = null
+        detailLeaveRequest = 0
     }
 
     fun saveImportedDirectly(note: EditorSeed) {
@@ -617,6 +718,19 @@ private fun NotesApp(
         page = if (page is AppPage.Appearance) AppPage.Settings else AppPage.List
     }
 
+    // 双栏与整页随窗口互转：缩窄（旋转/退出分屏/合上折叠屏）把选中态提升为整页导航，
+    // 展宽（旋转回来/进入分屏/展开折叠屏）把整页降级回双栏。两者都先请求详情完成
+    // 最终保存（leaveRequest 令牌），保存完成后由 handleDetailBack 应用意图。
+    LaunchedEffect(twoPane) {
+        if (!twoPane && page is AppPage.List && selectedDetail != null) {
+            pendingDetailIntent = DetailExitIntent.Promote
+            detailLeaveRequest += 1
+        } else if (twoPane && page is AppPage.Detail) {
+            pendingDetailIntent = DetailExitIntent.Demote
+            detailLeaveRequest += 1
+        }
+    }
+
     when (val currentPage = page) {
         AppPage.List -> NotesListPage(
             notes = notes,
@@ -642,10 +756,12 @@ private fun NotesApp(
             createMenuExpanded = showCreateMenu,
             onCreateMenuExpanded = { showCreateMenu = it },
             onNewNote = {
-                page = AppPage.Detail(
-                    note = null,
-                    folderId = writableFolderId(),
-                    initialPinned = activeFolderId == STARRED_FOLDER_ID
+                openDetailTarget(
+                    AppPage.Detail(
+                        note = null,
+                        folderId = writableFolderId(),
+                        initialPinned = activeFolderId == STARRED_FOLDER_ID
+                    )
                 )
             },
             onImportFile = { fileLauncher.launch(arrayOf("text/plain", "text/markdown", "text/x-markdown", "text/*")) },
@@ -666,7 +782,9 @@ private fun NotesApp(
             onOpenNote = { note, contentCursor ->
                 // 打开即刷新“最近打开”时间戳，供“笔记按最近打开置顶”排序使用。
                 viewModel.noteOpened(note.id)
-                page = AppPage.Detail(note = note, folderId = note.folderId, initialContentCursor = contentCursor)
+                openDetailTarget(
+                    AppPage.Detail(note = note, folderId = note.folderId, initialContentCursor = contentCursor)
+                )
             },
             onToggleStar = viewModel::toggleStar,
             onToggleTopPin = viewModel::toggleTopPin,
@@ -674,6 +792,16 @@ private fun NotesApp(
             onBatchDelete = { ids ->
                 viewModel.deleteNotes(ids) { deletedCount ->
                     feedbackMessage = "已删除 $deletedCount 条笔记"
+                    // 双栏下被选中的笔记也在删除集合内：取消选中，避免 pane 展示已删除笔记。
+                    // 残留竞态：若删除前 700ms 内还在编辑该笔记，迟到的防抖保存（upsert）
+                    // 理论上会复活已删除行；需要「输入后立即长按+删除+确认」四步在防抖
+                    // 窗口内完成，实际不可达，故不为它引入第二套取消机制。
+                    val selectedId = selectedDetail?.note?.id
+                    if (selectedId != null && selectedId in ids) {
+                        selectedDetail = null
+                        pendingDetailIntent = null
+                        detailLeaveRequest = 0
+                    }
                 }
             },
             onBatchStar = { ids ->
@@ -685,7 +813,56 @@ private fun NotesApp(
                 viewModel.setTopPinnedNotes(ids, topPinned) { changedCount ->
                     feedbackMessage = if (topPinned) "已置顶 $changedCount 条笔记" else "已取消置顶 $changedCount 条笔记"
                 }
-            }
+            },
+            twoPane = twoPane,
+            paneSelectedNoteId = selectedDetail?.note?.id,
+            detailPane = if (twoPane) {
+                {
+                    val detail = selectedDetail
+                    if (detail == null) {
+                        DetailPaneEmptyState(
+                            onCreate = {
+                                openDetailTarget(
+                                    AppPage.Detail(
+                                        note = null,
+                                        folderId = writableFolderId(),
+                                        initialPinned = activeFolderId == STARRED_FOLDER_ID
+                                    )
+                                )
+                            }
+                        )
+                    } else {
+                        NoteDetailPage(
+                            note = detail.note,
+                            seed = detail.seed,
+                            initialFolderId = detail.folderId,
+                            initialContentCursor = detail.initialContentCursor,
+                            initialPinned = detail.initialPinned,
+                            folders = folders.filterNot { it.id == STARRED_FOLDER_ID },
+                            positionStore = notePositionStore,
+                            editorScope = appEditorScope,
+                            leaveRequest = detailLeaveRequest,
+                            onBack = { returnedFolderId, returnedNoteId ->
+                                handleDetailBack(detail.note == null, returnedFolderId, returnedNoteId)
+                            },
+                            onSave = { id, title, content, color, pinned, topPinned, markdown, folderId, createdAt ->
+                                viewModel.queueSaveNote(id, title, content, color, pinned, topPinned, markdown, folderId, createdAt)
+                            },
+                            onDelete = { note -> noteToDelete = note },
+                            onDiscardEmptyDraft = { noteId -> viewModel.deleteNote(noteId) },
+                            onExport = { title, content, markdown -> launchNoteExport(title, content, markdown) },
+                            onCopyToFolder = { note, folderId ->
+                                viewModel.copyNoteToFolder(
+                                    note = note,
+                                    folderId = folderId,
+                                    onSuccess = { feedbackMessage = "已复制到收藏夹" },
+                                    onFailure = { feedbackMessage = "复制失败：$it" }
+                                )
+                            }
+                        )
+                    }
+                }
+            } else null
         )
         AppPage.Settings -> SettingsPage(
             onBack = { page = AppPage.List },
@@ -714,18 +891,10 @@ private fun NotesApp(
             initialPinned = currentPage.initialPinned,
             folders = folders.filterNot { it.id == STARRED_FOLDER_ID },
             positionStore = notePositionStore,
+            editorScope = appEditorScope,
+            leaveRequest = detailLeaveRequest,
             onBack = { returnedFolderId, returnedNoteId ->
-                if (currentPage.note == null && returnedNoteId > 0L) {
-                    // “已保存”仅会在 Room 写入完成后显示；返回时定位到新笔记所在收藏夹，
-                    // 并清除旧搜索条件，避免首个草稿因列表筛选而看似消失。
-                    if (activeFolderId != STARRED_FOLDER_ID && activeFolderId != returnedFolderId) {
-                        viewModel.selectFolder(returnedFolderId)
-                    }
-                    if (query.isNotBlank()) viewModel.setSearchQuery("")
-                } else if (activeFolderId == STARRED_FOLDER_ID && returnedFolderId != STARRED_FOLDER_ID) {
-                    viewModel.selectFolder(returnedFolderId)
-                }
-                page = AppPage.List
+                handleDetailBack(currentPage.note == null, returnedFolderId, returnedNoteId)
             },
             onSave = { id, title, content, color, pinned, topPinned, markdown, folderId, createdAt ->
                 viewModel.queueSaveNote(id, title, content, color, pinned, topPinned, markdown, folderId, createdAt)
@@ -747,7 +916,19 @@ private fun NotesApp(
     noteToDelete?.let { note ->
         ConfirmDeleteDialog(
             onDismiss = { noteToDelete = null },
-            onConfirm = { viewModel.deleteNote(note.id); noteToDelete = null; page = AppPage.List }
+            onConfirm = {
+                viewModel.deleteNote(note.id)
+                noteToDelete = null
+                page = AppPage.List
+                // 双栏下删除的正是 pane 选中笔记：清选中回空态，避免详情页继续
+                // 展示已删除内容（且后续编辑会经 upsert 复活该行）。残留竞态与
+                // 批量删除同一论证：删除前 700ms 内的迟到保存实际不可达。
+                if (selectedDetail?.note?.id == note.id) {
+                    selectedDetail = null
+                    pendingDetailIntent = null
+                    detailLeaveRequest = 0
+                }
+            }
         )
     }
     folderToDelete?.let { folder ->
@@ -981,2724 +1162,3 @@ private fun NotesApp(
         FeedbackDialog(message = message, onDismiss = { feedbackMessage = null })
     }
 }
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun NotesListPage(
-    notes: List<NoteEntity>,
-    folders: List<FolderEntity>,
-    activeFolderId: Long,
-    query: String,
-    showSearch: Boolean,
-    globalSearch: Boolean,
-    onSearchToggle: () -> Unit,
-    onSearchChange: (String) -> Unit,
-    onFolderSelected: (Long) -> Unit,
-    onCreateFolder: () -> Unit,
-    onOpenSettings: () -> Unit,
-    createMenuExpanded: Boolean,
-    onCreateMenuExpanded: (Boolean) -> Unit,
-    onNewNote: () -> Unit,
-    onImportFile: () -> Unit,
-    onImportClipboard: () -> Unit,
-    onOpenNote: (NoteEntity, Int?) -> Unit,
-    onToggleStar: (NoteEntity) -> Unit,
-    onToggleTopPin: (NoteEntity) -> Unit,
-    onFolderLongPress: (FolderEntity) -> Unit,
-    onBatchDelete: (Set<Long>) -> Unit,
-    onBatchStar: (Set<Long>) -> Unit,
-    onBatchTopPin: (Set<Long>, Boolean) -> Unit
-) {
-    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
-    val scope = rememberCoroutineScope()
-    // 搜索关键词只按查询串解析一次：列表内所有卡片共享同一份 terms，
-    // 避免每敲一个字符就对每张可见卡片重复执行 split。
-    val searchTerms = remember(query) { parseSearchTerms(query) }
-    val activeFolderName = if (globalSearch) "全局搜索" else folders.firstOrNull { it.id == activeFolderId }?.name ?: "全部笔记"
-    val noteListState = rememberLazyListState()
-    var selectedNoteIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
-    var pendingBatchDeleteIds by remember { mutableStateOf<Set<Long>?>(null) }
-    val selectionMode = selectedNoteIds.isNotEmpty()
-    val allSelectedNotesAreTopPinned = selectedNoteIds.isNotEmpty() &&
-        notes.filter { it.id in selectedNoteIds }.all { it.isTopPinned }
-
-    fun toggleSelection(noteId: Long) {
-        selectedNoteIds = if (noteId in selectedNoteIds) selectedNoteIds - noteId else selectedNoteIds + noteId
-    }
-
-    BackHandler(enabled = selectionMode) { selectedNoteIds = emptySet() }
-
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        drawerContent = {
-            ModalDrawerSheet(modifier = Modifier.fillMaxWidth(0.76f).contentWidthCap(drawerMaxWidth())) {
-                Column(modifier = Modifier.fillMaxSize().padding(vertical = 20.dp)) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = CircleShape, modifier = Modifier.size(42.dp)) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text("安", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-                            }
-                        }
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("我的收藏夹", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                            Text("安笺 · 离线笔记", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                    Spacer(Modifier.height(14.dp))
-                    Surface(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).clickable {
-                            onCreateFolder()
-                            scope.launch { drawerState.close() }
-                        },
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        shape = MaterialTheme.shapes.medium
-                    ) {
-                        Text(
-                            "＋  新建收藏夹",
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    Spacer(Modifier.height(14.dp))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f))
-                    androidx.compose.foundation.lazy.LazyColumn(
-                        modifier = Modifier.weight(1f).padding(horizontal = 12.dp, vertical = 14.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        items(folders.size, key = { folders[it].id }) { index ->
-                            val folder = folders[index]
-                            FolderDrawerItem(
-                                label = folder.name,
-                                selected = folder.id == activeFolderId,
-                                onClick = {
-                                    onFolderSelected(folder.id)
-                                    scope.launch { drawerState.close() }
-                                },
-                                onLongClick = if (folder.id != STARRED_FOLDER_ID) {
-                                    { onFolderLongPress(folder) }
-                                } else null
-                            )
-                        }
-                    }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f))
-                    NavigationDrawerItem(
-                        label = { Text("⚙  设置", style = MaterialTheme.typography.labelLarge) },
-                        selected = false,
-                        onClick = {
-                            scope.launch { drawerState.close() }
-                            onOpenSettings()
-                        },
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)
-                    )
-                }
-            }
-        }
-    ) {
-        Scaffold(
-            containerColor = MaterialTheme.colorScheme.background,
-            topBar = {
-                TopAppBar(
-                    title = {
-                        if (selectionMode) {
-                            Text("已选择 ${selectedNoteIds.size} 条", fontWeight = FontWeight.SemiBold)
-                        } else {
-                            Column {
-                                Text(activeFolderName, fontWeight = FontWeight.Bold)
-                                Text("轻写，轻放", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    },
-                    navigationIcon = {
-                        TextButton(onClick = {
-                            if (selectionMode) {
-                                selectedNoteIds = emptySet()
-                            } else {
-                                scope.launch {
-                                    if (drawerState.currentValue == DrawerValue.Closed) drawerState.open() else drawerState.close()
-                                }
-                            }
-                        }) {
-                            Text(if (selectionMode) "取消" else "☰", fontSize = if (selectionMode) 15.sp else 24.sp, color = MaterialTheme.colorScheme.onSurface)
-                        }
-                    },
-                    actions = {
-                        if (selectionMode) {
-                            // 批量操作按钮随宽度滚动：小屏上一行放不下「全选/星标/置顶/删除」时
-                            // 横向滑动而非直接裁掉（与详情页顶栏一致的保护）。
-                            Row(
-                                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                TextButton(
-                                    onClick = { selectedNoteIds = notes.mapTo(linkedSetOf()) { it.id } },
-                                    enabled = notes.isNotEmpty() && selectedNoteIds.size < notes.size
-                                ) { Text("全选") }
-                                TextButton(onClick = {
-                                    val ids = selectedNoteIds
-                                    selectedNoteIds = emptySet()
-                                    onBatchStar(ids)
-                                }) { Text("星标") }
-                                TextButton(onClick = {
-                                    val ids = selectedNoteIds
-                                    selectedNoteIds = emptySet()
-                                    onBatchTopPin(ids, !allSelectedNotesAreTopPinned)
-                                }) { Text(if (allSelectedNotesAreTopPinned) "取消置顶" else "置顶") }
-                                TextButton(onClick = { pendingBatchDeleteIds = selectedNoteIds }) {
-                                    Text("删除", color = MaterialTheme.colorScheme.error)
-                                }
-                            }
-                        } else {
-                            TextButton(onClick = onSearchToggle) {
-                                Text(if (showSearch) "×" else "⌕", fontSize = 26.sp, color = MaterialTheme.colorScheme.onSurface)
-                            }
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
-                )
-            },
-            bottomBar = {
-                QuickCaptureBar(
-                    expanded = createMenuExpanded,
-                    onExpandedChange = onCreateMenuExpanded,
-                    onStartWriting = onNewNote,
-                    onImportFile = onImportFile,
-                    onImportClipboard = onImportClipboard
-                )
-            }
-        ) { padding ->
-            // 宽屏（Medium/Expanded）内容封顶并居中：长文本行不横贯平板，
-            // 阅读区保持 60–75 字符行长；手机竖屏与手表 widthIn 为恒等变换，布局零变化。
-            Box(
-                modifier = Modifier.fillMaxSize().padding(padding),
-                contentAlignment = Alignment.TopCenter
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .contentWidthCap(contentMaxWidth())
-                        .padding(horizontal = screenHorizontalPadding())
-                ) {
-                    if (showSearch && !selectionMode) {
-                        OutlinedTextField(
-                            value = query,
-                            onValueChange = onSearchChange,
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                            label = { Text("搜索标题或正文", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            singleLine = true
-                        )
-                    }
-                    if (notes.isEmpty()) {
-                        EmptyNotes(query = query, onCreate = onNewNote)
-                    } else {
-                        Box(modifier = Modifier.fillMaxSize()) {
-                            androidx.compose.foundation.lazy.LazyColumn(
-                                state = noteListState,
-                                verticalArrangement = Arrangement.spacedBy(5.dp),
-                                modifier = Modifier.fillMaxSize()
-                            ) {
-                                item {
-                                    Text(
-                                        text = if (globalSearch && query.isNotBlank()) "全局匹配 ${notes.size} 条" else "共 ${notes.size} 条笔记",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(bottom = 2.dp)
-                                    )
-                                }
-                                items(
-                                    items = notes,
-                                    key = { it.id },
-                                    contentType = { "note" }
-                                ) { note ->
-                                    NoteCard(
-                                        // 位置变化（星标/置顶/删除/排序）时平滑滑动就位；
-                                        // spring 阻尼比 1.0 无回弹，刚度 Medium 保证快速收敛。
-                                        modifier = Modifier.animateItem(
-                                            placementSpec = spring(stiffness = Spring.StiffnessMedium)
-                                        ),
-                                        note = note,
-                                        selected = note.id in selectedNoteIds,
-                                        selectionMode = selectionMode,
-                                        searchTerms = searchTerms,
-                                        onOpen = {
-                                            if (selectionMode) toggleSelection(note.id) else onOpenNote(note, note.findSearchMatch(searchTerms)?.contentOffset)
-                                        },
-                                        onLongPress = { toggleSelection(note.id) },
-                                        onToggleStar = { onToggleStar(note) },
-                                        onToggleTopPin = { onToggleTopPin(note) }
-                                    )
-                                }
-                                item { Spacer(Modifier.height(20.dp)) }
-                            }
-                            DraggableNoteListScrollbar(
-                                listState = noteListState,
-                                thumbColor = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier
-                                    .align(Alignment.CenterEnd)
-                                    .fillMaxHeight()
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    pendingBatchDeleteIds?.let { ids ->
-        BatchDeleteDialog(
-            count = ids.size,
-            onDismiss = { pendingBatchDeleteIds = null },
-            onConfirm = {
-                pendingBatchDeleteIds = null
-                selectedNoteIds = emptySet()
-                onBatchDelete(ids)
-            }
-        )
-    }
-}
-
-@Composable
-private fun FolderNameDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
-    var name by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("新建收藏夹") },
-        text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                label = { Text("收藏夹名称") },
-                singleLine = true
-            )
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-        confirmButton = { TextButton(onClick = { if (name.isNotBlank()) onConfirm(name) }) { Text("创建") } }
-    )
-}
-
-@Composable
-private fun FolderDeleteDialog(
-    folder: FolderEntity,
-    onDismiss: () -> Unit,
-    onConfirm: () -> Unit
-) = ConfirmationDialog(
-    title = "删除收藏夹？",
-    message = "将删除“${folder.name}”及其中全部笔记。此操作不可恢复。",
-    confirmLabel = "删除",
-    destructive = true,
-    onDismiss = onDismiss,
-    onConfirm = onConfirm
-)
-
-/** 抽屉收藏夹条目：视觉仿 NavigationDrawerItem，额外支持长按呼出操作菜单。 */
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun FolderDrawerItem(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    onLongClick: (() -> Unit)? = null
-) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(28.dp),
-        color = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp)
-                .combinedClickable(
-                    onClick = onClick,
-                    onLongClick = onLongClick
-                )
-                .padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                label,
-                style = MaterialTheme.typography.labelLarge,
-                color = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
-}
-
-/** 长按收藏夹弹出的操作菜单：重命名 / 排序 / 删除（默认收藏夹与星标入口不可删除，不出现删除项）。 */
-@Composable
-private fun FolderActionsMenuDialog(
-    folder: FolderEntity,
-    onDismiss: () -> Unit,
-    onRename: () -> Unit,
-    onSort: () -> Unit,
-    onDelete: () -> Unit
-) {
-    val canDelete = folder.id != DEFAULT_FOLDER_ID && folder.id != STARRED_FOLDER_ID
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(folder.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                TextButton(onClick = onRename, modifier = Modifier.fillMaxWidth()) {
-                    Text("重命名", modifier = Modifier.fillMaxWidth())
-                }
-                TextButton(onClick = onSort, modifier = Modifier.fillMaxWidth()) {
-                    Text("排序", modifier = Modifier.fillMaxWidth())
-                }
-                if (canDelete) {
-                    TextButton(onClick = onDelete, modifier = Modifier.fillMaxWidth()) {
-                        Text("删除", modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.error)
-                    }
-                }
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-        confirmButton = {}
-    )
-}
-
-/** 重命名收藏夹；风格与新建收藏夹对话框一致。 */
-@Composable
-private fun FolderRenameDialog(
-    folder: FolderEntity,
-    onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit
-) {
-    var name by remember(folder.id, folder.name) { mutableStateOf(folder.name) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("重命名收藏夹") },
-        text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                label = { Text("收藏夹名称") },
-                singleLine = true
-            )
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-        confirmButton = {
-            TextButton(onClick = { if (name.trim().isNotBlank()) onConfirm(name) }) { Text("保存") }
-        }
-    )
-}
-
-/** 手动排序收藏夹：上移 / 下移 / 置顶，基于 sortOrder 基准顺序实时生效。 */
-@Composable
-private fun FolderSortDialog(
-    folderId: Long,
-    baseOrder: List<FolderEntity>,
-    onDismiss: () -> Unit,
-    onTop: () -> Unit,
-    onUp: () -> Unit,
-    onDown: () -> Unit
-) {
-    val folder = baseOrder.firstOrNull { it.id == folderId }
-    val index = baseOrder.indexOfFirst { it.id == folderId }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (folder == null) "收藏夹排序" else "排序 · ${folder.name}", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-        text = {
-            // 排序操作项可内部滚动：小屏上不与按钮争夺屏幕高度。
-            DialogContentColumn(spacing = 10.dp) {
-                Text(
-                    if (folder == null) "该收藏夹不存在或已被删除。"
-                    else "当前位置：第 ${index + 1} 个 / 共 ${baseOrder.size} 个",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    "调整收藏夹在抽屉中的显示顺序，改动立即生效。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (folder != null && index >= 0) {
-                    TextButton(onClick = onUp, enabled = index > 0, modifier = Modifier.fillMaxWidth()) {
-                        Text("↑  上移一位", modifier = Modifier.fillMaxWidth())
-                    }
-                    TextButton(onClick = onDown, enabled = index < baseOrder.lastIndex, modifier = Modifier.fillMaxWidth()) {
-                        Text("↓  下移一位", modifier = Modifier.fillMaxWidth())
-                    }
-                    TextButton(onClick = onTop, enabled = index > 0, modifier = Modifier.fillMaxWidth()) {
-                        Text("⇧  移到最前", modifier = Modifier.fillMaxWidth())
-                    }
-                }
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("完成") } },
-        confirmButton = {}
-    )
-}
-
-@Composable
-private fun FolderPickerDialog(
-    folders: List<FolderEntity>,
-    selectedFolderId: Long,
-    title: String = "移动到收藏夹",
-    onDismiss: () -> Unit,
-    onSelected: (Long) -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            // 收藏夹较多时列表可内部滚动，按钮不会被顶出屏幕（小屏尤其重要）。
-            DialogContentColumn(spacing = 6.dp) {
-                folders.forEach { folder ->
-                    TextButton(
-                        onClick = { onSelected(folder.id) },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(if (folder.id == selectedFolderId) "${folder.name} ✓" else folder.name, modifier = Modifier.fillMaxWidth())
-                    }
-                }
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-        confirmButton = {}
-    )
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SettingsPage(
-    onBack: () -> Unit,
-    onOpenAppearance: () -> Unit,
-    appearanceMode: AppearanceMode,
-    noteListSortByOpen: Boolean,
-    onNoteListSortByOpenChange: (Boolean) -> Unit,
-    onBackupClick: () -> Unit,
-    onWebDavClick: () -> Unit,
-    webDavConfigured: Boolean
-) {
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                title = { Text("设置", fontWeight = FontWeight.SemiBold) },
-                navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
-            )
-        }
-    ) { padding ->
-        val compact = rememberIsWatchWindow()
-        // 宽屏内容封顶居中：设置项不横贯平板；手机竖屏与手表不封顶，布局不变。
-        Box(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentAlignment = Alignment.TopCenter
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .contentWidthCap(contentMaxWidth())
-                    .verticalScroll(rememberScrollState())
-                    .padding(
-                        horizontal = screenHorizontalPadding(),
-                        vertical = if (compact) 12.dp else 20.dp
-                    ),
-                verticalArrangement = Arrangement.spacedBy(if (compact) 12.dp else 18.dp)
-            ) {
-            SettingsGroup(
-                title = "外观",
-                items = listOf(
-                    SettingsEntry("◐", "外观", "当前：${appearanceMode.label}", onOpenAppearance)
-                )
-            )
-            SettingsToggleGroup(
-                title = "列表排序",
-                items = listOf(
-                    SettingsToggleEntry(
-                        symbol = "⇅",
-                        title = "笔记按最近打开置顶",
-                        subtitle = "最近打开的笔记排在列表最前；关闭时按最近修改排序",
-                        checked = noteListSortByOpen,
-                        onCheckedChange = onNoteListSortByOpenChange
-                    )
-                )
-            )
-            SettingsGroup(
-                title = "数据与备份",
-                items = listOf(
-                    SettingsEntry("↥", "本地备份与恢复", "Markdown ZIP，可在其他应用中直接阅读", onBackupClick),
-                    SettingsEntry(
-                        "⌁",
-                        "WebDAV 增量备份",
-                        if (webDavConfigured) "已配置 · 仅上传发生变化的笔记" else "配置服务器后上传 Markdown 与元数据",
-                        onWebDavClick
-                    )
-                )
-            )
-            SettingsGroup(
-                title = "关于",
-                items = listOf(
-                    SettingsEntry("i", "安装", "安笺 ${BuildConfig.VERSION_NAME} · 离线笔记", onClick = {})
-                )
-            )
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun AppearanceSettingsPage(
-    appearanceMode: AppearanceMode,
-    noteFont: NoteFont,
-    customFontPath: String?,
-    onBack: () -> Unit,
-    onSelect: (AppearanceMode) -> Unit,
-    onFontSelect: (NoteFont) -> Unit,
-    onCustomFontPath: (String) -> Unit
-) {
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                title = { Text("外观", fontWeight = FontWeight.SemiBold) },
-                navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
-            )
-        }
-    ) { padding ->
-        val context = LocalContext.current
-        val fontPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            uri ?: return@rememberLauncherForActivityResult
-            runCatching {
-                val target = File(context.filesDir, "custom_note_font.ttf")
-                context.contentResolver.openInputStream(uri)?.use { input ->
-                    target.outputStream().use { output -> input.copyTo(output) }
-                } ?: error("无法读取字体文件")
-                onCustomFontPath(target.absolutePath)
-            }
-        }
-        // 宽屏内容封顶居中：外观选项不横贯平板；手机竖屏与手表不封顶，布局不变。
-        Box(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentAlignment = Alignment.TopCenter
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .contentWidthCap(contentMaxWidth())
-                    .padding(horizontal = screenHorizontalPadding(), vertical = if (rememberIsWatchWindow()) 12.dp else 20.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-            Text(
-                "选择主题后会立即应用到当前页面和所有组件。",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 4.dp)
-            )
-            AppearanceOption(
-                symbol = "☀",
-                title = "浅色",
-                subtitle = "柔和浅灰背景，适合明亮环境",
-                selected = appearanceMode == AppearanceMode.LIGHT,
-                onClick = { onSelect(AppearanceMode.LIGHT) }
-            )
-            AppearanceOption(
-                symbol = "☾",
-                title = "深色",
-                subtitle = "低亮度深灰层级，适合暗光阅读",
-                selected = appearanceMode == AppearanceMode.DARK,
-                onClick = { onSelect(AppearanceMode.DARK) }
-            )
-            AppearanceOption(
-                symbol = "⚙",
-                title = "跟随系统",
-                subtitle = "随 Android 系统的浅色与深色模式实时变化",
-                selected = appearanceMode == AppearanceMode.SYSTEM,
-                onClick = { onSelect(AppearanceMode.SYSTEM) }
-            )
-            Text("阅读字体", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 14.dp))
-            Text("字体只影响阅读预览和编辑正文，不改变笔记内容。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            AppearanceOption(
-                symbol = "Aa",
-                title = "默认字体",
-                subtitle = "内置中文无衬线字体",
-                selected = noteFont == NoteFont.DEFAULT,
-                onClick = { onFontSelect(NoteFont.DEFAULT) }
-            )
-            AppearanceOption(
-                symbol = "宋",
-                title = "宋体",
-                subtitle = "适合长篇文档和正式内容阅读",
-                selected = noteFont == NoteFont.SONG,
-                onClick = { onFontSelect(NoteFont.SONG) }
-            )
-            AppearanceOption(
-                symbol = "T",
-                title = "导入字体",
-                subtitle = if (customFontPath != null) "已导入自定义字体" else "从设备选择 .ttf 或 .otf 文件",
-                selected = noteFont == NoteFont.CUSTOM,
-                onClick = {
-                    if (customFontPath != null) onFontSelect(NoteFont.CUSTOM)
-                    else fontPicker.launch(arrayOf("font/ttf", "font/otf", "application/octet-stream"))
-                }
-            )
-            TextButton(onClick = { fontPicker.launch(arrayOf("font/ttf", "font/otf", "application/octet-stream")) }) {
-                Text("重新导入字体")
-            }
-            }
-        }
-    }
-}
-
-@Composable
-private fun AppearanceOption(
-    symbol: String,
-    title: String,
-    subtitle: String,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    Surface(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        shape = MaterialTheme.shapes.medium,
-        color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.76f) else MaterialTheme.colorScheme.surface,
-        border = BorderStroke(
-            1.dp,
-            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.32f)
-            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.26f)
-        )
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Surface(
-                color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant,
-                shape = CircleShape,
-                modifier = Modifier.size(40.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(symbol, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-                }
-            }
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            RadioButton(selected = selected, onClick = onClick)
-        }
-    }
-}
-
-private data class SettingsEntry(
-    val symbol: String,
-    val title: String,
-    val subtitle: String,
-    val onClick: () -> Unit
-)
-
-@Composable
-private fun SettingsGroup(title: String, items: List<SettingsEntry>) {
-    val compact = rememberIsWatchWindow()
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(
-            title.uppercase(),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 4.dp)
-        )
-        Surface(
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
-            shape = MaterialTheme.shapes.medium,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.14f))
-        ) {
-            Column {
-                items.forEachIndexed { index, item ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(if (compact) 56.dp else 60.dp)
-                            .clickable(onClick = item.onClick)
-                            .padding(horizontal = if (compact) 12.dp else 16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier.width(24.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(item.symbol, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-                        }
-                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                            Text(item.title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(item.subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                        Text("›", fontSize = 24.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f))
-                    }
-                    if (index != items.lastIndex) {
-                        HorizontalDivider(
-                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f),
-                            modifier = Modifier.padding(start = 52.dp)
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-private data class SettingsToggleEntry(
-    val symbol: String,
-    val title: String,
-    val subtitle: String,
-    val checked: Boolean,
-    val onCheckedChange: (Boolean) -> Unit
-)
-
-/** 与 SettingsGroup 同款卡片的开关设置组；整行可点切换。 */
-@Composable
-private fun SettingsToggleGroup(title: String, items: List<SettingsToggleEntry>) {
-    val compact = rememberIsWatchWindow()
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(
-            title.uppercase(),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 4.dp)
-        )
-        Surface(
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
-            shape = MaterialTheme.shapes.medium,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.14f))
-        ) {
-            Column {
-                items.forEachIndexed { index, item ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(if (compact) 56.dp else 60.dp)
-                            .clickable { item.onCheckedChange(!item.checked) }
-                            .padding(horizontal = if (compact) 12.dp else 16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier.width(24.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(item.symbol, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-                        }
-                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                            Text(item.title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(item.subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                        Switch(
-                            checked = item.checked,
-                            onCheckedChange = item.onCheckedChange
-                        )
-                    }
-                    if (index != items.lastIndex) {
-                        HorizontalDivider(
-                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f),
-                            modifier = Modifier.padding(start = 52.dp)
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun WebDavBackupDialog(
-    initialConfig: WebDavConfig?,
-    task: WebDavTask,
-    onDismiss: () -> Unit,
-    onTest: (WebDavConfig) -> Unit,
-    onSave: (WebDavConfig) -> Unit,
-    onRestore: (WebDavConfig) -> Unit,
-    onSync: (WebDavConfig) -> Unit
-) {
-    var endpoint by remember(initialConfig) { mutableStateOf(initialConfig?.endpoint.orEmpty()) }
-    var username by remember(initialConfig) { mutableStateOf(initialConfig?.username.orEmpty()) }
-    var password by remember(initialConfig) { mutableStateOf(initialConfig?.password.orEmpty()) }
-    var remoteDirectory by remember(initialConfig) { mutableStateOf(initialConfig?.remoteDirectory ?: "an-jian-backup") }
-    var syncDeleteRemoteFiles by remember(initialConfig) { mutableStateOf(initialConfig?.syncDeleteRemoteFiles ?: true) }
-    val busy = task != WebDavTask.IDLE
-    fun currentConfig() = WebDavConfig(endpoint, username, password, remoteDirectory, syncDeleteRemoteFiles)
-
-    // 表单字段在两种外壳间共享，状态提升到本函数；小屏走全屏页、常规走 AlertDialog。
-    val form: @Composable ColumnScope.() -> Unit = {
-        WebDavConfigForm(
-            endpoint = endpoint,
-            onEndpointChange = { endpoint = it },
-            username = username,
-            onUsernameChange = { username = it },
-            password = password,
-            onPasswordChange = { password = it },
-            remoteDirectory = remoteDirectory,
-            onRemoteDirectoryChange = { remoteDirectory = it },
-            syncDeleteRemoteFiles = syncDeleteRemoteFiles,
-            onSyncDeleteRemoteFilesChange = { syncDeleteRemoteFiles = it },
-            busy = busy,
-            task = task
-        )
-    }
-    // FlowRow 自动换行：四个操作在窄手机/手表上超过一行宽度时折行，不再被裁切。
-    val actions = listOf(
-        DialogAction("测试连接", enabled = !busy, onClick = { onTest(currentConfig()) }),
-        DialogAction("仅保存", enabled = !busy, onClick = { onSave(currentConfig()) }),
-        DialogAction("从 WebDAV 恢复", enabled = !busy, onClick = { onRestore(currentConfig()) }),
-        DialogAction("立即备份", emphasized = true, enabled = !busy, onClick = { onSync(currentConfig()) })
-    )
-
-    if (rememberIsWatchWindow()) {
-        // Watch 档（窗口宽度 < 320dp，手表/分屏小窗）：整表单 + 4 个操作无法在矮屏内平铺，
-        // 改用全屏对话框——标题与操作区常驻、表单内部滚动，任何按钮都不会被顶出屏幕。
-        Dialog(
-            onDismissRequest = onDismiss,
-            properties = DialogProperties(usePlatformDefaultWidth = false)
-        ) {
-            Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .statusBarsPadding()
-                        .navigationBarsPadding()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "WebDAV 增量备份",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.weight(1f)
-                        )
-                        TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") }
-                    }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                    // weight(1f) 已把表单限制在标题与操作区之间的剩余空间，
-                    // 表单自身滚动即可，无需再叠加高度上限（避免留白）。
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .verticalScroll(rememberScrollState())
-                            .imePadding()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) { form() }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                    DialogActionButtons(
-                        actions = actions,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                    )
-                }
-            }
-        }
-    } else {
-        AlertDialog(
-            onDismissRequest = onDismiss,
-            title = { Text("WebDAV 增量备份") },
-            text = {
-                // 限高 + 内部滚动：矮屏（横屏手机、手表兼容窗口）下按钮不会被顶出屏幕。
-                DialogContentColumn(spacing = 10.dp, content = form)
-            },
-            dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") } },
-            confirmButton = { DialogActionButtons(actions = actions) }
-        )
-    }
-}
-
-/** WebDAV 备份表单字段：全屏页与对话框两种外壳共用，状态由调用方提升。 */
-@Composable
-private fun WebDavConfigForm(
-    endpoint: String,
-    onEndpointChange: (String) -> Unit,
-    username: String,
-    onUsernameChange: (String) -> Unit,
-    password: String,
-    onPasswordChange: (String) -> Unit,
-    remoteDirectory: String,
-    onRemoteDirectoryChange: (String) -> Unit,
-    syncDeleteRemoteFiles: Boolean,
-    onSyncDeleteRemoteFilesChange: (Boolean) -> Unit,
-    busy: Boolean,
-    task: WebDavTask
-) {
-    // 表单自带纵向节奏：两种外壳（全屏页 / 对话框）都不再需要额外间距。
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Text(
-            "服务器上会保存 notes/*.md、folders.json 与 metadata.json。密码使用设备加密密钥保存在本机。",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        OutlinedTextField(
-            value = endpoint,
-            onValueChange = onEndpointChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("服务器地址", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            // 占位符单行省略：多行占位符会把输入框撑高、URL 断行显示，小屏上尤其难看。
-            placeholder = {
-                Text(
-                    "https://dav.example.com/remote.php/dav/files/name",
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            },
-            singleLine = true
-        )
-        OutlinedTextField(
-            value = username,
-            onValueChange = onUsernameChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("用户名", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            singleLine = true
-        )
-        OutlinedTextField(
-            value = password,
-            onValueChange = onPasswordChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("密码或应用专用密码", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            visualTransformation = PasswordVisualTransformation(),
-            singleLine = true
-        )
-        OutlinedTextField(
-            value = remoteDirectory,
-            onValueChange = onRemoteDirectoryChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("远程备份目录", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            singleLine = true
-        )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(
-                checked = syncDeleteRemoteFiles,
-                onCheckedChange = onSyncDeleteRemoteFilesChange,
-                enabled = !busy
-            )
-            Column {
-                Text("同步删除远程备份文件")
-                Text(
-                    "删除本地笔记后，下次备份会清理远端冗余文件",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-        Text(
-            when (task) {
-                WebDavTask.BACKUP -> "正在备份，请勿重复操作"
-                WebDavTask.RESTORE -> "正在读取远程备份，请稍候"
-                WebDavTask.IDLE -> "手动备份工具：不会自动覆盖本地数据"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-}
-
-@Composable
-private fun WebDavRestorePreviewDialog(
-    remote: WebDavRemoteSnapshot,
-    onDismiss: () -> Unit,
-    onConfirm: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("从 WebDAV 恢复？") },
-        text = {
-            Text("备份时间：${SimpleDateFormat("yyyy年M月d日 HH:mm", Locale.CHINA).format(Date(remote.updatedAt))}\n笔记：${remote.snapshot.notes.size} 条\n收藏夹：${remote.snapshot.folders.size} 个\n\n恢复将替换当前本地数据。远程文件已完成完整性校验。")
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("确认恢复") } }
-    )
-}
-
-@Composable
-private fun BackupMenuDialog(
-    onDismiss: () -> Unit,
-    onExportZip: () -> Unit,
-    onImportZip: () -> Unit,
-    onExportText: () -> Unit,
-    onImportText: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("备份与恢复") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("备份会创建可跨平台阅读的 ZIP：每篇笔记均为独立 Markdown 文件，同时包含收藏夹与备份元数据。恢复会替换当前本地数据。")
-                TextButton(onClick = onExportZip, modifier = Modifier.fillMaxWidth()) { Text("导出 Markdown ZIP 备份", modifier = Modifier.fillMaxWidth()) }
-                TextButton(onClick = onImportZip, modifier = Modifier.fillMaxWidth()) { Text("导入 Markdown ZIP 并完整恢复", modifier = Modifier.fillMaxWidth()) }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f))
-                Text("TXT 明文备份保留为轻量、直接可读的本地备份格式。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                TextButton(onClick = onExportText, modifier = Modifier.fillMaxWidth()) { Text("导出 TXT 明文备份", modifier = Modifier.fillMaxWidth()) }
-                TextButton(onClick = onImportText, modifier = Modifier.fillMaxWidth()) { Text("导入 TXT 明文并完整恢复", modifier = Modifier.fillMaxWidth()) }
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
-    )
-}
-
-@Composable
-private fun RestoreTextBackupDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) = ConfirmationDialog(
-    title = "恢复 TXT 明文备份？",
-    message = "恢复会以 TXT 备份中的收藏夹和笔记替换当前本地数据，此操作无法撤销。",
-    confirmLabel = "确认恢复",
-    onDismiss = onDismiss,
-    onConfirm = onConfirm
-)
-
-@Composable
-private fun RestoreBackupDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) = ConfirmationDialog(
-    title = "恢复备份？",
-    message = "恢复会以备份文件中的收藏夹和笔记替换当前本地数据，此操作无法撤销。",
-    confirmLabel = "确认恢复",
-    onDismiss = onDismiss,
-    onConfirm = onConfirm
-)
-
-@Composable
-private fun FeedbackDialog(message: String, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        text = { Text(message) },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("知道了") } }
-    )
-}
-
-@Composable
-private fun QuickCaptureBar(
-    expanded: Boolean,
-    onExpandedChange: (Boolean) -> Unit,
-    onStartWriting: () -> Unit,
-    onImportFile: () -> Unit,
-    onImportClipboard: () -> Unit
-) {
-    val pillShape = RoundedCornerShape(30.dp)
-    val shadowColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.18f)
-    val compact = rememberIsWatchWindow()
-    val barHeight = if (compact) 52.dp else 56.dp
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .navigationBarsPadding()
-            .imePadding()
-            .padding(
-                start = if (compact) 12.dp else 16.dp,
-                end = if (compact) 12.dp else 16.dp,
-                top = 8.dp,
-                bottom = 16.dp
-            )
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(barHeight)
-                    .shadow(
-                        elevation = 6.dp,
-                        shape = pillShape,
-                        ambientColor = shadowColor,
-                        spotColor = shadowColor
-                    )
-                    .clip(pillShape)
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.surfaceVariant,
-                                MaterialTheme.colorScheme.surface
-                            )
-                        )
-                    )
-                    .clickable(onClick = onStartWriting)
-                    .padding(horizontal = 20.dp),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                Text(
-                    "写点什么…",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Box {
-                Surface(
-                    modifier = Modifier
-                        .size(barHeight)
-                        .shadow(
-                            elevation = 5.dp,
-                            shape = CircleShape,
-                            ambientColor = shadowColor,
-                            spotColor = shadowColor
-                        )
-                        .clickable { onExpandedChange(!expanded) },
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = CircleShape
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text("⋮", fontSize = 26.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
-                    }
-                }
-                DropdownMenu(expanded = expanded, onDismissRequest = { onExpandedChange(false) }) {
-                    CreateMenuItem("新建笔记", "打开完整编辑页开始书写", onClick = { onExpandedChange(false); onStartWriting() })
-                    CreateMenuItem("导入文件", "支持 .md、.markdown、.txt 与 UTF-8 文本", onClick = { onExpandedChange(false); onImportFile() })
-                    CreateMenuItem("从剪切板导入", "读取当前最近一条剪切板文本", onClick = { onExpandedChange(false); onImportClipboard() })
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun CreateMenuItem(title: String, subtitle: String, onClick: () -> Unit) {
-    DropdownMenuItem(
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(title, style = MaterialTheme.typography.bodyLarge)
-                Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        },
-        onClick = onClick
-    )
-}
-
-/** 笔记详情预览页的正文搜索栏：关键字、命中计数与上一个/下一个导航。 */
-@Composable
-private fun NoteSearchBar(
-    query: String,
-    onQueryChange: (String) -> Unit,
-    matchIndex: Int,
-    matchTotal: Int,
-    onPrevious: () -> Unit,
-    onNext: () -> Unit,
-    onClose: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { focusRequester.requestFocus() }
-    val compact = rememberIsWatchWindow()
-    val navButtonSize = if (compact) 36.dp else 40.dp
-    Row(
-        modifier = modifier
-            .background(
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f),
-                shape = RoundedCornerShape(12.dp)
-            )
-            .padding(horizontal = if (compact) 8.dp else 12.dp, vertical = if (compact) 4.dp else 6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text("🔍", fontSize = 16.sp, modifier = Modifier.padding(end = 8.dp))
-        BasicTextField(
-            value = query,
-            onValueChange = onQueryChange,
-            singleLine = true,
-            textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
-            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { onNext() }),
-            modifier = Modifier.weight(1f).padding(vertical = 8.dp).focusRequester(focusRequester),
-            decorationBox = { innerTextField ->
-                Box {
-                    if (query.isEmpty()) {
-                        Text(
-                            "搜索正文…",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                        )
-                    }
-                    innerTextField()
-                }
-            }
-        )
-        Text(
-            text = when {
-                query.isBlank() -> ""
-                matchTotal == 0 -> "无结果"
-                else -> "${matchIndex + 1}/$matchTotal"
-            },
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 8.dp, end = 4.dp)
-        )
-        TextButton(onClick = onPrevious, enabled = matchTotal > 0, modifier = Modifier.size(navButtonSize)) {
-            Text("↑", fontSize = 18.sp)
-        }
-        TextButton(onClick = onNext, enabled = matchTotal > 0, modifier = Modifier.size(navButtonSize)) {
-            Text("↓", fontSize = 18.sp)
-        }
-        TextButton(onClick = onClose, modifier = Modifier.size(navButtonSize)) {
-            Text("✕", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
-@Composable
-private fun NoteDetailPage(
-    note: NoteEntity?,
-    seed: EditorSeed,
-    initialFolderId: Long,
-    initialContentCursor: Int?,
-    initialPinned: Boolean,
-    folders: List<FolderEntity>,
-    positionStore: NotePositionStore,
-    onBack: (Long, Long) -> Unit,
-    onSave: (Long, String, String, Long, Boolean, Boolean, Boolean, Long, Long) -> Deferred<Long>,
-    onDelete: (NoteEntity) -> Unit,
-    onDiscardEmptyDraft: (Long) -> Unit,
-    onExport: (String, String, Boolean) -> Unit,
-    onCopyToFolder: (NoteEntity, Long) -> Unit
-) {
-    val context = LocalContext.current
-    val isNewNote = note == null
-    var title by remember(note?.id, seed) { mutableStateOf(note?.title ?: seed.title) }
-    var contentValue by remember(note?.id, seed) { mutableStateOf(TextFieldValue(note?.content ?: seed.content)) }
-    val content = contentValue.text
-    var color by remember(note?.id) { mutableStateOf(note?.color ?: NoteColors.first()) }
-    var pinned by remember(note?.id, initialPinned) { mutableStateOf(note?.isPinned ?: initialPinned) }
-    var topPinned by remember(note?.id) { mutableStateOf(note?.isTopPinned ?: false) }
-    var selectedFolderId by remember(note?.id, initialFolderId) { mutableStateOf(note?.folderId ?: initialFolderId) }
-    var showFolderPicker by remember { mutableStateOf(false) }
-    var showCopyFolderPicker by remember { mutableStateOf(false) }
-    var showDetailMenu by remember(note?.id, seed) { mutableStateOf(false) }
-    var focusMode by remember(note?.id, seed) { mutableStateOf(false) }
-    var formatMode by remember(note?.id, seed) {
-        mutableStateOf(
-            if (note != null) {
-                if (note.isMarkdown) NoteFormatMode.MARKDOWN else NoteFormatMode.PLAIN
-            } else {
-                seed.formatMode
-            }
-        )
-    }
-    var latestDraft by remember(note?.id, seed, initialFolderId, initialPinned) {
-        val initialContent = note?.content ?: seed.content
-        mutableStateOf(
-            NoteDraftSnapshot(
-                title = note?.title ?: seed.title,
-                content = initialContent,
-                color = note?.color ?: NoteColors.first(),
-                isPinned = note?.isPinned ?: initialPinned,
-                isTopPinned = note?.isTopPinned ?: false,
-                isMarkdown = formatMode.resolvesToMarkdown(initialContent),
-                folderId = note?.folderId ?: initialFolderId
-            )
-        )
-    }
-    var detailMode by remember(note?.id, seed) {
-        mutableStateOf(if (note == null) DetailMode.EDIT else DetailMode.PREVIEW)
-    }
-    var focusTarget by remember(note?.id, seed) {
-        mutableStateOf(InlineEditTarget.CONTENT)
-    }
-    var requestedContentSelection by remember(note?.id, seed) { mutableStateOf<TextRange?>(null) }
-    var savedNoteId by remember(note?.id, seed) { mutableStateOf(note?.id ?: 0L) }
-    val draftCreatedAt = remember(note?.id, seed) { note?.createdAt ?: System.currentTimeMillis() }
-    val seedHasContent = isNewNote && (seed.title.isNotBlank() || seed.content.isNotBlank())
-    var editRevision by remember(note?.id, seed) { mutableStateOf(if (seedHasContent) 1 else 0) }
-    var savedRevision by remember(note?.id, seed) { mutableStateOf(0) }
-    var hasUserEdited by remember(note?.id, seed) { mutableStateOf(seedHasContent) }
-    var autoSaveState by remember(note?.id, seed) { mutableStateOf(AutoSaveState.IDLE) }
-    var saveError by remember(note?.id, seed) { mutableStateOf<String?>(null) }
-    var leavingInProgress by remember(note?.id, seed) { mutableStateOf(false) }
-    var saveWorker by remember(note?.id, seed) { mutableStateOf<Job?>(null) }
-    var debounceJob by remember(note?.id, seed) { mutableStateOf<Job?>(null) }
-    val editorScope = rememberCoroutineScope()
-    var nativeTitleFocusRequest by remember(note?.id, seed) { mutableStateOf(-1) }
-    var nativeContentFocusRequest by remember(note?.id, seed) { mutableStateOf(-1) }
-    var nativeContentEditor by remember(note?.id, seed) { mutableStateOf<NativeNoteEditText?>(null) }
-    var nativeEditorScrollVersion by remember(note?.id, seed) { mutableStateOf(0) }
-    val keyboard = LocalSoftwareKeyboardController.current
-    val markdownActive = formatMode.resolvesToMarkdown(content)
-    val folderName = folders.firstOrNull { it.id == selectedFolderId }?.name ?: "默认收藏夹"
-    val characterCount = title.length + content.length
-    val detailScrollState = rememberScrollState()
-    var pendingScrollRestore by remember(note?.id, seed) { mutableStateOf<Int?>(null) }
-    // 预览页正文搜索状态：开关、关键字、当前命中序号（全局）与命中总数。
-    // 搜索状态仅属于当前详情页实例；使用无键 remember，避免大型详情函数的 FIR 数据流图膨胀。
-    var searchVisible by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
-    var searchActiveOrdinal by remember { mutableStateOf(0) }
-    var searchTotal by remember { mutableStateOf(0) }
-
-    LaunchedEffect(detailMode, focusTarget) {
-        if (detailMode == DetailMode.EDIT) {
-            when (focusTarget) {
-                InlineEditTarget.TITLE -> nativeTitleFocusRequest += 1
-                InlineEditTarget.CONTENT -> {
-                    requestedContentSelection?.let { selection ->
-                        contentValue = contentValue.copy(
-                            selection = TextRange(
-                                selection.start.coerceIn(0, contentValue.text.length),
-                                selection.end.coerceIn(0, contentValue.text.length)
-                            )
-                        )
-                        requestedContentSelection = null
-                    }
-                    nativeContentFocusRequest += 1
-                }
-            }
-            pendingScrollRestore?.let { scrollPosition ->
-                // 焦点建立会触发文本控件的可见区域校正；下一帧再恢复预览态的阅读位置。
-                withFrameNanos { }
-                detailScrollState.scrollTo(scrollPosition)
-                pendingScrollRestore = null
-            }
-        } else {
-            keyboard?.hide()
-        }
-    }
-
-    fun enterEdit(target: InlineEditTarget, cursorPosition: Int? = null) {
-        focusMode = false
-        if (detailMode == DetailMode.PREVIEW) pendingScrollRestore = detailScrollState.value
-        if (target == InlineEditTarget.CONTENT) {
-            requestedContentSelection = when {
-                cursorPosition != null -> TextRange(cursorPosition)
-                savedNoteId > 0L -> positionStore.load(savedNoteId).let { saved ->
-                    TextRange(saved.selectionStart, saved.selectionEnd)
-                }
-                else -> null
-            }
-        }
-        focusTarget = target
-        detailMode = DetailMode.EDIT
-    }
-
-    fun editorLog(message: String) {
-        if (BuildConfig.DEBUG) Log.d("NoteEditor", message)
-    }
-
-    fun startSaveWorker() {
-        if (!hasUserEdited || savedRevision >= editRevision || saveWorker?.isActive == true) return
-        saveWorker = editorScope.launch(start = CoroutineStart.UNDISPATCHED) {
-            while (hasUserEdited && savedRevision < editRevision) {
-                val revisionToSave = editRevision
-                // latestDraft 在 TextField 的 onValueChange 内同步更新，不依赖下一次组合重绘。
-                val draftToSave = latestDraft
-                autoSaveState = AutoSaveState.SAVING
-                saveError = null
-                editorLog(
-                    "save start revision=$revisionToSave id=$savedNoteId contentLength=${draftToSave.content.length} " +
-                        if (savedNoteId == 0L) "creating new note" else "updating note"
-                )
-                try {
-                    val id = onSave(
-                        savedNoteId,
-                        draftToSave.title,
-                        draftToSave.content,
-                        draftToSave.color,
-                        draftToSave.isPinned,
-                        draftToSave.isTopPinned,
-                        draftToSave.isMarkdown,
-                        draftToSave.folderId,
-                        draftCreatedAt
-                    ).await()
-                    savedNoteId = id
-                    savedRevision = revisionToSave
-                    autoSaveState = AutoSaveState.SAVED
-                    editorLog("save completed revision=$revisionToSave id=$id")
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (error: Throwable) {
-                    saveError = error.message ?: "保存失败"
-                    autoSaveState = AutoSaveState.IDLE
-                    editorLog("save failed revision=$revisionToSave message=${saveError}")
-                    return@launch
-                }
-            }
-        }
-    }
-
-    fun scheduleAutoSave() {
-        debounceJob?.cancel()
-        if (savedNoteId == 0L) {
-            // 第一处有效编辑立即创建草稿；后续内容全部进入同一个顺序保存队列。
-            startSaveWorker()
-        } else {
-            debounceJob = editorScope.launch {
-                delay(700)
-                editorLog("debounce save")
-                startSaveWorker()
-            }
-        }
-    }
-
-    fun markEdited(
-        titleOverride: String = title,
-        contentOverride: String = contentValue.text
-    ) {
-        // 在输入回调内保存最新值；即使用户立刻侧滑返回，保存队列也不会读取旧快照。
-        latestDraft = NoteDraftSnapshot(
-            title = titleOverride,
-            content = contentOverride,
-            color = color,
-            isPinned = pinned,
-            isTopPinned = topPinned,
-            isMarkdown = formatMode.resolvesToMarkdown(contentOverride),
-            folderId = selectedFolderId
-        )
-        hasUserEdited = true
-        editRevision++
-        saveError = null
-        editorLog("content changed dirty=true revision=$editRevision contentLength=${contentOverride.length}")
-        scheduleAutoSave()
-    }
-
-    LaunchedEffect(seedHasContent) {
-        if (seedHasContent) scheduleAutoSave()
-    }
-
-    fun syncNativeContentBeforePreview() {
-        val editor = nativeContentEditor ?: return
-        val currentText = editor.text?.toString().orEmpty()
-        if (currentText == contentValue.text) return
-        val selectionStart = editor.selectionStart.coerceIn(0, currentText.length)
-        val selectionEnd = editor.selectionEnd.coerceIn(0, currentText.length)
-        contentValue = TextFieldValue(currentText, TextRange(selectionStart, selectionEnd))
-        if (savedNoteId > 0L) positionStore.saveSelection(savedNoteId, selectionStart, selectionEnd)
-        // AndroidView 的最后一次输入可能尚未触发 Compose 重组；切换预览前以视图
-        // 当前文本作为最终来源，同步更新草稿和保存队列。
-        markEdited(contentOverride = currentText)
-    }
-
-    suspend fun finalizePendingChanges(): Boolean {
-        debounceJob?.cancel()
-        // 有有效内容的新建页离开前仍经由已有单一保存队列写入一次 Room；这里不创建
-        // 第二套保存机制。空草稿（标题与正文均无有效字符）不再强制写入，避免产生空笔记。
-        if (savedRevision >= editRevision) {
-            val editorText = nativeContentEditor?.text
-            val finalContent = editorText?.toString() ?: contentValue.text
-            if (shouldForceFinalDraftSave(isNewNote, savedNoteId, title, finalContent)) {
-                latestDraft = NoteDraftSnapshot(
-                    title = title,
-                    content = finalContent,
-                    color = color,
-                    isPinned = pinned,
-                    isTopPinned = topPinned,
-                    isMarkdown = formatMode.resolvesToMarkdown(finalContent),
-                    folderId = selectedFolderId
-                )
-                hasUserEdited = true
-                editRevision = savedRevision + 1
-            }
-        }
-        editorLog("final save before leave dirty=${hasUserEdited && savedRevision < editRevision}")
-        while (hasUserEdited && savedRevision < editRevision) {
-            startSaveWorker()
-            saveWorker?.join()
-            if (saveError != null) return false
-        }
-        return true
-    }
-
-    fun finalizeAndLeave() {
-        // 返回时始终从原生 EditText 同步最后一帧用户输入，不依赖下一次 Compose 重组或 debounce。
-        if (detailMode == DetailMode.EDIT) syncNativeContentBeforePreview()
-        if (leavingInProgress) {
-            editorLog("back ignored while final save is in progress")
-            return
-        }
-        editorLog("back requested mode=$detailMode isNew=$isNewNote")
-        leavingInProgress = true
-        keyboard?.hide()
-        editorScope.launch {
-            if (!finalizePendingChanges()) {
-                editorLog("back cancelled because final save failed")
-                leavingInProgress = false
-                return@launch
-            }
-            if (isNewNote) {
-                if (isNewDraftEmpty(latestDraft.title, latestDraft.content)) {
-                    // 空草稿不留在列表里：从未写入过就直接返回；输入后又清空的
-                    // 情况已落过库，离开前删除这条空记录，避免出现“未命名空笔记”。
-                    if (savedNoteId > 0L) {
-                        editorLog("new draft empty; discard saved empty note id=$savedNoteId")
-                        onDiscardEmptyDraft(savedNoteId)
-                    } else {
-                        editorLog("new draft empty; nothing persisted; leaving detail")
-                    }
-                    onBack(selectedFolderId, 0L)
-                } else {
-                    // 新建笔记第一次返回即在 Room 写入确认后回到主页，不再中转预览页。
-                    editorLog("new draft saved; leaving detail")
-                    onBack(selectedFolderId, savedNoteId)
-                }
-            } else if (detailMode == DetailMode.EDIT) {
-                // 已有笔记保留原有交互：第一次返回仅结束编辑，第二次返回离开详情。
-                detailMode = DetailMode.PREVIEW
-                editorLog("final save confirmed; switched to preview")
-                withFrameNanos { }
-                leavingInProgress = false
-            } else {
-                editorLog("final save confirmed; leaving detail")
-                onBack(selectedFolderId, savedNoteId)
-            }
-        }
-    }
-
-    RememberNoteReadingPosition(
-        noteId = savedNoteId,
-        isPreview = detailMode == DetailMode.PREVIEW,
-        scrollState = detailScrollState,
-        positionStore = positionStore
-    )
-
-    LaunchedEffect(autoSaveState) {
-        if (autoSaveState == AutoSaveState.SAVED) {
-            delay(1_400)
-            if (autoSaveState == AutoSaveState.SAVED) autoSaveState = AutoSaveState.IDLE
-        }
-    }
-
-    LaunchedEffect(searchTotal) {
-        if (searchTotal > 0 && searchActiveOrdinal >= searchTotal) searchActiveOrdinal = 0
-    }
-
-    fun moveSearchMatch(step: Int) {
-        if (searchTotal <= 0) return
-        searchActiveOrdinal = ((searchActiveOrdinal + step) % searchTotal + searchTotal) % searchTotal
-    }
-
-    fun toggleDetailMode() {
-        if (detailMode == DetailMode.PREVIEW) {
-            enterEdit(InlineEditTarget.CONTENT)
-        } else {
-            // 右上角“预览”不会经过系统返回逻辑，必须在此同步 AndroidView
-            // 内尚未完成 Compose 重组的最后输入，避免预览读取旧草稿。
-            syncNativeContentBeforePreview()
-            startSaveWorker()
-            detailMode = DetailMode.PREVIEW
-            keyboard?.hide()
-        }
-    }
-
-    fun openPreviewLink(link: String) {
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }
-    }
-
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) {
-                // 后台切换只催促同一保存队列；离开详情页仍以 handleBack 的最终确认为准。
-                editorLog("lifecycle stop: request pending save")
-                startSaveWorker()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    val latestFinalizeAndLeave by rememberUpdatedState(::finalizeAndLeave)
-    // 专注阅读使用分层返回：第一次返回只恢复普通阅读，第二次才离开笔记。
-    BackHandler(enabled = true) {
-        if (focusMode) focusMode = false else latestFinalizeAndLeave()
-    }
-
-    // 首次进入的轻量淡入：graphicsLayer alpha 只触发重绘、不触发重组与重新测量，
-    // 且恒定向 1f 收敛，离开详情页时无退场成本。
-    var pageEntered by remember(note?.id, seed) { mutableStateOf(false) }
-    LaunchedEffect(note?.id, seed) { pageEntered = true }
-    val pageEnterAlpha by animateFloatAsState(
-        targetValue = if (pageEntered) 1f else 0f,
-        animationSpec = tween(durationMillis = MotionTokens.DurationMedium, easing = MotionTokens.Easing),
-        label = "detail-enter-alpha"
-    )
-
-    Scaffold(
-        modifier = Modifier.graphicsLayer { alpha = pageEnterAlpha },
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            AnimatedVisibility(
-                visible = !focusMode,
-                enter = fadeIn(animationSpec = tween(MotionTokens.DurationMedium, easing = MotionTokens.Easing)),
-                exit = fadeOut(animationSpec = tween(MotionTokens.DurationMedium, easing = MotionTokens.Easing))
-            ) {
-            TopAppBar(
-                title = {},
-                navigationIcon = {
-                    TextButton(onClick = ::finalizeAndLeave, modifier = Modifier.size(48.dp)) {
-                        Text("←", fontSize = 28.sp, color = MaterialTheme.colorScheme.onBackground)
-                    }
-                },
-                actions = {
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                    Text(
-                        "$characterCount 字",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(end = 4.dp)
-                    )
-                    when {
-                        saveError != null -> Text("保存失败", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(end = 4.dp))
-                        autoSaveState == AutoSaveState.SAVING -> Text("保存中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 4.dp))
-                        else -> AnimatedVisibility(
-                            // 「✓ 已保存」快速缩放入场、随即淡出：只走 alpha/scale，不触发重新布局。
-                            visible = autoSaveState == AutoSaveState.SAVED,
-                            enter = fadeIn(animationSpec = tween(MotionTokens.DurationFast, easing = MotionTokens.Easing)) +
-                                scaleIn(animationSpec = tween(MotionTokens.DurationFast, easing = MotionTokens.Easing), initialScale = 0.85f),
-                            exit = fadeOut(animationSpec = tween(MotionTokens.DurationMicro, easing = MotionTokens.Easing))
-                        ) {
-                            Text("✓", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 4.dp))
-                        }
-                    }
-                    if (detailMode == DetailMode.EDIT) {
-                        TextButton(onClick = { nativeContentEditor?.performNativeUndo() }) { Text("↶") }
-                        TextButton(onClick = { nativeContentEditor?.performNativeRedo() }) { Text("↷") }
-                        TextButton(onClick = ::toggleDetailMode) { Text("预览") }
-                    }
-                    if (detailMode == DetailMode.PREVIEW && !focusMode) {
-                        TextButton(
-                            onClick = {
-                                searchVisible = !searchVisible
-                                if (!searchVisible) {
-                                    searchQuery = ""
-                                    searchActiveOrdinal = 0
-                                }
-                            },
-                            modifier = Modifier.size(48.dp)
-                        ) {
-                            Text("🔍", fontSize = 19.sp, color = MaterialTheme.colorScheme.onBackground)
-                        }
-                    }
-                    Box {
-                        TextButton(onClick = { showDetailMenu = true }, modifier = Modifier.size(48.dp)) {
-                            Text("⋯", fontSize = 26.sp, color = MaterialTheme.colorScheme.onBackground)
-                        }
-                        DropdownMenu(expanded = showDetailMenu, onDismissRequest = { showDetailMenu = false }) {
-                            if (detailMode == DetailMode.PREVIEW) {
-                                DropdownMenuItem(
-                                    text = { Text("编辑") },
-                                    onClick = { showDetailMenu = false; enterEdit(InlineEditTarget.CONTENT) }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("专注阅读") },
-                                    onClick = { focusMode = true; showDetailMenu = false }
-                                )
-                            }
-                            DropdownMenuItem(
-                                text = { Text(if (markdownActive) "切换为纯文本" else "切换为 Markdown") },
-                                onClick = {
-                                    formatMode = formatMode.next()
-                                    markEdited()
-                                    showDetailMenu = false
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("移动收藏夹") },
-                                onClick = { showFolderPicker = true; showDetailMenu = false }
-                            )
-                            if (note != null) {
-                                DropdownMenuItem(
-                                    text = { Text("复制全文") },
-                                    onClick = {
-                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                        val fullText = buildString {
-                                            if (title.isNotBlank()) append(title.trimEnd()).append("\n\n")
-                                            append(content)
-                                        }
-                                        clipboard.setPrimaryClip(ClipData.newPlainText("安笺笔记", fullText))
-                                        Toast.makeText(context, "已复制全文", Toast.LENGTH_SHORT).show()
-                                        showDetailMenu = false
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("复制到另一个收藏夹") },
-                                    onClick = { showCopyFolderPicker = true; showDetailMenu = false }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("导出笔记") },
-                                    onClick = {
-                                        if (detailMode == DetailMode.EDIT) syncNativeContentBeforePreview()
-                                        val exportContent = nativeContentEditor?.text?.toString() ?: content
-                                        onExport(
-                                            title,
-                                            exportContent,
-                                            formatMode.resolvesToMarkdown(exportContent)
-                                        )
-                                        showDetailMenu = false
-                                    }
-                                )
-                            }
-                            DropdownMenuItem(
-                                text = { Text(if (pinned) "取消星标" else "加入星标") },
-                                onClick = { pinned = !pinned; markEdited(); showDetailMenu = false }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(if (topPinned) "取消置顶" else "置顶") },
-                                onClick = { topPinned = !topPinned; markEdited(); showDetailMenu = false }
-                            )
-                            if (note != null) {
-                                DropdownMenuItem(
-                                    text = { Text("删除", color = MaterialTheme.colorScheme.error) },
-                                    onClick = { showDetailMenu = false; onDelete(note) }
-                                )
-                            }
-                        }
-                    }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
-            )
-            }
-        }
-    ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
-            Column(modifier = Modifier.fillMaxSize()) {
-            if (detailMode == DetailMode.PREVIEW && searchVisible && !focusMode) {
-                NoteSearchBar(
-                    query = searchQuery,
-                    onQueryChange = {
-                        searchQuery = it
-                        searchActiveOrdinal = 0
-                    },
-                    matchIndex = searchActiveOrdinal,
-                    matchTotal = searchTotal,
-                    onPrevious = { moveSearchMatch(-1) },
-                    onNext = { moveSearchMatch(1) },
-                    onClose = {
-                        searchVisible = false
-                        searchQuery = ""
-                        searchActiveOrdinal = 0
-                    },
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = screenHorizontalPadding(), vertical = 4.dp)
-                )
-            }
-            // contentAlignment = TopCenter：Medium/Expanded 下正文列封顶后水平居中，
-            // 滚动条用显式 align(CenterEnd) 不受居中影响；手机竖屏与手表不封顶，表现不变。
-            Box(
-                modifier = Modifier.fillMaxWidth().weight(1f).padding(horizontal = screenHorizontalPadding()),
-                contentAlignment = Alignment.TopCenter
-            ) {
-                Column(
-                    modifier = if (detailMode == DetailMode.EDIT) {
-                        Modifier.fillMaxSize().contentWidthCap(contentMaxWidth())
-                    } else {
-                        Modifier.fillMaxSize().contentWidthCap(contentMaxWidth()).verticalScroll(detailScrollState)
-                    },
-                    // 编辑模式保留 18dp 让标题与正文输入框之间有舒适工作距离；
-                    // 预览模式收紧到 10dp，让文章标题与首段连接更紧，与 MarkdownPreview
-                    // 内部 BlockSpacing=12dp 形成统一的阅读节奏。
-                    verticalArrangement = Arrangement.spacedBy(
-                        if (detailMode == DetailMode.EDIT) 18.dp else 10.dp
-                    )
-                ) {
-            if (detailMode == DetailMode.EDIT) {
-                NativeNoteTitleEditor(
-                    value = title,
-                    externalModelKey = note?.let { it.id to it.updatedAt } ?: seed,
-                    focusRequest = nativeTitleFocusRequest,
-                    modifier = Modifier.fillMaxWidth(),
-                    textColor = MaterialTheme.colorScheme.onBackground,
-                    onValueChange = {
-                        title = it
-                        markEdited(titleOverride = it)
-                    }
-                )
-            } else {
-                val compact = rememberIsWatchWindow()
-                Text(
-                    title.ifBlank { "未命名笔记" },
-                    // 小屏收小标题字号：手表一屏容纳更多正文。
-                    style = MaterialTheme.typography.headlineSmall.copy(
-                        fontSize = if (compact) 22.sp else 28.sp,
-                        lineHeight = if (compact) 30.sp else 37.sp
-                    ),
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.fillMaxWidth().combinedClickable(
-                        onClick = {},
-                        onDoubleClick = { enterEdit(InlineEditTarget.TITLE) }
-                    )
-                )
-            }
-            if (detailMode == DetailMode.EDIT) {
-                if (markdownActive) MarkdownSyntaxHint()
-                NativeNoteEditor(
-                    value = contentValue,
-                    externalModelKey = note?.let { it.id to it.updatedAt } ?: seed,
-                    focusRequest = nativeContentFocusRequest,
-                    modifier = Modifier.fillMaxWidth().weight(1f),
-                    textColor = MaterialTheme.colorScheme.onBackground,
-                    onViewReady = { nativeContentEditor = it },
-                    onScrollChanged = { nativeEditorScrollVersion++ },
-                    onSelectionChange = { start, end ->
-                        if (savedNoteId > 0L) positionStore.saveSelection(savedNoteId, start, end)
-                    },
-                    onValueChange = { value ->
-                        contentValue = value
-                        markEdited(contentOverride = value.text)
-                    }
-                )
-            } else if (markdownActive) {
-                // 阅读内容直接融入页面背景，避免出现像浮在页面上的纯白方块。
-                MarkdownPreview(
-                    content,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 4.dp),
-                    onLinkClick = ::openPreviewLink,
-                    onDoubleClickAt = { position -> enterEdit(InlineEditTarget.CONTENT, position) },
-                    initialSourceOffset = initialContentCursor,
-                    searchQuery = searchQuery,
-                    searchActiveOrdinal = searchActiveOrdinal,
-                    onSearchMatchCountChange = { matchCount -> searchTotal = matchCount }
-                )
-            } else {
-                var plainTextLayout by remember(content) { mutableStateOf<TextLayoutResult?>(null) }
-                val linkColor = MaterialTheme.colorScheme.primary
-                val previewText = remember(content, linkColor) {
-                    linkifyPlainText(content.ifBlank { "空白笔记" }, linkColor)
-                }
-                // 纯文本笔记的正文搜索：命中计数、高亮与滚动复用页面滚动状态。
-                val plainMatches = remember(content, searchQuery, searchVisible) {
-                    if (!searchVisible || searchQuery.isBlank()) {
-                        emptyList()
-                    } else {
-                        findSearchMatchRanges(content, searchQuery)
-                    }
-                }
-                val searchColors = searchHighlightColors()
-                val highlightedPreviewText = remember(previewText, plainMatches, searchActiveOrdinal, searchColors) {
-                    if (plainMatches.isEmpty()) {
-                        previewText
-                    } else {
-                        buildAnnotatedString {
-                            append(previewText)
-                            plainMatches.forEachIndexed { matchIndex, range ->
-                                addStyle(
-                                    SpanStyle(
-                                        background = if (matchIndex == searchActiveOrdinal) {
-                                            searchColors.second
-                                        } else {
-                                            searchColors.first
-                                        }
-                                    ),
-                                    range.first,
-                                    range.last + 1
-                                )
-                            }
-                        }
-                    }
-                }
-                LaunchedEffect(plainMatches.size) {
-                    searchTotal = plainMatches.size
-                }
-                LaunchedEffect(searchActiveOrdinal, plainMatches, plainTextLayout) {
-                    val range = plainMatches.getOrNull(searchActiveOrdinal) ?: return@LaunchedEffect
-                    val layout = plainTextLayout ?: return@LaunchedEffect
-                    val layoutTextLength = layout.layoutInput.text.length
-                    if (layoutTextLength == 0) return@LaunchedEffect
-                    val offset = range.first.coerceIn(0, layoutTextLength - 1)
-                    val line = layout.getLineForOffset(offset)
-                    val target = layout.getLineTop(line).roundToInt()
-                    detailScrollState.scrollTo((target - 96).coerceAtLeast(0))
-                }
-                LaunchedEffect(initialContentCursor, plainTextLayout, content) {
-                    val cursor = initialContentCursor ?: return@LaunchedEffect
-                    val layout = plainTextLayout ?: return@LaunchedEffect
-                    val target = layout.getBoundingBox(cursor.coerceIn(0, content.length)).top.roundToInt()
-                    detailScrollState.scrollTo((target - 96).coerceAtLeast(0))
-                }
-                Text(
-                    text = highlightedPreviewText,
-                    style = MaterialTheme.typography.bodyLarge.copy(
-                        fontFamily = LocalMarkdownFontFamily.current,
-                        fontSize = 17.sp,
-                        lineHeight = 30.sp
-                    ),
-                    onTextLayout = { plainTextLayout = it },
-                    modifier = Modifier.fillMaxWidth().pointerInput(content) {
-                        detectTapGestures(
-                            onTap = { offset ->
-                                val link = plainTextLayout?.let { layout ->
-                                    extractLinkAt(content, layout.getOffsetForPosition(offset))
-                                }
-                                if (link != null) openPreviewLink(link)
-                            },
-                            onDoubleTap = { offset ->
-                                plainTextLayout?.let { layout ->
-                                    enterEdit(InlineEditTarget.CONTENT, layout.getOffsetForPosition(offset))
-                                }
-                            }
-                        )
-                    }
-                )
-            }
-            if (detailMode != DetailMode.EDIT) {
-                Spacer(Modifier.height(32.dp))
-            }
-                }
-                if (detailMode == DetailMode.EDIT) {
-                    nativeContentEditor?.let { editor ->
-                        DraggableNativeEditorScrollbar(
-                            editor = editor,
-                            scrollVersion = nativeEditorScrollVersion,
-                            thumbColor = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .fillMaxHeight()
-                        )
-                    }
-                } else if (!focusMode) {
-                    DraggableDetailScrollbar(
-                        scrollState = detailScrollState,
-                        thumbColor = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .fillMaxHeight()
-                    )
-                }
-            }
-            }
-        }
-    }
-    if (showFolderPicker) {
-        FolderPickerDialog(
-            folders = folders,
-            selectedFolderId = selectedFolderId,
-            title = "移动收藏夹",
-            onDismiss = { showFolderPicker = false },
-            onSelected = { folderId ->
-                selectedFolderId = folderId
-                markEdited()
-                showFolderPicker = false
-            }
-        )
-    }
-    if (showCopyFolderPicker && note != null) {
-        FolderPickerDialog(
-            folders = folders.filterNot { it.id == selectedFolderId },
-            selectedFolderId = Long.MIN_VALUE,
-            title = "复制到另一个收藏夹",
-            onDismiss = { showCopyFolderPicker = false },
-            onSelected = { folderId ->
-                onCopyToFolder(
-                    note.copy(
-                        title = title,
-                        content = content,
-                        color = color,
-                        isPinned = pinned,
-                        isTopPinned = topPinned,
-                        isMarkdown = markdownActive,
-                        folderId = folderId,
-                        updatedAt = System.currentTimeMillis()
-                    ),
-                    folderId
-                )
-                showCopyFolderPicker = false
-            }
-        )
-    }
-}
-
-private class NativeNoteTitleEditText(context: Context) : EditText(context) {
-    var applyingModelText: Boolean = false
-    var appliedExternalModelKey: Any? = null
-
-    fun applyExternalModelText(modelText: String, modelKey: Any?) {
-        applyingModelText = true
-        try {
-            setText(modelText)
-            setSelection(modelText.length)
-            appliedExternalModelKey = modelKey
-        } finally {
-            applyingModelText = false
-        }
-    }
-}
-
-@Composable
-private fun NativeNoteTitleEditor(
-    value: String,
-    externalModelKey: Any?,
-    focusRequest: Int,
-    modifier: Modifier = Modifier,
-    textColor: Color,
-    onValueChange: (String) -> Unit
-) {
-    val latestOnValueChange by rememberUpdatedState(onValueChange)
-    AndroidView(
-        modifier = modifier,
-        factory = { viewContext ->
-            NativeNoteTitleEditText(viewContext).apply {
-                background = null
-                setPadding(0, 0, 0, 0)
-                includeFontPadding = false
-                gravity = Gravity.CENTER_VERTICAL or Gravity.START
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
-                typeface = ResourcesCompat.getFont(viewContext, R.font.noto_sans_sc_semibold)
-                isSingleLine = true
-                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-                applyExternalModelText(value, externalModelKey)
-                addTextChangedListener(object : TextWatcher {
-                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                        if (!applyingModelText) latestOnValueChange(s?.toString().orEmpty())
-                    }
-                    override fun afterTextChanged(s: Editable?) = Unit
-                })
-            }
-        },
-        update = { view ->
-            if (shouldApplyExternalModelText(view.appliedExternalModelKey, externalModelKey)) {
-                view.applyExternalModelText(value, externalModelKey)
-            }
-            view.setTextColor(textColor.toArgb())
-            val lastRequest = view.getTag() as? Int ?: -1
-            if (focusRequest >= 0 && focusRequest != lastRequest) {
-                view.setTag(focusRequest)
-                view.requestFocus()
-                view.post {
-                    (view.context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
-                        ?.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
-                }
-            }
-        }
-    )
-}
-
-/**
- * 编辑期间 Compose 文本可能暂时落后于原生输入；仅在明确切换笔记或导入种子时允许模型回写。
- */
-internal fun shouldApplyExternalModelText(
-    appliedExternalModelKey: Any?,
-    externalModelKey: Any?
-): Boolean = appliedExternalModelKey != externalModelKey
-
-private class NativeNoteEditText(context: Context) : EditText(context) {
-    /** 仅在外部模型主动替换编辑内容时为 true，防止 TextWatcher 把回填误判为用户输入。 */
-    var applyingModelText: Boolean = false
-    /** 当前 View 已接收的外部模型身份；普通 Compose 重组不会改变它。 */
-    var appliedExternalModelKey: Any? = null
-    var lastFocusRequest: Int = -1
-    var onSelectionChange: ((Int, Int) -> Unit)? = null
-    var onScrollPositionChanged: (() -> Unit)? = null
-    private var scrollCallbackPosted = false
-
-    // 原生 EditText 的文本拖动不会自动提供可靠的 fling，这里补上连续惯性滚动。
-    private val scroller = OverScroller(context)
-    private val viewConfig = ViewConfiguration.get(context)
-    private val minFlingVelocity = viewConfig.scaledMinimumFlingVelocity
-    private val maxFlingVelocity = viewConfig.scaledMaximumFlingVelocity.toFloat()
-    private var velocityTracker: VelocityTracker? = null
-    private var lastTouchY = 0f
-    private var isBeingDragged = false
-    private val edgeEffectTop = EdgeEffect(context)
-    private val edgeEffectBottom = EdgeEffect(context)
-
-    init {
-        isNestedScrollingEnabled = false
-    }
-
-    override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
-        super.onScrollChanged(l, t, oldl, oldt)
-        if (!scrollCallbackPosted) {
-            scrollCallbackPosted = true
-            postOnAnimation {
-                scrollCallbackPosted = false
-                onScrollPositionChanged?.invoke()
-            }
-        }
-    }
-
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                if (!scroller.isFinished) scroller.abortAnimation()
-                velocityTracker = velocityTracker ?: VelocityTracker.obtain()
-                velocityTracker?.clear()
-                velocityTracker?.addMovement(event)
-                lastTouchY = event.y
-                isBeingDragged = false
-                edgeEffectTop.onRelease()
-                edgeEffectBottom.onRelease()
-                parent?.requestDisallowInterceptTouchEvent(true)
-            }
-            MotionEvent.ACTION_MOVE -> {
-                velocityTracker?.addMovement(event)
-                val dy = event.y - lastTouchY
-                if (!isBeingDragged && abs(dy) > viewConfig.scaledTouchSlop) isBeingDragged = true
-                lastTouchY = event.y
-                if (isBeingDragged) parent?.requestDisallowInterceptTouchEvent(true)
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                velocityTracker?.addMovement(event)
-                velocityTracker?.computeCurrentVelocity(1000, maxFlingVelocity)
-                val vy = velocityTracker?.yVelocity?.toInt() ?: 0
-                if (event.actionMasked == MotionEvent.ACTION_UP && isBeingDragged && abs(vy) > minFlingVelocity) {
-                    val scrollRange = (computeVerticalScrollRange() - height).coerceAtLeast(0)
-                    scroller.fling(0, scrollY, 0, -vy, 0, 0, 0, scrollRange, 0, computeVerticalScrollExtent() / 3)
-                    postInvalidateOnAnimation()
-                }
-                edgeEffectTop.onRelease()
-                edgeEffectBottom.onRelease()
-                velocityTracker?.recycle()
-                velocityTracker = null
-                isBeingDragged = false
-                parent?.requestDisallowInterceptTouchEvent(false)
-            }
-        }
-        return super.onTouchEvent(event)
-    }
-
-    override fun computeScroll() {
-        if (scroller.isFinished) return
-        if (scroller.computeScrollOffset()) {
-            scrollTo(0, scroller.currY)
-            val maxScroll = (computeVerticalScrollRange() - height).coerceAtLeast(0)
-            if (scroller.currY <= 0) {
-                edgeEffectTop.onAbsorb(-scroller.currVelocity.toInt())
-                scroller.abortAnimation()
-            } else if (scroller.currY >= maxScroll) {
-                edgeEffectBottom.onAbsorb(scroller.currVelocity.toInt())
-                scroller.abortAnimation()
-            }
-            postInvalidateOnAnimation()
-        }
-    }
-
-    fun abortFling() {
-        if (!scroller.isFinished) scroller.abortAnimation()
-    }
-
-    fun verticalScrollRange(): Int = computeVerticalScrollRange()
-    fun verticalScrollExtent(): Int = computeVerticalScrollExtent()
-
-    fun performNativeUndo() {
-        onTextContextMenuItem(android.R.id.undo)
-    }
-
-    fun performNativeRedo() {
-        onTextContextMenuItem(android.R.id.redo)
-    }
-
-    override fun onSelectionChanged(selStart: Int, selEnd: Int) {
-        super.onSelectionChanged(selStart, selEnd)
-        if (!applyingModelText) onSelectionChange?.invoke(selStart, selEnd)
-    }
-
-    fun applyExternalModelText(modelText: String, modelKey: Any?) {
-        applyingModelText = true
-        try {
-            setText(modelText)
-            appliedExternalModelKey = modelKey
-        } finally {
-            applyingModelText = false
-        }
-    }
-}
-
-@Composable
-private fun NativeNoteEditor(
-    value: TextFieldValue,
-    externalModelKey: Any?,
-    focusRequest: Int,
-    modifier: Modifier = Modifier,
-    textColor: Color,
-    onViewReady: (NativeNoteEditText) -> Unit = {},
-    onScrollChanged: () -> Unit = {},
-    onSelectionChange: (Int, Int) -> Unit = { _, _ -> },
-    onValueChange: (TextFieldValue) -> Unit
-) {
-    val latestOnValueChange by rememberUpdatedState(onValueChange)
-    val latestOnScrollChanged by rememberUpdatedState(onScrollChanged)
-    val latestOnSelectionChange by rememberUpdatedState(onSelectionChange)
-    AndroidView(
-        modifier = modifier,
-        factory = { viewContext ->
-            NativeNoteEditText(viewContext).apply {
-                background = null
-                setPadding(0, 0, 0, 0)
-                includeFontPadding = false
-                gravity = Gravity.TOP or Gravity.START
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
-                typeface = ResourcesCompat.getFont(viewContext, R.font.noto_sans_sc_regular)
-                minLines = 6
-                maxLines = Int.MAX_VALUE
-                isSingleLine = false
-                isVerticalScrollBarEnabled = false
-                overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
-                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-                // 初始文本属于明确的外部模型装配；之后用户输入始终以 view.text 为实时来源。
-                applyExternalModelText(value.text, externalModelKey)
-                addTextChangedListener(object : TextWatcher {
-                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                        if (applyingModelText) return
-                        val changed = s?.toString().orEmpty()
-                        if (BuildConfig.DEBUG) {
-                            Log.d("NativeNoteEditor", "user TextWatcher nativeTextLength=${changed.length}")
-                        }
-                        val selectionStart = selectionStart.coerceIn(0, changed.length)
-                        val selectionEnd = selectionEnd.coerceIn(0, changed.length)
-                        // 用户输入、粘贴与输入法提交均从这里同步到 Compose，再进入既有保存流程。
-                        latestOnValueChange(TextFieldValue(changed, TextRange(selectionStart, selectionEnd)))
-                    }
-                    override fun afterTextChanged(s: Editable?) = Unit
-                })
-            }
-        },
-        update = { view ->
-            onViewReady(view)
-                            view.onSelectionChange = latestOnSelectionChange
-                view.onScrollPositionChanged = latestOnScrollChanged
-                val viewText = view.text?.toString().orEmpty()
-
-            if (BuildConfig.DEBUG) {
-                Log.d(
-                    "NativeNoteEditor",
-                    "update viewTextLength=${viewText.length} modelTextLength=${value.text.length} " +
-                        "externalChanged=${view.appliedExternalModelKey != externalModelKey}"
-                )
-            }
-            // value.text 在编辑期间只来自 TextWatcher 的异步 Compose 回调，可能暂时落后于
-            // 原生输入。只有笔记/导入种子确实切换时，才允许模型主动回填 View。
-            if (shouldApplyExternalModelText(view.appliedExternalModelKey, externalModelKey)) {
-                view.applyExternalModelText(value.text, externalModelKey)
-            } else if (BuildConfig.DEBUG && viewText.length > value.text.length) {
-                Log.d("NativeNoteEditor", "skip stale model write: native text is newer")
-            }
-            view.setTextColor(textColor.toArgb())
-            if (focusRequest >= 0 && focusRequest != view.lastFocusRequest) {
-                view.lastFocusRequest = focusRequest
-                view.requestFocus()
-                val start = value.selection.start.coerceIn(0, view.length())
-                val end = value.selection.end.coerceIn(0, view.length())
-                view.setSelection(start, end)
-                view.post {
-                    (view.context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
-                        ?.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
-                }
-            }
-        }
-    )
-}
-
-@Composable
-private fun EmptyNotes(query: String, onCreate: () -> Unit) {
-    // 空状态淡入：只走 alpha，不引入布局动画。
-    // key 取 query.isBlank() 而非 query：搜索时每敲一字 query 都会变，
-    // 用 query 作 key 会导致淡入反复重播（闪烁）；这里只在
-    // 「无笔记」与「无匹配」两种空状态互相切换时才重播一次。
-    var visible by remember(query.isBlank()) { mutableStateOf(false) }
-    LaunchedEffect(query.isBlank()) { visible = true }
-    val compact = rememberIsWatchWindow()
-    AnimatedVisibility(
-        visible = visible,
-        enter = fadeIn(animationSpec = tween(MotionTokens.DurationMedium, easing = MotionTokens.Easing)),
-        exit = fadeOut(animationSpec = tween(MotionTokens.DurationMicro, easing = MotionTokens.Easing))
-    ) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                shape = MaterialTheme.shapes.large
-            ) {
-                Column(
-                    modifier = Modifier.padding(
-                        horizontal = if (compact) 20.dp else 28.dp,
-                        vertical = if (compact) 16.dp else 24.dp
-                    ),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp)
-                ) {
-                    Text(
-                        if (query.isBlank()) "从一条笔记开始" else "没有匹配的笔记",
-                        style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        if (query.isBlank()) "点击底部输入栏，随手记录此刻想法。" else "尝试换个关键词，或清除搜索条件。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    if (query.isBlank()) TextButton(onClick = onCreate) { Text("写下第一条") }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun DraggableNativeEditorScrollbar(
-    editor: NativeNoteEditText,
-    scrollVersion: Int,
-    thumbColor: Color,
-    modifier: Modifier = Modifier
-) {
-    val density = LocalDensity.current
-    val thumbWidthPx = with(density) { 4.dp.toPx() }
-    val thumbHeightPx = with(density) { 42.dp.toPx() }
-    val scrollRange = (editor.verticalScrollRange() - editor.verticalScrollExtent()).coerceAtLeast(0)
-    val canScroll = scrollRange > 0
-    var dragging by remember(editor) { mutableStateOf(false) }
-
-    Canvas(
-        modifier = modifier
-            .width(12.dp)
-            .pointerInput(editor, scrollRange) {
-                if (!canScroll) return@pointerInput
-                fun scrollToPointer(positionY: Float) {
-                    val trackHeight = (size.height - thumbHeightPx).coerceAtLeast(1f)
-                    val fraction = (positionY - thumbHeightPx / 2f) / trackHeight
-                    editor.scrollTo(0, (fraction.coerceIn(0f, 1f) * scrollRange).roundToInt())
-                }
-                detectDragGestures(
-                    onDragStart = { offset ->
-                        dragging = true
-                        scrollToPointer(offset.y)
-                    },
-                    onDrag = { change, _ ->
-                        change.consume()
-                        scrollToPointer(change.position.y)
-                    },
-                    onDragEnd = { dragging = false },
-                    onDragCancel = { dragging = false }
-                )
-            }
-    ) {
-        // 仅引用版本号以保证原生滚动回调触发后重新绘制滑条位置。
-        if (scrollVersion < 0 || !canScroll) return@Canvas
-        val actualThumbHeight = thumbHeightPx.coerceAtMost(size.height)
-        val scrollFraction = (editor.scrollY.toFloat() / scrollRange).coerceIn(0f, 1f)
-        val thumbY = (size.height - actualThumbHeight) * scrollFraction
-        drawRoundRect(
-            color = thumbColor.copy(alpha = if (dragging) 0.72f else 0.52f),
-            topLeft = Offset(size.width - thumbWidthPx, thumbY),
-            size = Size(thumbWidthPx, actualThumbHeight),
-            cornerRadius = CornerRadius(thumbWidthPx, thumbWidthPx)
-        )
-    }
-}
-
-@Composable
-private fun DraggableDetailScrollbar(
-    scrollState: ScrollState,
-    thumbColor: Color,
-    modifier: Modifier = Modifier
-) {
-    val scope = rememberCoroutineScope()
-    val density = LocalDensity.current
-    val canScroll = scrollState.maxValue > 0
-    var dragging by remember { mutableStateOf(false) }
-    val thumbWidthPx = with(density) { 4.dp.toPx() }
-    val thumbHeightPx = with(density) { 42.dp.toPx() }
-
-    fun scrollToFraction(fraction: Float) {
-        val targetValue = (fraction.coerceIn(0f, 1f) * scrollState.maxValue).roundToInt()
-        scope.launch { scrollState.scrollTo(targetValue) }
-    }
-
-    Canvas(
-        modifier = modifier
-            .width(12.dp)
-            .pointerInput(canScroll, scrollState.maxValue) {
-                if (!canScroll) return@pointerInput
-                fun scrollToPointer(positionY: Float) {
-                    scrollToFraction(positionY / size.height.coerceAtLeast(1))
-                }
-                detectDragGestures(
-                    onDragStart = { offset ->
-                        dragging = true
-                        scrollToPointer(offset.y)
-                    },
-                    onDrag = { change, _ ->
-                        change.consume()
-                        scrollToPointer(change.position.y)
-                    },
-                    onDragEnd = { dragging = false },
-                    onDragCancel = { dragging = false }
-                )
-            }
-    ) {
-        if (!canScroll || (!scrollState.isScrollInProgress && !dragging)) return@Canvas
-
-        val viewportHeight = size.height
-        val actualThumbHeight = thumbHeightPx.coerceAtMost(viewportHeight)
-        val scrollFraction = (scrollState.value.toFloat() / scrollState.maxValue).coerceIn(0f, 1f)
-        val thumbY = (viewportHeight - actualThumbHeight) * scrollFraction
-
-        drawRoundRect(
-            color = thumbColor.copy(alpha = 0.52f),
-            topLeft = Offset(size.width - thumbWidthPx, thumbY),
-            size = Size(thumbWidthPx, actualThumbHeight),
-            cornerRadius = CornerRadius(thumbWidthPx, thumbWidthPx)
-        )
-    }
-}
-
-@Composable
-private fun DraggableNoteListScrollbar(
-    listState: LazyListState,
-    thumbColor: Color,
-    modifier: Modifier = Modifier
-) {
-    val density = LocalDensity.current
-    val canScroll by remember(listState) {
-        derivedStateOf { listState.canScrollBackward || listState.canScrollForward }
-    }
-    val scrolling by remember(listState) {
-        derivedStateOf { listState.isScrollInProgress }
-    }
-    var dragging by remember { mutableStateOf(false) }
-    var dragPixelsToScroll by remember { mutableStateOf(0f) }
-    val thumbWidthPx = with(density) { 4.dp.toPx() }
-    val thumbHeightPx = with(density) { 42.dp.toPx() }
-    val itemSpacingPx = with(density) { 5.dp.toPx() }
-    val thumbAlpha = if (canScroll && (scrolling || dragging)) 0.58f else 0f
-
-    Canvas(
-        modifier = modifier
-            .width(12.dp)
-            .graphicsLayer { alpha = thumbAlpha }
-            .pointerInput(listState) {
-                detectDragGestures(
-                    onDragStart = onDragStart@{
-                        val layoutInfo = listState.layoutInfo
-                        val visibleItems = layoutInfo.visibleItemsInfo
-                        val totalItems = layoutInfo.totalItemsCount
-                        if (visibleItems.isEmpty() || visibleItems.size >= totalItems) {
-                            dragging = false
-                            dragPixelsToScroll = 0f
-                            return@onDragStart
-                        }
-                        dragging = true
-                        val viewportHeight = size.height.toFloat()
-                        if (viewportHeight > 0f) {
-                            val itemExtent = visibleItems.sumOf { it.size }.toFloat() / visibleItems.size + itemSpacingPx
-                            val estimatedContentHeight = itemExtent * totalItems
-                            val trackHeight = (viewportHeight - thumbHeightPx).coerceAtLeast(1f)
-                            val scrollRange = (estimatedContentHeight - viewportHeight).coerceAtLeast(1f)
-                            dragPixelsToScroll = scrollRange / trackHeight
-                        }
-                    },
-                    onDrag = { change, dragAmount ->
-                        if (dragPixelsToScroll > 0f) {
-                            change.consume()
-                            listState.dispatchRawDelta(dragAmount.y * dragPixelsToScroll)
-                        }
-                    },
-                    onDragEnd = {
-                        dragging = false
-                        dragPixelsToScroll = 0f
-                    },
-                    onDragCancel = {
-                        dragging = false
-                        dragPixelsToScroll = 0f
-                    }
-                )
-            }
-    ) {
-        val layoutInfo = listState.layoutInfo
-        val visibleItems = layoutInfo.visibleItemsInfo
-        val totalItems = layoutInfo.totalItemsCount
-        if (visibleItems.isEmpty() || visibleItems.size >= totalItems) return@Canvas
-
-        val viewportHeight = size.height
-        val itemExtent = visibleItems.sumOf { it.size }.toFloat() / visibleItems.size + itemSpacingPx
-        val estimatedContentHeight = itemExtent * totalItems
-        val scrollRange = (estimatedContentHeight - viewportHeight).coerceAtLeast(1f)
-        val currentOffset = listState.firstVisibleItemIndex * itemExtent + listState.firstVisibleItemScrollOffset
-        val estimatedFraction = (currentOffset / scrollRange).coerceIn(0f, 1f)
-        val scrollFraction = when {
-            !listState.canScrollBackward -> 0f
-            !listState.canScrollForward -> 1f
-            else -> estimatedFraction
-        }
-        val actualThumbHeight = thumbHeightPx.coerceAtMost(viewportHeight)
-        val thumbY = (viewportHeight - actualThumbHeight) * scrollFraction
-
-        drawRoundRect(
-            color = thumbColor,
-            topLeft = Offset(size.width - thumbWidthPx, thumbY),
-            size = Size(thumbWidthPx, actualThumbHeight),
-            cornerRadius = CornerRadius(thumbWidthPx, thumbWidthPx)
-        )
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun NoteCard(
-    note: NoteEntity,
-    selected: Boolean,
-    selectionMode: Boolean,
-    searchTerms: List<String>,
-    onOpen: () -> Unit,
-    onLongPress: () -> Unit,
-    onToggleStar: () -> Unit,
-    onToggleTopPin: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val compact = rememberIsWatchWindow()
-    val searchMatch = remember(note.id, note.updatedAt, searchTerms) { note.findSearchMatch(searchTerms) }
-    val summary = remember(note.id, note.updatedAt, note.isMarkdown, searchMatch) {
-        searchMatch?.snippet?.ifBlank { NoteListPreviewCache.get(note) } ?: NoteListPreviewCache.get(note)
-    }
-    val formattedDate = remember(note.updatedAt) { formatDate(note.updatedAt) }
-    Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .combinedClickable(onClick = onOpen, onLongClick = onLongPress),
-        shape = RoundedCornerShape(6.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.52f) else MaterialTheme.colorScheme.surface,
-            contentColor = MaterialTheme.colorScheme.onSurface
-        ),
-        border = BorderStroke(
-            1.dp,
-            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.58f)
-            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.12f)
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-    ) {
-        Column(
-            // 小屏收紧卡片内边距与最小高度：手表一屏要放下更多条目。
-            modifier = Modifier
-                .padding(
-                    horizontal = if (compact) 12.dp else 16.dp,
-                    vertical = if (compact) 10.dp else 14.dp
-                )
-                .heightIn(min = if (compact) 84.dp else 104.dp),
-            verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 5.dp)
-        ) {
-            Text(
-                note.title.ifBlank { "未命名笔记" },
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            if (summary.isNotBlank()) {
-                Text(
-                    if (searchMatch?.contentOffset != null) "命中：$summary" else summary,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.84f)
-                )
-            }
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    formattedDate,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
-                    modifier = Modifier.weight(1f)
-                )
-                if (note.isMarkdown) {
-                    Text("MD", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.66f), modifier = Modifier.padding(end = 12.dp))
-                }
-                if (selectionMode) {
-                    Text(
-                        if (selected) "✓" else "○",
-                        fontSize = 22.sp,
-                        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-                        modifier = Modifier.padding(6.dp)
-                    )
-                } else {
-                    Text(
-                        text = if (note.isTopPinned) "↑ 置顶" else "↑",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = if (note.isTopPinned) FontWeight.SemiBold else FontWeight.Normal,
-                        color = if (note.isTopPinned) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(
-                                if (note.isTopPinned) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
-                                else Color.Transparent
-                            )
-                            .clickable(onClick = onToggleTopPin)
-                            .padding(
-                                horizontal = if (note.isTopPinned) 9.dp else 7.dp,
-                                vertical = 5.dp
-                            )
-                    )
-                    Text(
-                        if (note.isPinned) "★" else "☆",
-                        fontSize = 22.sp,
-                        color = if (note.isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .clickable(onClick = onToggleStar)
-                            .padding(horizontal = 7.dp, vertical = 5.dp)
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun BatchDeleteDialog(
-    count: Int,
-    onDismiss: () -> Unit,
-    onConfirm: () -> Unit
-) = ConfirmationDialog(
-    title = "删除 $count 条笔记？",
-    message = "批量删除后无法恢复。",
-    confirmLabel = "删除",
-    destructive = true,
-    onDismiss = onDismiss,
-    onConfirm = onConfirm
-)
-
-@Composable
-private fun ConfirmDeleteDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) = ConfirmationDialog(
-    title = "删除这条笔记？",
-    message = "删除后无法恢复。",
-    confirmLabel = "删除",
-    destructive = true,
-    onDismiss = onDismiss,
-    onConfirm = onConfirm
-)
-
-@Composable
-private fun ConfirmationDialog(
-    title: String,
-    message: String,
-    confirmLabel: String,
-    destructive: Boolean = false,
-    onDismiss: () -> Unit,
-    onConfirm: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = { Text(message) },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-        confirmButton = {
-            TextButton(onClick = onConfirm) {
-                Text(confirmLabel, color = if (destructive) MaterialTheme.colorScheme.error else Color.Unspecified)
-            }
-        }
-    )
-}
-
-@Composable
-private fun ImportErrorDialog(message: String, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("导入未完成") },
-        text = { Text(message) },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("知道了") } }
-    )
-}
-
-private val NoteColors = listOf(0xFFF5F0E8, 0xFFF5ECEB, 0xFFEDF3F5, 0xFFEEF5F0, 0xFFF5F1E3)
-
-
-private fun formatDate(time: Long): String = requireNotNull(NoteDateFormatter.get()).format(Date(time))

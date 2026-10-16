@@ -12,7 +12,7 @@
         android:theme="@style/Theme.AnJianNotes">
         <activity
             android:name=".MainActivity"
-            android:configChanges="uiMode"
+            android:configChanges="uiMode|orientation|screenSize|smallestScreenSize|screenLayout|density"
             android:enableOnBackInvokedCallback="true"
             android:windowSoftInputMode="adjustResize"
             android:grantUriPermissions="true"

@@ -80,6 +80,33 @@ fun drawerMaxWidthFor(widthClass: WindowWidthClass): Dp = when (widthClass) {
 fun drawerMaxWidth(): Dp = drawerMaxWidthFor(rememberWindowSizeClass().widthClass)
 
 /**
+ * 是否启用列表-详情双栏纯函数（可单元测试）。
+ *
+ * 仅 Expanded（≥840dp，平板竖屏/横屏、桌面模式）启用：双栏是 Material3 对该断点的
+ * 规范布局，手机竖屏、手表、手机横屏与折叠屏（Medium）保持单栏导航不变。
+ * Medium 档预留：后续如需在折叠屏展开态启用，只改此函数与 [listPaneWidthFor]。
+ */
+fun twoPaneFor(widthClass: WindowWidthClass): Boolean = widthClass == WindowWidthClass.Expanded
+
+/**
+ * 双栏列表 pane 宽度纯函数（可单元测试）。
+ *
+ * 仅双栏启用时有意义；未启用档位返回 [Dp.Unspecified]（调用方不得使用）。
+ * 400dp 取自 Material3 导航抽屉规范宽度量级：容纳卡片摘要的同时
+ * 给详情 pane 留出 ≥440dp（1280dp 平板）的阅读宽度。
+ */
+fun listPaneWidthFor(widthClass: WindowWidthClass): Dp =
+    if (twoPaneFor(widthClass)) 400.dp else Dp.Unspecified
+
+/** 当前是否启用双栏（随窗口宽度分类切换：旋转、分屏、折叠屏展开实时生效）。 */
+@Composable
+fun rememberTwoPane(): Boolean = rememberWindowSizeClass().let { twoPaneFor(it.widthClass) }
+
+/** 当前双栏列表 pane 宽度；仅在 [rememberTwoPane] 为 true 时有意义。 */
+@Composable
+fun listPaneWidth(): Dp = listPaneWidthFor(rememberWindowSizeClass().widthClass)
+
+/**
  * 内容宽度封顶修饰符。
  *
  * 封顶值为 [Dp.Infinity]（手机竖屏与手表）时原样返回，不施加任何限制——

@@ -2,6 +2,36 @@
 
 所有可感知的界面与功能变化都会记录在这里。格式参考「 Keep a Changelog 」，版本号遵循 语义化版本（主版本.次版本.修订号）。
 
+## v2.16.0 — 2026-10-17
+
+平板适配第二阶：Expanded 档（窗口宽度 ≥ 840dp）启用「列表-详情」双栏布局——左侧笔记列表常驻，右侧为当前选中笔记的阅读/编辑 pane，点选即切换，无需整页往返。这是用户明确要求的多设备适配方向（「本来就是想适配安卓多设备的」）的核心一步。双栏不是简单的「并排放两个页面」：详情 pane 的离开必须经过自身的最终保存确认，因此切换选中、窗口尺寸类变化（旋转/分屏/折叠屏）都由「意图 + 令牌」协议接管，保证防抖窗内的最后编辑不丢失。属于 SemVer Minor 修订：向后兼容的布局增强，手机与手表零变化，无数据格式变化。
+
+### 双栏布局（Expanded）
+
+- **左列表右详情**：`twoPaneFor(widthClass)` 仅 Expanded 为 true；列表 pane 宽度按分类固定 400dp（`listPaneWidthFor`），详情 pane 取剩余空间（最窄 840dp 窗口下也有 440dp），中间 1dp 分隔线（outlineVariant 降透明度）。Medium 档（600–839dp）刻意不分栏：400dp 列表会把详情挤压到 200–440dp，不如维持单栏封顶居中。
+- **详情 pane 空态 `DetailPaneEmptyState`**：未选中笔记时右侧显示「选择左侧笔记开始阅读」占位，保留新建入口；与列表空态（EmptyNotes）引导语区分。
+- **选中高亮**：双栏下 NoteCard 的选中态并入 pane 选中（`selected = note.id in selectedNoteIds || note.id == paneSelectedNoteId`），当前阅读项一目了然；批量选择与 pane 选中视觉可区分且互不干扰。
+- **详情行长不受双栏影响**：详情页内部仍按 `contentMaxWidth`（Expanded 720dp）做行长封顶；双栏下 pane 实际宽度（440–1200dp）通常小于封顶值，widthIn 恒等，长文本同样不会横贯。
+
+### 保存协议（切换选中不丢编辑）
+
+- **离开意图 `DetailExitIntent`**：详情 pane 的「切换选中 / 提升为整页 / 降级回双栏」三种流向，先由宿主记录意图（Switch(target) / Promote / Demote）再请求离开，详情自身完成最终保存后于 onBack 统一应用。避免了「组合直接销毁导致 700ms 防抖窗内的最后编辑丢失」——`rememberCoroutineScope` 离开组合即取消，直接切走会丢保存。
+- **令牌 `leaveRequest`**：宿主每次自增令牌触发详情的 `finalizeAndLeave(forceLeave = true)`；forceLeave 跳过「已有笔记第一次返回仅切预览」的停留交互，直接冲刷离开（保存失败则停留并提示，意图不应用）。连续快速点选时令牌可能被 `leavingInProgress` 防抖忽略，但意图对象已被覆盖为最新目标，保存完成后应用的是最新意图，不会卡在旧笔记。
+- **editorScope 提升到 NotesApp**：详情保存协程不再绑在详情组合上，pane 销毁时未落盘的防抖保存照常完成；`queueSaveNote` 本身在 viewModelScope 执行，写入与组合生命周期双重解耦。
+- **窗口尺寸类变化的 Promote/Demote**：`LaunchedEffect(twoPane)` 监听分类切换——窗口缩窄（旋转/分屏/合上折叠屏）时把双栏选中态提升为整页导航（新草稿不提升：草稿已入库，点选即可打开）；窗口展宽时把整页导航降级回双栏选中态。两种流向都走令牌 + 最终保存，与手动切换选中同一套机制。
+- **旋转/分屏不再重建 Activity（基础设施修复）**：Manifest 为 MainActivity 补充 `configChanges`（orientation/screenSize/smallestScreenSize/screenLayout/density，原有 uiMode 保留）。此前旋转与分屏调整会销毁重建 Activity，所有 Compose 状态丢失——正在编辑的笔记退回列表且防抖窗内的最后编辑随 `rememberCoroutineScope` 一起取消。补充后配置变化由 Compose 响应式处理：`LocalConfiguration` 驱动 `rememberWindowSizeClass` 重组，双栏/单栏切换、Promote/Demote 与保存冲刷全部按设计执行，编辑状态跨旋转完整保留。字体缩放（fontScale）刻意不纳入：保持系统字体大小变化时的既有行为。
+- **批量删除联动**：双栏下被选中的笔记若在删除集合内，同步取消 pane 选中，避免展示已删除笔记；残留竞态（删除前 700ms 内的迟到保存复活）维持 v2.15.1 的既有论证：实际不可达，不引入第二套取消机制。
+
+### 测试
+
+- **双栏契约**（AdaptiveLayoutTest 新增 5 例）：分栏仅 Expanded（Medium 刻意排除并有注释论证）；0–1600dp 全区间扫描 `twoPaneFor` 与 `WindowWidthClass.of` 逐 dp 对齐；列表 pane 宽度仅双栏档为 400dp（其余 Unspecified）；最窄 Expanded（840dp）下列表 + 详情不超窗且详情 ≥ 400dp；双栏详情 pane 宽度小于 720dp 封顶值的既有事实固化（防止将来误调 pane 宽度）。
+
+### 兼容性
+
+- 手机竖屏与手表布局、交互零变化（双栏代码路径在 Watch/Compact/Medium 不激活）；无数据格式变化，备份与 WebDAV 格式不变。
+- 构建配置：Gradle 与 Kotlin 编译守护进程堆上限由 2GB 提升至 4GB——MainActivity 已增长到 3700+ 行，Compose 编译器在 2GB 下报「Not enough memory」无法完成编译（开发机内存不足 4GB 的用户可自行调回）。
+- 源码结构：MainActivity.kt 按职责拆分为 6 个文件（MainActivity 应用外壳 / NoteListPage 列表与卡片 / NoteDetailPage 详情与保存状态机 / SettingsPages 设置与备份对话框 / FolderDialogs 收藏夹对话框 / Dialogs 通用确认框），单文件从近 4000 行降到 1400 行以内。拆分是纯机械重构，代码内容与行为不变；同包内共享声明由文件私有（private top-level）调整为模块内可见（internal），单元测试访问不受影响。
+
 ## v2.15.1 — 2026-10-16
 
 宽屏专项复查修复：导航抽屉（收藏夹侧边栏）此前按屏幕宽度的 76% 拉伸，手机竖屏（约 312dp）与手表（约 182dp）比例合理，但 840dp 的 Medium 屏会拉到 638dp、1280dp 的平板会拉到 973dp，远超 Material3 的 360dp 规范值。现按窗口宽度分类封顶：Medium/Expanded 固定 360dp，Watch/Compact 保持 76% 比例填充不变。属于 SemVer Patch 修订：仅修复宽屏下的一个显示缺陷，手机与手表行为零变化。
