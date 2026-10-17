@@ -18,11 +18,13 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -49,6 +51,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -62,7 +65,9 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import com.example.anjiannotes.R
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.delay
 
 /**
  * 轻量 Markdown 文档模型。解析层只负责将原始文本分为文章块；Compose 层只负责排版与交互，
@@ -544,21 +549,39 @@ private fun MarkdownCodeBlock(
                     )
                 }
                 Spacer(modifier = Modifier.weight(1f))
+                // 代码块复制按钮与表格复制按钮共用矢量图标与对勾反馈（详见表格处注释）：
+                // Unicode ⧉(U+29C9) 在设备字体中缺字形会渲染为方框，矢量路径一致可靠。
+                var codeCopyFeedback by remember { mutableStateOf(false) }
+                LaunchedEffect(codeCopyFeedback) {
+                    if (codeCopyFeedback) {
+                        delay(1_200)
+                        codeCopyFeedback = false
+                    }
+                }
                 IconButton(
-                    onClick = { clipboard.setText(AnnotatedString(block.content.text)) },
+                    onClick = {
+                        clipboard.setText(AnnotatedString(block.content.text))
+                        codeCopyFeedback = true
+                    },
                     modifier = Modifier.width(30.dp)
                 ) {
-                    Text(
-                        text = "⧉",
-                        fontSize = 16.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1
+                    Icon(
+                        painter = painterResource(
+                            if (codeCopyFeedback) R.drawable.ic_copy_done else R.drawable.ic_copy
+                        ),
+                        contentDescription = if (codeCopyFeedback) "已复制代码块" else "复制代码块",
+                        modifier = Modifier.size(15.dp),
+                        tint = if (codeCopyFeedback) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
                     )
                 }
             }
             MarkdownInteractiveText(
                 source = block.content,
-        style = bodyStyle().copy(fontSize = 15.sp, lineHeight = 25.sp),
+                style = bodyStyle().copy(fontSize = 15.sp, lineHeight = 25.sp),
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f),
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -627,20 +650,45 @@ private fun MarkdownTable(
         }.trimEnd()
     }
     // 表格：右上角提供小型复制按钮；内容保持横向滚动，复制结果为便于二次编辑的 TSV。
+    // 图标用矢量 drawable 而非 Unicode 字符：⧉(U+29C9) 一类符号在多数设备字体中
+    // 没有字形，会渲染成方框乱码；矢量路径在任何设备上一致，且可跟随主题着色。
+    // 点击后 1.2s 内切换为对勾并着主色，与详情页「✓ 已保存」同一反馈节奏。
+    var copyFeedback by remember { mutableStateOf(false) }
+    LaunchedEffect(copyFeedback) {
+        if (copyFeedback) {
+            delay(1_200)
+            copyFeedback = false
+        }
+    }
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
-            modifier = Modifier.fillMaxWidth().height(22.dp),
+            modifier = Modifier.fillMaxWidth().height(24.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Spacer(modifier = Modifier.weight(1f))
-            Text(
-                text = "⧉",
-                fontSize = 13.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.48f),
+            Box(
                 modifier = Modifier
-                    .clickable { clipboard.setText(AnnotatedString(tableCopyText)) }
-                    .padding(horizontal = 4.dp, vertical = 2.dp)
-            )
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable {
+                        clipboard.setText(AnnotatedString(tableCopyText))
+                        copyFeedback = true
+                    }
+                    .padding(horizontal = 5.dp, vertical = 3.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painter = painterResource(
+                        if (copyFeedback) R.drawable.ic_copy_done else R.drawable.ic_copy
+                    ),
+                    contentDescription = if (copyFeedback) "已复制表格" else "复制表格",
+                    modifier = Modifier.size(14.dp),
+                    tint = if (copyFeedback) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                    }
+                )
+            }
         }
         Box(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
             Column(

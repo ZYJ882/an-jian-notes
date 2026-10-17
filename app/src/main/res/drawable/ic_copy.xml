@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  表格复制按钮图标（Material "content_copy" 标准路径）。
+
+  之所以用矢量 drawable 而不是 Unicode 字符（如 ⧉ U+29C9）：该字符在多数
+  Android 设备字体（Roboto / Noto Sans CJK）中没有字形，会渲染为方框乱码。
+  矢量路径在任何设备上渲染一致，且可通过 Icon 的 tint 跟随主题着色。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M16,1L4,1c-1.1,0 -2,0.9 -2,2L2,17h2L2,17L2,3c0,-0.55 0.45,-1 1,-1h12c0.55,0 1,0.45 1,1L16,1zM19,5L8,5c-1.1,0 -2,0.9 -2,2v12c0,1.1 0.9,2 2,2h11c1.1,0 2,-0.9 2,-2L21,7c0,-1.1 -0.9,-2 -2,-2zM19,19L8,19L8,5h11v14z" />
+</vector>
