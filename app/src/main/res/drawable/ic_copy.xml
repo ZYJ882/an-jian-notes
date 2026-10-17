@@ -1,9 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  表格复制按钮图标（Material "content_copy" 标准路径）。
+  表格/代码块复制按钮图标：Material Symbols "content_copy"（Google 官方，
+  Apache 2.0，经 Iconify 官方镜像 api.iconify.design/material-symbols 获取）。
+
+  设计选型（v2.16.2）：v2.16.1 曾手写经典双页轮廓版路径，后页子路径轨迹损坏
+  （h2L2,17L2,3 的病态折返把后页轮廓抹掉），只剩空心方框前页环；且轮廓版
+  2 单位描边缩放到 16dp 仅约 1.3dp 粗，小尺寸下发虚。实心版无细描边，
+  48px（16dp@3x）渲染目检一眼可辨，故换用本路径。
+
+  路径教训：不要再手写 SVG pathData——按字符级排错极易出错且渲染前不可见；
+  一律从官方镜像获取，并用渲染图目检验证（参见 v2.16.2 CHANGELOG）。
 
   之所以用矢量 drawable 而不是 Unicode 字符（如 ⧉ U+29C9）：该字符在多数
-  Android 设备字体（Roboto / Noto Sans CJK）中没有字形，会渲染为方框乱码。
+  Android 设备字体（Roboto / Noto Sans CJK）中没有字形，会渲染成方框乱码。
   矢量路径在任何设备上渲染一致，且可通过 Icon 的 tint 跟随主题着色。
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
@@ -13,5 +22,5 @@
     android:viewportHeight="24">
     <path
         android:fillColor="@android:color/white"
-        android:pathData="M16,1L4,1c-1.1,0 -2,0.9 -2,2L2,17h2L2,17L2,3c0,-0.55 0.45,-1 1,-1h12c0.55,0 1,0.45 1,1L16,1zM19,5L8,5c-1.1,0 -2,0.9 -2,2v12c0,1.1 0.9,2 2,2h11c1.1,0 2,-0.9 2,-2L21,7c0,-1.1 -0.9,-2 -2,-2zM19,19L8,19L8,5h11v14z" />
+        android:pathData="M9 18q-.825 0-1.412-.587T7 16V4q0-.825.588-1.412T9 2h9q.825 0 1.413.588T20 4v12q0 .825-.587 1.413T18 18zm-4 4q-.825 0-1.412-.587T3 20V6h2v14h11v2z" />
 </vector>

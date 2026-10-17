@@ -570,7 +570,7 @@ private fun MarkdownCodeBlock(
                             if (codeCopyFeedback) R.drawable.ic_copy_done else R.drawable.ic_copy
                         ),
                         contentDescription = if (codeCopyFeedback) "已复制代码块" else "复制代码块",
-                        modifier = Modifier.size(15.dp),
+                        modifier = Modifier.size(16.dp),
                         tint = if (codeCopyFeedback) {
                             MaterialTheme.colorScheme.primary
                         } else {
@@ -681,11 +681,11 @@ private fun MarkdownTable(
                         if (copyFeedback) R.drawable.ic_copy_done else R.drawable.ic_copy
                     ),
                     contentDescription = if (copyFeedback) "已复制表格" else "复制表格",
-                    modifier = Modifier.size(14.dp),
+                    modifier = Modifier.size(16.dp),
                     tint = if (copyFeedback) {
                         MaterialTheme.colorScheme.primary
                     } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
                     }
                 )
             }
