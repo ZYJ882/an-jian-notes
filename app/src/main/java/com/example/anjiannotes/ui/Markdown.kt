@@ -22,7 +22,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -200,12 +203,19 @@ private val ChipPaddingVertical = 1.dp
 val LocalMarkdownFontFamily = staticCompositionLocalOf { com.example.anjiannotes.ui.theme.NotoSansSC }
 
 @Composable
-private fun bodyStyle() = androidx.compose.ui.text.TextStyle(
-    fontFamily = LocalMarkdownFontFamily.current,
-    fontWeight = FontWeight.Normal,
-    fontSize = BodyFontSize,
-    lineHeight = BodyLineHeight
-)
+private fun bodyStyle(): androidx.compose.ui.text.TextStyle {
+    val fontFamily = LocalMarkdownFontFamily.current
+    // 样式只随字体族变化；remember 后同一字体族下所有调用点共享同一实例，
+    // 避免表格逐格、列表逐项等高频路径在每次重组时重复构造 TextStyle。
+    return remember(fontFamily) {
+        androidx.compose.ui.text.TextStyle(
+            fontFamily = fontFamily,
+            fontWeight = FontWeight.Normal,
+            fontSize = BodyFontSize,
+            lineHeight = BodyLineHeight
+        )
+    }
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -236,16 +246,15 @@ fun MarkdownPreview(
         }
     }
     // 空 query 时直接返回空索引，不读取 blockDisplayTexts（lazy 不被强制求值）。
-    val searchIndex = remember(blockDisplayTexts, searchQuery, searchActiveOrdinal) {
-        if (searchQuery.isBlank()) {
-            MarkdownSearchIndex(emptyList(), 0)
-        } else {
-            computeMarkdownSearchIndexFromTexts(
-                blockDisplayTexts.value,
-                searchQuery,
-                searchActiveOrdinal
-            )
-        }
+    // 命中区间只依赖（展示文本，查询词），与当前命中序号无关：拆成两级记忆——
+    // 区间仅在输入变化时重算；点「上一个/下一个」只做 O(命中数) 的定位，
+    // 不再对全文档重新执行字符串匹配（长文档搜索导航的卡顿来源）。
+    val searchRanges = remember(blockDisplayTexts, searchQuery) {
+        if (searchQuery.isBlank()) null else computeSearchRanges(blockDisplayTexts.value, searchQuery)
+    }
+    val searchIndex = remember(searchRanges, searchActiveOrdinal) {
+        searchRanges?.let { buildSearchIndex(it, searchActiveOrdinal) }
+            ?: MarkdownSearchIndex(emptyList(), 0)
     }
     val searchScrollRequester = remember { BringIntoViewRequester() }
     LaunchedEffect(searchIndex.totalMatches) {
@@ -411,11 +420,16 @@ private fun MarkdownHeading(
         5 -> Quad(16.5.sp, 25.sp, FontWeight.SemiBold, 10.dp)
         else -> Quad(15.5.sp, 24.sp, FontWeight.Medium, 8.dp)
     }
-    val style = bodyStyle().copy(
-        fontSize = fontSize,
-        lineHeight = lineHeight,
-        fontWeight = weight
-    )
+    // 标题样式只随级别变化（字号/行高/字重由 level 唯一决定）：remember 后
+    // 样式未变时下游 Text 具备跳过重组的条件，也避免每次重组新建 TextStyle。
+    val baseStyle = bodyStyle()
+    val style = remember(baseStyle, heading.level) {
+        baseStyle.copy(
+            fontSize = fontSize,
+            lineHeight = lineHeight,
+            fontWeight = weight
+        )
+    }
     MarkdownInteractiveText(
         source = heading.text,
         style = style,
@@ -528,6 +542,9 @@ private fun MarkdownCodeBlock(
 ) {
     // 代码块：浅灰圆角卡片 + 语言标签；横向滚动查看长行。
     val clipboard = LocalClipboardManager.current
+    // 代码样式只随基础正文样式变化：remember 避免每次重组新建 TextStyle。
+    val baseStyle = bodyStyle()
+    val codeStyle = remember(baseStyle) { baseStyle.copy(fontSize = 15.sp, lineHeight = 25.sp) }
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -581,7 +598,7 @@ private fun MarkdownCodeBlock(
             }
             MarkdownInteractiveText(
                 source = block.content,
-                style = bodyStyle().copy(fontSize = 15.sp, lineHeight = 25.sp),
+                style = codeStyle,
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f),
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -618,22 +635,24 @@ private fun MarkdownTable(
         List(columnCount) { columnIndex -> table.header.getOrElse(columnIndex) { SourceText("", IntArray(0)) } }
     }
     val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
-    val bodyStyle = bodyStyle().copy(fontSize = 16.sp, lineHeight = 27.sp)
-    val headerStyle = bodyStyle.copy(fontWeight = FontWeight.SemiBold)
+    // 单元格样式在表格级只构造一次、逐格复用：此前每格都调用 bodyStyle().copy(...)，
+    // N 格 × 每次重组就是 N 次 TextStyle 分配。命名与 bodyStyle() 函数区分，避免遮蔽。
+    val tableCellStyle = bodyStyle().copy(fontSize = 16.sp, lineHeight = 27.sp)
+    val tableHeaderStyle = tableCellStyle.copy(fontWeight = FontWeight.SemiBold)
     val density = androidx.compose.ui.platform.LocalDensity.current
-    val columnWidths = remember(header, rows, bodyStyle, headerStyle, density) {
+    val columnWidths = remember(header, rows, tableCellStyle, tableHeaderStyle, density) {
         List(columnCount) { columnIndex ->
             val headerWidth = textMeasurer.measure(
-                text = AnnotatedString(header[columnIndex].text),
-                style = headerStyle,
+                text = header[columnIndex].text,
+                style = tableHeaderStyle,
                 maxLines = 1,
                 softWrap = false,
                 constraints = Constraints()
             ).size.width
             val bodyWidth = rows.maxOfOrNull { row ->
                 textMeasurer.measure(
-                    text = AnnotatedString(row[columnIndex].text),
-                    style = bodyStyle,
+                    text = row[columnIndex].text,
+                    style = tableCellStyle,
                     maxLines = 1,
                     softWrap = false,
                     constraints = Constraints()
@@ -649,6 +668,8 @@ private fun MarkdownTable(
             rows.forEach { row -> appendLine(row.joinToString("\t") { it.text }) }
         }.trimEnd()
     }
+    // 长按菜单与右上角按钮共用的写入入口：格/行/整表一律走剪贴板。
+    val copyToClipboard: (String) -> Unit = { text -> clipboard.setText(AnnotatedString(text)) }
     // 表格：右上角提供小型复制按钮；内容保持横向滚动，复制结果为便于二次编辑的 TSV。
     // 图标用矢量 drawable 而非 Unicode 字符：⧉(U+29C9) 一类符号在多数设备字体中
     // 没有字形，会渲染成方框乱码；矢量路径在任何设备上一致，且可跟随主题着色。
@@ -696,43 +717,60 @@ private fun MarkdownTable(
                     .wrapContentWidth(unbounded = true)
                     .clip(RoundedCornerShape(CardCorner))
             ) {
-            MarkdownTableRow(
-                cells = header,
-                columnWidths = columnWidths,
-                alignments = table.alignments,
-                header = true,
-                containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                enableTextSelection = enableTextSelection,
-                search = search,
-                segmentOffset = 0,
-                onLinkLongPress = onLinkLongPress,
-                onLinkClick = onLinkClick,
-                onDoubleClickAt = onDoubleClickAt,
-                onLongPress = onLongPress,
-                onClick = onClick
-            )
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.9f))
-            rows.forEachIndexed { rowIndex, row ->
-                if (rowIndex > 0) {
+                // 表格内容禁用系统文本选择。单元格是固定宽度的短文本，而 Compose 的
+                // 长按选择用 BreakIterator 分词：单格中文（如「研发部」）整体被视为
+                // 一个词，长按即整格选中——没有可拖动微调的手柄，用户感知就是「直接
+                // 全选了一整行」（v2.16.4 用户反馈）；跨格选择还会与表格横向滚动手势
+                // 竞争，且系统「复制」对跨格选择输出无分隔拼接文本、丢失表格结构。
+                // 系统选择在此场景是净负体验，改由应用自己的长按菜单承接复制需求
+                // （MarkdownTableRow：复制该格/该行/整表，TSV 保结构），整表快捷复制
+                // 仍由上方常驻按钮承担。DisableSelection 为 1.0.0 起的稳定 API，
+                // 仅作用于表格子树，正文其余部分的选择体验不受影响。
+                DisableSelection {
+                    MarkdownTableRow(
+                        cells = header,
+                        columnWidths = columnWidths,
+                        alignments = table.alignments,
+                        header = true,
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        cellStyle = tableCellStyle,
+                        enableTextSelection = enableTextSelection,
+                        search = search,
+                        segmentOffset = 0,
+                        tableCopyText = tableCopyText,
+                        onCopyText = copyToClipboard,
+                        onLinkLongPress = onLinkLongPress,
+                        onLinkClick = onLinkClick,
+                        onDoubleClickAt = onDoubleClickAt,
+                        onLongPress = onLongPress,
+                        onClick = onClick
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.9f))
+                    rows.forEachIndexed { rowIndex, row ->
+                        if (rowIndex > 0) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+                        }
+                        MarkdownTableRow(
+                            cells = row,
+                            columnWidths = columnWidths,
+                            alignments = table.alignments,
+                            header = false,
+                            containerColor = Color.Unspecified,
+                            cellStyle = tableCellStyle,
+                            enableTextSelection = enableTextSelection,
+                            search = search,
+                            segmentOffset = columnCount + rowIndex * columnCount,
+                            tableCopyText = tableCopyText,
+                            onCopyText = copyToClipboard,
+                            onLinkLongPress = onLinkLongPress,
+                            onLinkClick = onLinkClick,
+                            onDoubleClickAt = onDoubleClickAt,
+                            onLongPress = onLongPress,
+                            onClick = onClick
+                        )
+                    }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
                 }
-                MarkdownTableRow(
-                    cells = row,
-                    columnWidths = columnWidths,
-                    alignments = table.alignments,
-                    header = false,
-                    containerColor = Color.Unspecified,
-                    enableTextSelection = enableTextSelection,
-                    search = search,
-                    segmentOffset = columnCount + rowIndex * columnCount,
-                    onLinkLongPress = onLinkLongPress,
-                    onLinkClick = onLinkClick,
-                    onDoubleClickAt = onDoubleClickAt,
-                    onLongPress = onLongPress,
-                    onClick = onClick
-                )
-            }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
             }
         }
     }
@@ -745,15 +783,26 @@ private fun MarkdownTableRow(
     alignments: List<TableAlignment>,
     header: Boolean,
     containerColor: Color,
+    cellStyle: androidx.compose.ui.text.TextStyle,
     enableTextSelection: Boolean,
     search: BlockSearch?,
     segmentOffset: Int,
+    tableCopyText: String,
+    onCopyText: (String) -> Unit,
     onLinkLongPress: (String) -> Unit,
     onLinkClick: (String) -> Unit,
     onDoubleClickAt: (Int) -> Unit,
     onLongPress: () -> Unit,
     onClick: () -> Unit
 ) {
+    // 行内不变量提到行级：同行的字重、颜色、行 TSV 逐格相同，原先每格各算一遍。
+    val cellWeight = if (header) FontWeight.SemiBold else FontWeight.Normal
+    val cellColor = if (header) {
+        MaterialTheme.colorScheme.onSurface
+    } else {
+        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f)
+    }
+    val rowCopyText = remember(cells) { cells.joinToString("\t") { it.text } }
     Row(
         verticalAlignment = Alignment.Top,
         modifier = if (containerColor == Color.Unspecified) {
@@ -763,26 +812,71 @@ private fun MarkdownTableRow(
         }
     ) {
         cells.forEachIndexed { index, cell ->
-            MarkdownInteractiveText(
-                source = cell,
-                    style = bodyStyle().copy(fontSize = 16.sp, lineHeight = 27.sp),
-                fontWeight = if (header) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (header) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f),
-                textAlign = when (alignments.getOrElse(index) { TableAlignment.START }) {
-                    TableAlignment.START -> TextAlign.Start
-                    TableAlignment.CENTER -> TextAlign.Center
-                    TableAlignment.END -> TextAlign.End
-                },
-                modifier = Modifier.width(columnWidths[index]).padding(horizontal = 14.dp, vertical = 11.dp),
-                enableTextSelection = enableTextSelection,
-                search = search?.segmentAt(segmentOffset + index),
-                searchScrollRequester = search?.scrollRequester,
-                onLinkLongPress = onLinkLongPress,
-                onLinkClick = onLinkClick,
-                onDoubleClickAt = onDoubleClickAt,
-                onLongPress = onLongPress,
-                onClick = onClick
-            )
+            // 每格长按弹出复制上下文菜单。系统选择已在表格级 DisableSelection 禁用，
+            // 长按改由这里接管：detectTapGestures 的 onLongPress 在 Main pass 消费，
+            // 与单元格 Text 自身的 nonConsumingTapGestures（Initial pass，短按/双击）
+            // 互不干扰——长按触发后短按与双击仍按原路径工作。
+            var menuVisible by remember { mutableStateOf(false) }
+            Box(
+                modifier = Modifier
+                    .width(columnWidths[index])
+                    .pointerInput(cell) {
+                        detectTapGestures(onLongPress = { menuVisible = true })
+                    }
+            ) {
+                MarkdownInteractiveText(
+                    source = cell,
+                    style = cellStyle,
+                    fontWeight = cellWeight,
+                    color = cellColor,
+                    textAlign = when (alignments.getOrElse(index) { TableAlignment.START }) {
+                        TableAlignment.START -> TextAlign.Start
+                        TableAlignment.CENTER -> TextAlign.Center
+                        TableAlignment.END -> TextAlign.End
+                    },
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+                    enableTextSelection = enableTextSelection,
+                    search = search?.segmentAt(segmentOffset + index),
+                    searchScrollRequester = search?.scrollRequester,
+                    onLinkLongPress = onLinkLongPress,
+                    onLinkClick = onLinkClick,
+                    onDoubleClickAt = onDoubleClickAt,
+                    onLongPress = onLongPress,
+                    onClick = onClick
+                )
+                // 菜单锚定被长按的格子（Popup 走独立窗口层，锚点坐标在表格横向滚动后
+                // 依然正确）。三级复制与右上角按钮同一 TSV 约定：格 = 纯文本，
+                // 行/整表 = 制表符分隔，便于粘贴回表格类应用。
+                // 仅在展开时组合菜单：未长按的格子不常驻菜单节点与状态机。
+                if (menuVisible) {
+                    DropdownMenu(
+                        expanded = true,
+                        onDismissRequest = { menuVisible = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("复制该格") },
+                            onClick = {
+                                onCopyText(cell.text)
+                                menuVisible = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("复制该行") },
+                            onClick = {
+                                onCopyText(rowCopyText)
+                                menuVisible = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("复制整表") },
+                            onClick = {
+                                onCopyText(tableCopyText)
+                                menuVisible = false
+                            }
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -1392,19 +1486,26 @@ internal fun computeMarkdownSearchIndex(
     activeOrdinal = activeOrdinal
 )
 
-/** 基于预计算的展示文本计算搜索命中索引；展示文本与搜索词解耦，可随文档缓存复用。 */
-internal fun computeMarkdownSearchIndexFromTexts(
-    displayTexts: List<List<String>>,
-    query: String,
-    activeOrdinal: Int
-): MarkdownSearchIndex {
+/**
+ * 只计算命中区间，不关心当前命中序号；结果只依赖（展示文本，查询词），
+ * 可在二者不变时缓存复用（见 [buildSearchIndex] 与 MarkdownPreview 的两级记忆）。
+ * 返回结构与 displayTexts 一一对应。
+ */
+internal fun computeSearchRanges(displayTexts: List<List<String>>, query: String): List<List<List<IntRange>>> {
     val trimmedQuery = query.trim()
-    if (trimmedQuery.isEmpty()) return MarkdownSearchIndex(emptyList(), 0)
+    if (trimmedQuery.isEmpty()) return emptyList()
+    return displayTexts.map { texts -> texts.map { text -> findSearchMatchRanges(text, trimmedQuery) } }
+}
+
+/**
+ * 在已算好的命中区间上定位当前命中并统计总数——只遍历命中列表，不触碰原始文本。
+ * 点「上一个/下一个」时走这条路径，避免对全文档重新执行字符串匹配。
+ */
+internal fun buildSearchIndex(rangesBySegment: List<List<List<IntRange>>>, activeOrdinal: Int): MarkdownSearchIndex {
     var ordinal = 0
     var totalMatches = 0
-    val blockSegments = displayTexts.map { texts ->
-        texts.map { text ->
-            val ranges = findSearchMatchRanges(text, trimmedQuery)
+    val blockSegments = rangesBySegment.map { segmentRanges ->
+        segmentRanges.map { ranges ->
             totalMatches += ranges.size
             var activeRange: IntRange? = null
             ranges.forEach { range ->
@@ -1415,6 +1516,16 @@ internal fun computeMarkdownSearchIndexFromTexts(
         }
     }
     return MarkdownSearchIndex(blockSegments, totalMatches)
+}
+
+/** 基于预计算的展示文本计算搜索命中索引；展示文本与搜索词解耦，可随文档缓存复用。 */
+internal fun computeMarkdownSearchIndexFromTexts(
+    displayTexts: List<List<String>>,
+    query: String,
+    activeOrdinal: Int
+): MarkdownSearchIndex {
+    if (query.isBlank()) return MarkdownSearchIndex(emptyList(), 0)
+    return buildSearchIndex(computeSearchRanges(displayTexts, query), activeOrdinal)
 }
 
 /** 搜索命中配色：first 为普通命中，second 为当前命中；深浅色主题分别取色保证可读。 */

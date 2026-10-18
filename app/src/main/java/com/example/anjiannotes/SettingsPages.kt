@@ -1,94 +1,39 @@
 package com.example.anjiannotes
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
-import android.content.Intent
-import android.text.Editable
-import android.text.InputType
-import android.text.TextWatcher
-import android.util.TypedValue
-import android.view.Gravity
-import android.view.MotionEvent
-import android.view.VelocityTracker
-import android.view.ViewConfiguration
-import android.view.inputmethod.InputMethodManager
-import android.widget.EdgeEffect
-import android.widget.EditText
-import android.widget.OverScroller
-import android.widget.Toast
-import android.view.View
-import android.net.Uri
-import android.os.Bundle
-import android.util.Log
-import androidx.core.content.res.ResourcesCompat
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.ScrollState
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.ElevatedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -98,69 +43,29 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.derivedStateOf
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.Font
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.anjiannotes.data.ALL_FOLDERS_ID
-import com.example.anjiannotes.data.DEFAULT_FOLDER_ID
-import com.example.anjiannotes.data.FolderEntity
-import com.example.anjiannotes.data.NoteEntity
-import com.example.anjiannotes.data.findSearchMatch
-import com.example.anjiannotes.data.parseSearchTerms
-import com.example.anjiannotes.data.NotePositionStore
-import com.example.anjiannotes.data.NotesRepository
-import com.example.anjiannotes.data.STARRED_FOLDER_ID
 import com.example.anjiannotes.data.WebDavConfig
 import com.example.anjiannotes.data.WebDavRemoteSnapshot
 import com.example.anjiannotes.ui.DialogAction
@@ -170,48 +75,12 @@ import com.example.anjiannotes.ui.screenHorizontalPadding
 import com.example.anjiannotes.ui.rememberIsWatchWindow
 import com.example.anjiannotes.ui.contentMaxWidth
 import com.example.anjiannotes.ui.contentWidthCap
-import com.example.anjiannotes.ui.drawerMaxWidth
-import com.example.anjiannotes.ui.listPaneWidth
-import com.example.anjiannotes.ui.rememberTwoPane
-import com.example.anjiannotes.ui.EditorSeed
-import com.example.anjiannotes.ui.ImportReadResult
-import com.example.anjiannotes.ui.MarkdownPreview
-import com.example.anjiannotes.ui.LocalMarkdownFontFamily
-import com.example.anjiannotes.ui.MarkdownSyntaxHint
-import com.example.anjiannotes.ui.NoteFormatMode
-import com.example.anjiannotes.ui.RememberNoteReadingPosition
-import com.example.anjiannotes.ui.extractFirstLink
-import com.example.anjiannotes.ui.extractLinkAt
-import com.example.anjiannotes.ui.findSearchMatchRanges
-import com.example.anjiannotes.ui.formatForFileName
-import com.example.anjiannotes.ui.linkifyPlainText
-import com.example.anjiannotes.ui.markdownToListPreview
-import com.example.anjiannotes.ui.markdownToPlainText
-import com.example.anjiannotes.ui.plainTextToListPreview
-import com.example.anjiannotes.ui.readTextImport
-import com.example.anjiannotes.ui.searchHighlightColors
-import com.example.anjiannotes.ui.theme.AnJianTheme
 import com.example.anjiannotes.ui.theme.AppearanceMode
-import com.example.anjiannotes.ui.theme.FontPreferences
-import com.example.anjiannotes.ui.theme.MotionTokens
+import com.example.anjiannotes.ui.theme.MotionLevel
 import com.example.anjiannotes.ui.theme.NoteFont
-import com.example.anjiannotes.ui.theme.NotoSansSC
 import java.io.File
-import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.LinkedHashMap
-import java.util.Locale
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlin.math.abs
-import kotlin.math.roundToInt
 
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -220,6 +89,8 @@ internal fun SettingsPage(
     onBack: () -> Unit,
     onOpenAppearance: () -> Unit,
     appearanceMode: AppearanceMode,
+    onOpenMotion: () -> Unit,
+    motionLevel: MotionLevel,
     noteListSortByOpen: Boolean,
     onNoteListSortByOpenChange: (Boolean) -> Unit,
     onBackupClick: () -> Unit,
@@ -256,7 +127,8 @@ internal fun SettingsPage(
             SettingsGroup(
                 title = "外观",
                 items = listOf(
-                    SettingsEntry("◐", "外观", "当前：${appearanceMode.label}", onOpenAppearance)
+                    SettingsEntry("◐", "外观", "当前：${appearanceMode.label}", onOpenAppearance),
+                    SettingsEntry("»", "动画", "当前：${motionLevel.label}", onOpenMotion)
                 )
             )
             SettingsToggleGroup(
@@ -395,6 +267,58 @@ internal fun AppearanceSettingsPage(
             TextButton(onClick = { fontPicker.launch(arrayOf("font/ttf", "font/otf", "application/octet-stream")) }) {
                 Text("重新导入字体")
             }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun MotionSettingsPage(
+    motionLevel: MotionLevel,
+    onBack: () -> Unit,
+    onSelect: (MotionLevel) -> Unit
+) {
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            TopAppBar(
+                title = { Text("动画", fontWeight = FontWeight.SemiBold) },
+                navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
+            )
+        }
+    ) { padding ->
+        // 宽屏内容封顶居中：与外观页同一布局约定；手机竖屏与手表不封顶。
+        Box(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .contentWidthCap(contentMaxWidth())
+                    .padding(horizontal = screenHorizontalPadding(), vertical = if (rememberIsWatchWindow()) 12.dp else 20.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    "档位决定页面过渡、列表滑动与状态反馈的速度。极速档最快，也是默认档；" +
+                        "更高档位的动作更完整，等待感也会相应增加。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+                // 档位序号即速度梯度：1 最快、4 最完整。符号用数字，避免非常用字符的字形覆盖问题。
+                MotionLevel.entries.forEachIndexed { index, level ->
+                    AppearanceOption(
+                        symbol = "${index + 1}",
+                        title = level.label,
+                        subtitle = level.description,
+                        selected = motionLevel == level,
+                        onClick = { onSelect(level) }
+                    )
+                }
             }
         }
     }
@@ -764,7 +688,9 @@ internal fun WebDavRestorePreviewDialog(
         onDismissRequest = onDismiss,
         title = { Text("从 WebDAV 恢复？") },
         text = {
-            Text("备份时间：${SimpleDateFormat("yyyy年M月d日 HH:mm", Locale.CHINA).format(Date(remote.updatedAt))}\n笔记：${remote.snapshot.notes.size} 条\n收藏夹：${remote.snapshot.folders.size} 个\n\n恢复将替换当前本地数据。远程文件已完成完整性校验。")
+            // 复用全局 ThreadLocal 格式化器：SimpleDateFormat 非线程安全且构造成本高，
+            // 直接在字符串模板里 new 会让该对话框每次重组都重复分配。
+            Text("备份时间：${NoteDateFormatter.get().format(Date(remote.updatedAt))}\n笔记：${remote.snapshot.notes.size} 条\n收藏夹：${remote.snapshot.folders.size} 个\n\n恢复将替换当前本地数据。远程文件已完成完整性校验。")
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
         confirmButton = { TextButton(onClick = onConfirm) { Text("确认恢复") } }
@@ -779,22 +705,80 @@ internal fun BackupMenuDialog(
     onExportText: () -> Unit,
     onImportText: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("备份与恢复") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("备份会创建可跨平台阅读的 ZIP：每篇笔记均为独立 Markdown 文件，同时包含收藏夹与备份元数据。恢复会替换当前本地数据。")
-                TextButton(onClick = onExportZip, modifier = Modifier.fillMaxWidth()) { Text("导出 Markdown ZIP 备份", modifier = Modifier.fillMaxWidth()) }
-                TextButton(onClick = onImportZip, modifier = Modifier.fillMaxWidth()) { Text("导入 Markdown ZIP 并完整恢复", modifier = Modifier.fillMaxWidth()) }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f))
-                Text("TXT 明文备份保留为轻量、直接可读的本地备份格式。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                TextButton(onClick = onExportText, modifier = Modifier.fillMaxWidth()) { Text("导出 TXT 明文备份", modifier = Modifier.fillMaxWidth()) }
-                TextButton(onClick = onImportText, modifier = Modifier.fillMaxWidth()) { Text("导入 TXT 明文并完整恢复", modifier = Modifier.fillMaxWidth()) }
+    // 内容两种外壳共享；小屏走全屏对话框、常规走 AlertDialog（同 WebDavBackupDialog 的既有范式）。
+    val menu: @Composable ColumnScope.() -> Unit = {
+        Text(
+            "备份会创建可跨平台阅读的 ZIP：每篇笔记均为独立 Markdown 文件，同时包含收藏夹与备份元数据。恢复会替换当前本地数据。",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        TextButton(onClick = onExportZip, modifier = Modifier.fillMaxWidth()) { Text("导出 Markdown ZIP 备份", modifier = Modifier.fillMaxWidth()) }
+        TextButton(onClick = onImportZip, modifier = Modifier.fillMaxWidth()) { Text("导入 Markdown ZIP 并完整恢复", modifier = Modifier.fillMaxWidth()) }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f))
+        Text(
+            "TXT 明文备份保留为轻量、直接可读的本地备份格式。",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        TextButton(onClick = onExportText, modifier = Modifier.fillMaxWidth()) { Text("导出 TXT 明文备份", modifier = Modifier.fillMaxWidth()) }
+        TextButton(onClick = onImportText, modifier = Modifier.fillMaxWidth()) { Text("导入 TXT 明文并完整恢复", modifier = Modifier.fillMaxWidth()) }
+    }
+    if (rememberIsWatchWindow()) {
+        // Watch 档（窗口宽度 < 320dp，手表/分屏小窗）：M3 AlertDialog 在此档位有两处硬伤——
+        //   1) BasicAlertDialog 对内容施加 sizeIn(minWidth = 280dp)，且该约束位于调用方
+        //      modifier 内层（constrain 语义会把外层 widthIn 顶回 280dp，无法封顶），
+        //      约 298dp 宽的手表屏上卡片两侧仅剩约 9dp，窄于 280dp 的手表直接横向溢出；
+        //   2) 文本槽是 weight(1f, fill = false) 的 Box，不限高也不滚动，内容超高时
+        //      实测标题被顶出屏幕顶部、第四个动作按钮整行丢失（v2.16.3 用户截图）。
+        // 改用全屏对话框：标题与关闭常驻、菜单内部滚动，任何按钮都不会丢失。
+        Dialog(
+            onDismissRequest = onDismiss,
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "备份与恢复",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = onDismiss) { Text("关闭") }
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    // weight(1f) 已把菜单限制在标题行与屏幕底边之间的剩余空间，菜单自身滚动即可。
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        content = menu
+                    )
+                }
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
-    )
+        }
+    } else {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("备份与恢复") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp), content = menu)
+            },
+            confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
+        )
+    }
 }
 
 @Composable

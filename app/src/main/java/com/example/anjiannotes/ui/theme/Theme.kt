@@ -10,6 +10,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import android.app.Activity
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
@@ -72,42 +73,50 @@ private val AnJianShapes = Shapes(
 @Composable
 fun AnJianTheme(
     appearanceMode: AppearanceMode = AppearanceMode.SYSTEM,
+    motionLevel: MotionLevel = MotionLevel.FASTEST,
     systemDarkTheme: Boolean,
     content: @Composable () -> Unit
 ) {
-    val useDarkTheme = when (appearanceMode) {
-        AppearanceMode.LIGHT -> false
-        AppearanceMode.DARK -> true
-        AppearanceMode.SYSTEM -> systemDarkTheme
-    }
-    val colorScheme = animatedColorScheme(useDarkTheme)
-    val view = LocalView.current
-    val window = (view.context as? Activity)?.window
-    SideEffect {
-        window?.let {
-            it.statusBarColor = colorScheme.background.toArgb()
-            it.navigationBarColor = colorScheme.background.toArgb()
-            WindowCompat.getInsetsController(it, view).apply {
-                isAppearanceLightStatusBars = !useDarkTheme
-                isAppearanceLightNavigationBars = !useDarkTheme
+    // 动效档位在主题入口统一注入：参数默认极速档（冷启动默认值），
+    // 用户在设置中切换后由调用方传入。所有动画调用点都经 LocalMotionLevel
+    // 读取，新增/切换档位无需逐个修改调用点。
+    CompositionLocalProvider(LocalMotionLevel provides motionLevel) {
+        val useDarkTheme = when (appearanceMode) {
+            AppearanceMode.LIGHT -> false
+            AppearanceMode.DARK -> true
+            AppearanceMode.SYSTEM -> systemDarkTheme
+        }
+        val colorScheme = animatedColorScheme(useDarkTheme)
+        val view = LocalView.current
+        val window = (view.context as? Activity)?.window
+        SideEffect {
+            window?.let {
+                it.statusBarColor = colorScheme.background.toArgb()
+                it.navigationBarColor = colorScheme.background.toArgb()
+                WindowCompat.getInsetsController(it, view).apply {
+                    isAppearanceLightStatusBars = !useDarkTheme
+                    isAppearanceLightNavigationBars = !useDarkTheme
+                }
             }
         }
-    }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        shapes = AnJianShapes,
-        content = content
-    )
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = Typography,
+            shapes = AnJianShapes,
+            content = content
+        )
+    }
 }
 
-/** 统一用一个进度动画完成主题切换，避免为每种颜色分别调度动画；时长走全局动效规范。 */
+/** 统一用一个进度动画完成主题切换，避免为每种颜色分别调度动画；时长走当前动效档位。 */
 @Composable
 private fun animatedColorScheme(useDarkTheme: Boolean): ColorScheme {
+    // 首帧 animateFloatAsState 直接落在目标值，冷启动不播主题过渡。
+    val motion = motionSpec()
     val progress by animateFloatAsState(
         targetValue = if (useDarkTheme) 1f else 0f,
-        animationSpec = tween(durationMillis = MotionTokens.DurationMedium, easing = MotionTokens.Easing),
+        animationSpec = tween(durationMillis = motion.medium, easing = motion.easing),
         label = "theme-color-progress"
     )
     return ComfortableLightColors.blendTo(ComfortableDarkColors, progress)

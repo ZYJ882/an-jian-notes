@@ -10,6 +10,7 @@ import com.example.anjiannotes.data.WebDavBackupClient
 import com.example.anjiannotes.data.WebDavConfigStore
 import com.example.anjiannotes.ui.theme.AppearancePreferences
 import com.example.anjiannotes.ui.theme.FontPreferences
+import com.example.anjiannotes.ui.theme.MotionPreferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -18,6 +19,7 @@ import kotlinx.coroutines.launch
 class AnJianApplication : Application() {
     val appearancePreferences: AppearancePreferences by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { AppearancePreferences(this) }
     val fontPreferences: FontPreferences by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { FontPreferences(this) }
+    val motionPreferences: MotionPreferences by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { MotionPreferences(this) }
     val folderSelectionPreferences: FolderSelectionPreferences by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { FolderSelectionPreferences(this) }
     val appSortingPreferences: AppSortingPreferences by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { AppSortingPreferences(this) }
     val notePositionStore: NotePositionStore by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { NotePositionStore(this) }
@@ -48,6 +50,7 @@ class AnJianApplication : Application() {
                 appearancePreferences.mode.value
                 fontPreferences.font.value
                 fontPreferences.customPath.value
+                motionPreferences.level.value
                 folderSelectionPreferences.load()
                 appSortingPreferences.loadNoteListByRecentOpen()
                 webDavConfigStore.load()
