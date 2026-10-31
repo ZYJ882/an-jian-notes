@@ -77,6 +77,50 @@ class WindowSizeClassTest {
         )
     }
 
+    // ---------- 方形小窗（手表整机）修正 ----------
+
+    @Test
+    fun squareSmallWindow_detectedOnSquareWatchShapes() {
+        // 方形手表：宽高相等或差在容差内（圆屏带下巴）；短边处于紧凑高度档（< 480dp）。
+        assertTrue(isSquareSmallWindow(320, 320)) // 480×480px @ hdpi 的方形手表，恰为 320dp
+        assertTrue(isSquareSmallWindow(298, 298)) // 实测约 298dp 的方形手表
+        assertTrue(isSquareSmallWindow(320, 340)) // 圆屏带下巴：宽高差 20dp 在容差内
+        assertTrue(isSquareSmallWindow(240, 260))
+        assertTrue(isSquareSmallWindow(204, 204))
+    }
+
+    @Test
+    fun squareSmallWindow_rejectedOnRectangularWindows() {
+        // 手机竖屏/横屏、旧比例机型、折叠屏：长宽差远超容差。
+        assertFalse(isSquareSmallWindow(360, 640))
+        assertFalse(isSquareSmallWindow(640, 360))
+        assertFalse(isSquareSmallWindow(411, 731))
+        assertFalse(isSquareSmallWindow(320, 480)) // 2:3 旧机竖屏
+        assertFalse(isSquareSmallWindow(480, 320))
+    }
+
+    @Test
+    fun squareSmallWindow_rejectedOnLargeSquareWindows() {
+        // 短边 ≥ 480dp 的方形窗口（平板方形分屏、桌面方形窗口）不是手表，保持原档位。
+        assertFalse(isSquareSmallWindow(480, 480))
+        assertFalse(isSquareSmallWindow(600, 600))
+        assertFalse(isSquareSmallWindow(1280, 1280))
+    }
+
+    @Test
+    fun effectiveWidthClass_squareWatchOverridesWidthTier() {
+        // 宽度达到 Compact 下沿（320dp）的方形手表修正为 Watch 档。
+        assertEquals(WindowWidthClass.Watch, effectiveWidthClass(320, 320))
+        assertEquals(WindowWidthClass.Watch, effectiveWidthClass(330, 340))
+        assertEquals(WindowWidthClass.Watch, effectiveWidthClass(300, 300))
+        // 近方形但宽高差超容差 → 仍按宽度断点分类。
+        assertEquals(WindowWidthClass.Compact, effectiveWidthClass(320, 400))
+        assertEquals(WindowWidthClass.Compact, effectiveWidthClass(360, 640))
+        // 大方形窗口不受形状规则影响。
+        assertEquals(WindowWidthClass.Compact, effectiveWidthClass(480, 480))
+        assertEquals(WindowWidthClass.Medium, effectiveWidthClass(600, 600))
+    }
+
     // ---------- 高度分类 ----------
 
     @Test

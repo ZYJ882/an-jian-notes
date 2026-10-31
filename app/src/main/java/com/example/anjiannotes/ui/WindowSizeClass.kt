@@ -3,6 +3,7 @@ package com.example.anjiannotes.ui
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalConfiguration
+import kotlin.math.abs
 
 /**
  * 窗口宽度分类断点（dp）。
@@ -105,7 +106,8 @@ data class WindowSizeClass(
  * 当前窗口的尺寸分类（响应式）。
  *
  * 监听 [LocalConfiguration]：分屏调整、旋转、折叠屏展开、小窗出入时
- * 分类与依赖它的布局会自动切换，无需手动刷新。
+ * 分类与依赖它的布局会自动切换，无需手动刷新。宽度分类先经
+ * [effectiveWidthClass] 做方形小窗修正，再按宽度断点归类。
  */
 @Composable
 fun rememberWindowSizeClass(): WindowSizeClass {
@@ -114,8 +116,43 @@ fun rememberWindowSizeClass(): WindowSizeClass {
     val heightDp = configuration.screenHeightDp
     return remember(widthDp, heightDp) {
         WindowSizeClass(
-            widthClass = WindowWidthClass.of(widthDp),
+            widthClass = effectiveWidthClass(widthDp, heightDp),
             heightClass = WindowHeightClass.of(heightDp)
         )
     }
 }
+
+/**
+ * 方形小窗（手表整机）形状判定参数。
+ */
+object WatchWindowShape {
+    /**
+     * 宽高差容差（dp）：手表整机为方形或圆角方形，圆屏带下巴时宽高差约一二十 dp。
+     * 手机竖屏/横屏、折叠屏与桌面窗口的长宽差都远超该容差，不会被误判。
+     */
+    const val SquareToleranceDp: Int = 40
+}
+
+/**
+ * 方形小窗判定纯函数（可单元测试）。
+ *
+ * 手表整机多为方形或圆角方形（圆屏带下巴时宽高差数十 dp），宽度可达到甚至超过
+ * [WindowWidthBreakpoints.WatchDp] 断点（如 480×480px @ hdpi 恰为 320dp），单看宽度
+ * 会漏判成 Compact 档，进而套用不适配方形矮屏的常规布局（对话框内容被截断）。
+ * 因此补一条形状规则：短边处于紧凑高度档（< [WindowHeightBreakpoints.CompactDp]）
+ * 且宽高差在容差内 → 视为手表窗口。短边不小于 480dp 的方形窗口（平板方形分屏、
+ * 桌面方形窗口）不受影响，保持按宽度断点分类。
+ */
+fun isSquareSmallWindow(widthDp: Int, heightDp: Int): Boolean =
+    minOf(widthDp, heightDp) < WindowHeightBreakpoints.CompactDp &&
+        abs(widthDp - heightDp) <= WatchWindowShape.SquareToleranceDp
+
+/**
+ * 窗口宽度分类（含方形小窗修正，可单元测试）。
+ *
+ * 先按 [isSquareSmallWindow] 的形状规则修正为 Watch 档，再按宽度断点分类；
+ * [rememberWindowSizeClass] 与所有 isWatch 消费方都经由本函数取宽档。
+ */
+fun effectiveWidthClass(widthDp: Int, heightDp: Int): WindowWidthClass =
+    if (isSquareSmallWindow(widthDp, heightDp)) WindowWidthClass.Watch
+    else WindowWidthClass.of(widthDp)

@@ -706,25 +706,45 @@ internal fun BackupMenuDialog(
     onImportText: () -> Unit
 ) {
     // 内容两种外壳共享；小屏走全屏对话框、常规走 AlertDialog（同 WebDavBackupDialog 的既有范式）。
+    // 手表档（compact）额外收紧排版：说明改短句 + bodySmall、间距 4dp——四项操作在约 300dp
+    // 的方形手表屏一屏即可放下，滚动仅作更小圆屏的兜底（v2.17.2 用户截图：v2.16.3 引入的
+    // 全屏外壳本身正确，但沿用常规字号与间距时 TXT 两项被截出首屏，手表上滚动手势并不可靠）。
+    val compact = rememberIsWatchWindow()
     val menu: @Composable ColumnScope.() -> Unit = {
-        Text(
-            "备份会创建可跨平台阅读的 ZIP：每篇笔记均为独立 Markdown 文件，同时包含收藏夹与备份元数据。恢复会替换当前本地数据。",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        if (compact) {
+            Text(
+                "备份导出 ZIP：每篇笔记一个 Markdown 文件，含收藏夹；恢复会替换本地数据。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            Text(
+                "备份会创建可跨平台阅读的 ZIP：每篇笔记均为独立 Markdown 文件，同时包含收藏夹与备份元数据。恢复会替换当前本地数据。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         TextButton(onClick = onExportZip, modifier = Modifier.fillMaxWidth()) { Text("导出 Markdown ZIP 备份", modifier = Modifier.fillMaxWidth()) }
         TextButton(onClick = onImportZip, modifier = Modifier.fillMaxWidth()) { Text("导入 Markdown ZIP 并完整恢复", modifier = Modifier.fillMaxWidth()) }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f))
-        Text(
-            "TXT 明文备份保留为轻量、直接可读的本地备份格式。",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        if (compact) {
+            Text(
+                "TXT 为轻量明文备份。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            Text(
+                "TXT 明文备份保留为轻量、直接可读的本地备份格式。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         TextButton(onClick = onExportText, modifier = Modifier.fillMaxWidth()) { Text("导出 TXT 明文备份", modifier = Modifier.fillMaxWidth()) }
         TextButton(onClick = onImportText, modifier = Modifier.fillMaxWidth()) { Text("导入 TXT 明文并完整恢复", modifier = Modifier.fillMaxWidth()) }
     }
-    if (rememberIsWatchWindow()) {
-        // Watch 档（窗口宽度 < 320dp，手表/分屏小窗）：M3 AlertDialog 在此档位有两处硬伤——
+    if (compact) {
+        // Watch 档（宽度 < 320dp 或方形小窗，手表/分屏小窗）：M3 AlertDialog 在此档位有两处硬伤——
         //   1) BasicAlertDialog 对内容施加 sizeIn(minWidth = 280dp)，且该约束位于调用方
         //      modifier 内层（constrain 语义会把外层 widthIn 顶回 280dp，无法封顶），
         //      约 298dp 宽的手表屏上卡片两侧仅剩约 9dp，窄于 280dp 的手表直接横向溢出；
@@ -758,12 +778,14 @@ internal fun BackupMenuDialog(
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                     // weight(1f) 已把菜单限制在标题行与屏幕底边之间的剩余空间，菜单自身滚动即可。
+                    // 手表档排版收紧（短说明 + bodySmall + 4dp 间距 + 12/8dp 内边距）：
+                    // 常规方形手表一屏容纳全部四项操作，更小的圆屏由滚动兜底。
                     Column(
                         modifier = Modifier
                             .weight(1f)
                             .verticalScroll(rememberScrollState())
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
                         content = menu
                     )
                 }
@@ -774,7 +796,9 @@ internal fun BackupMenuDialog(
             onDismissRequest = onDismiss,
             title = { Text("备份与恢复") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp), content = menu)
+                // 限高 + 内部滚动：矮窗口（横屏手机、方形兼容窗口）下说明与四个操作
+                // 不会被顶出屏幕，同 WebDavBackupDialog 的 DialogContentColumn 范式。
+                DialogContentColumn(spacing = 8.dp, content = menu)
             },
             confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
         )
