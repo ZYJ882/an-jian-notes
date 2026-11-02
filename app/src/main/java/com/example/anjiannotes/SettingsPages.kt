@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -523,6 +525,7 @@ private fun WatchDialogTitleRow(
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun WebDavBackupDialog(
     initialConfig: WebDavConfig?,
@@ -616,10 +619,30 @@ internal fun WebDavBackupDialog(
             title = { Text("WebDAV 增量备份") },
             text = {
                 // 限高 + 内部滚动：矮屏（横屏手机、手表兼容窗口）下按钮不会被顶出屏幕。
-                DialogContentColumn(spacing = 10.dp) { form(false) }
+                // v2.17.4：次要操作（测试连接/仅保存/从 WebDAV 恢复）并入正文尾部随内容
+                // 滚动——AlertDialog 的 confirm/dismiss 槽位内部按「各一枚单行按钮」排版，
+                // 此前把四枚按钮的 FlowRow 整个塞进 confirmButton，折成两行后第二行与
+                // dismiss 槽的「取消」重叠（v2.17.3 用户手机截图：立即备份与取消叠字）。
+                DialogContentColumn(spacing = 10.dp) {
+                    form(false)
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        TextButton(onClick = { onTest(currentConfig()) }, enabled = !busy) { Text("测试连接") }
+                        TextButton(onClick = { onSave(currentConfig()) }, enabled = !busy) { Text("仅保存") }
+                        TextButton(onClick = { onRestore(currentConfig()) }, enabled = !busy) { Text("从 WebDAV 恢复") }
+                    }
+                }
             },
+            // 两槽各只放一枚单行按钮（M3 约定用法），任何屏宽下都不会再重叠。
             dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") } },
-            confirmButton = { DialogActionButtons(actions = actions) }
+            confirmButton = {
+                TextButton(onClick = { onSync(currentConfig()) }, enabled = !busy) {
+                    Text("立即备份", fontWeight = FontWeight.SemiBold)
+                }
+            }
         )
     }
 }
