@@ -507,9 +507,19 @@ internal fun NoteDetailPage(
     }
 
     val latestFinalizeAndLeave by rememberUpdatedState(::finalizeAndLeave)
-    // 专注阅读使用分层返回：第一次返回只恢复普通阅读，第二次才离开笔记。
+    // 系统返回分层回退：预览搜索栏展开时先收起搜索并清空查询（与 🔍 按钮的关闭
+    // 行为一致），专注阅读时先恢复普通阅读，两者都不满足才最终确认离开（自动保存
+    // 后回列表）；第二次返回才真正离开笔记。
     BackHandler(enabled = true) {
-        if (focusMode) focusMode = false else latestFinalizeAndLeave(false)
+        when {
+            searchVisible -> {
+                searchVisible = false
+                searchQuery = ""
+                searchActiveOrdinal = 0
+            }
+            focusMode -> focusMode = false
+            else -> latestFinalizeAndLeave(false)
+        }
     }
 
     // 首次进入的轻量淡入：graphicsLayer alpha 只触发重绘、不触发重组与重新测量，

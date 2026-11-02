@@ -568,9 +568,33 @@ private fun NotesApp(
         }
     }
 
-    // 详情页自身必须独占系统返回事件，以便先执行自动保存；根页面仅处理设置层级的返回。
-    BackHandler(enabled = page is AppPage.Settings || page is AppPage.Appearance) {
-        page = if (page is AppPage.Appearance) AppPage.Settings else AppPage.List
+    // —— 系统返回逐级回退（手机 / 手表 / 平板一致，兼容 Android 13+ 预测性返回手势）——
+    // 注册顺序即优先级从低到高：组合更深的处理器（列表页多选与抽屉、对话框独立窗口、
+    // 详情页自身的分层返回）先于这里收到事件；本组只在对应层级没有更深层拦截时生效，
+    // 保证任何二级状态按系统返回都是逐级回退，而不是直接退出应用。
+    // 1) 双栏（平板/横屏宽屏）右栏有选中详情：返回先冲刷详情未保存内容并回空态，
+    //    再按一次才退出应用。复用详情离开令牌（pendingDetailIntent 保持空意图，
+    //    finalize 完成后 handleDetailBack 的空意图分支会清空选中；最终保存失败时
+    //    详情不离开，令牌可重试）。
+    BackHandler(enabled = twoPane && page is AppPage.List && selectedDetail != null) {
+        detailLeaveRequest += 1
+    }
+    // 2) 设置层级：动效 / 外观 → 设置 → 列表。
+    BackHandler(
+        enabled = page is AppPage.Settings || page is AppPage.Appearance || page is AppPage.Motion
+    ) {
+        page = when {
+            page is AppPage.Appearance || page is AppPage.Motion -> AppPage.Settings
+            else -> AppPage.List
+        }
+    }
+    // 3) 列表页搜索栏展开：返回先收起搜索并清空查询。抽屉与多选的返回处理注册在
+    //    列表页内部（组合更深、优先级更高），抽屉开着或多选时优先关抽屉/退多选；
+    //    顶部创建菜单与各对话框是弹出层，返回事件由其自身窗口消费，不经过这里。
+    BackHandler(enabled = page is AppPage.List && showSearch) {
+        showSearch = false
+        viewModel.setSearchQuery("")
+        if (isGlobalSearch) viewModel.closeGlobalSearch()
     }
 
     // 双栏与整页随窗口互转：缩窄（旋转/退出分屏/合上折叠屏）把选中态提升为整页导航，

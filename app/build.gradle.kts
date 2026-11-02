@@ -13,8 +13,8 @@ android {
         applicationId = "com.example.anjiannotes"
         minSdk = 26
         targetSdk = 35
-        versionCode = 132
-        versionName = "2.17.4"
+        versionCode = 133
+        versionName = "2.18.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
