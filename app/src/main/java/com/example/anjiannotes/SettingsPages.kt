@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -484,6 +485,44 @@ internal fun SettingsToggleGroup(title: String, items: List<SettingsToggleEntry>
     }
 }
 
+/**
+ * 手表全屏对话框的紧凑标题行：titleMedium 标题 + 32dp 小关闭按钮，下缘细分隔线。
+ *
+ * v2.16.3 引入的外壳标题行沿用常规排版（titleLarge + 40dp TextButton + 12dp 上下留白，
+ * 合计约 52dp）；v2.17.3 收紧到约 36dp，把省出的高度全部让给滚动内容区。两个手表
+ * 全屏外壳（WebDAV 增量备份、备份与恢复）共用，保持视觉一致。
+ */
+@Composable
+private fun WatchDialogTitleRow(
+    title: String,
+    actionLabel: String,
+    enabled: Boolean = true,
+    onAction: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.weight(1f)
+        )
+        TextButton(
+            onClick = onAction,
+            enabled = enabled,
+            modifier = Modifier.height(32.dp),
+            contentPadding = PaddingValues(horizontal = 10.dp)
+        ) {
+            Text(actionLabel, style = MaterialTheme.typography.labelLarge)
+        }
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+}
+
 @Composable
 internal fun WebDavBackupDialog(
     initialConfig: WebDavConfig?,
@@ -503,7 +542,8 @@ internal fun WebDavBackupDialog(
     fun currentConfig() = WebDavConfig(endpoint, username, password, remoteDirectory, syncDeleteRemoteFiles)
 
     // 表单字段在两种外壳间共享，状态提升到本函数；小屏走全屏页、常规走 AlertDialog。
-    val form: @Composable ColumnScope.() -> Unit = {
+    // compact 随外壳传入：手表档用短说明与小字排版，常规档保持原有完整文案。
+    val form: @Composable ColumnScope.(Boolean) -> Unit = { compact ->
         WebDavConfigForm(
             endpoint = endpoint,
             onEndpointChange = { endpoint = it },
@@ -516,7 +556,8 @@ internal fun WebDavBackupDialog(
             syncDeleteRemoteFiles = syncDeleteRemoteFiles,
             onSyncDeleteRemoteFilesChange = { syncDeleteRemoteFiles = it },
             busy = busy,
-            task = task
+            task = task,
+            compact = compact
         )
     }
     // FlowRow 自动换行：四个操作在窄手机/手表上超过一行宽度时折行，不再被裁切。
@@ -530,6 +571,9 @@ internal fun WebDavBackupDialog(
     if (rememberIsWatchWindow()) {
         // Watch 档（窗口宽度 < 320dp，手表/分屏小窗）：整表单 + 4 个操作无法在矮屏内平铺，
         // 改用全屏对话框——标题与操作区常驻、表单内部滚动，任何按钮都不会被顶出屏幕。
+        // v2.17.3 收紧常驻区：紧凑标题行（约 36dp）+ 36dp 胶囊操作按钮（折两行约 78dp）
+        // 合计约 120dp（此前约 195dp），滚动区多出约 75dp——用户截图反馈的
+        // 「下面操作区太大、上面滚动区没多少」即源于此。
         Dialog(
             onDismissRequest = onDismiss,
             properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -541,21 +585,12 @@ internal fun WebDavBackupDialog(
                         .statusBarsPadding()
                         .navigationBarsPadding()
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "WebDAV 增量备份",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.weight(1f)
-                        )
-                        TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") }
-                    }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    WatchDialogTitleRow(
+                        title = "WebDAV 增量备份",
+                        actionLabel = "取消",
+                        enabled = !busy,
+                        onAction = onDismiss
+                    )
                     // weight(1f) 已把表单限制在标题与操作区之间的剩余空间，
                     // 表单自身滚动即可，无需再叠加高度上限（避免留白）。
                     Column(
@@ -563,13 +598,14 @@ internal fun WebDavBackupDialog(
                             .weight(1f)
                             .verticalScroll(rememberScrollState())
                             .imePadding()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) { form() }
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) { form(true) }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                     DialogActionButtons(
                         actions = actions,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        compact = true
                     )
                 }
             }
@@ -580,7 +616,7 @@ internal fun WebDavBackupDialog(
             title = { Text("WebDAV 增量备份") },
             text = {
                 // 限高 + 内部滚动：矮屏（横屏手机、手表兼容窗口）下按钮不会被顶出屏幕。
-                DialogContentColumn(spacing = 10.dp, content = form)
+                DialogContentColumn(spacing = 10.dp) { form(false) }
             },
             dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") } },
             confirmButton = { DialogActionButtons(actions = actions) }
@@ -588,7 +624,9 @@ internal fun WebDavBackupDialog(
     }
 }
 
-/** WebDAV 备份表单字段：全屏页与对话框两种外壳共用，状态由调用方提升。 */
+/** WebDAV 备份表单字段：全屏页与对话框两种外壳共用，状态由调用方提升。
+ *  compact（手表档）只收紧说明文字与状态行的字号与文案，输入框保持 M3 标准高度
+ *  （56dp，随主题与无障碍字号缩放）；表单过长由外壳的滚动区处理。 */
 @Composable
 internal fun WebDavConfigForm(
     endpoint: String,
@@ -602,18 +640,28 @@ internal fun WebDavConfigForm(
     syncDeleteRemoteFiles: Boolean,
     onSyncDeleteRemoteFilesChange: (Boolean) -> Unit,
     busy: Boolean,
-    task: WebDavTask
+    task: WebDavTask,
+    compact: Boolean = false
 ) {
     // 表单自带纵向节奏：两种外壳（全屏页 / 对话框）都不再需要额外间距。
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp)
     ) {
-        Text(
-            "服务器上会保存 notes/*.md、folders.json 与 metadata.json。密码使用设备加密密钥保存在本机。",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        if (compact) {
+            // 手表档短说明：控制在两行以内，为下方输入框省出首屏高度。
+            Text(
+                "远端保存笔记 .md 与元数据；密码加密存本机。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            Text(
+                "服务器上会保存 notes/*.md、folders.json 与 metadata.json。密码使用设备加密密钥保存在本机。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         OutlinedTextField(
             value = endpoint,
             onValueChange = onEndpointChange,
@@ -672,7 +720,7 @@ internal fun WebDavConfigForm(
                 WebDavTask.RESTORE -> "正在读取远程备份，请稍候"
                 WebDavTask.IDLE -> "手动备份工具：不会自动覆盖本地数据"
             },
-            style = MaterialTheme.typography.bodySmall,
+            style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
@@ -697,6 +745,44 @@ internal fun WebDavRestorePreviewDialog(
     )
 }
 
+/** 手表档备份菜单卡片中的单行操作：符号 + 标题，42dp 行高、整行可点。
+ *  符号沿用应用既有字符集（设置页 ↥、⇅ 同区块箭头），主色高亮。 */
+@Composable
+private fun BackupMenuRow(symbol: String, title: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(42.dp)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            symbol,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.width(24.dp)
+        )
+        Text(
+            title,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/** 手表档备份菜单卡片内的分隔线：与标题列对齐留出缩进（同设置页分组卡片的分隔线处理）。 */
+@Composable
+private fun BackupMenuDivider() {
+    HorizontalDivider(
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f),
+        modifier = Modifier.padding(start = 46.dp)
+    )
+}
+
 @Composable
 internal fun BackupMenuDialog(
     onDismiss: () -> Unit,
@@ -706,15 +792,36 @@ internal fun BackupMenuDialog(
     onImportText: () -> Unit
 ) {
     // 内容两种外壳共享；小屏走全屏对话框、常规走 AlertDialog（同 WebDavBackupDialog 的既有范式）。
-    // 手表档（compact）额外收紧排版：说明改短句 + bodySmall、间距 4dp——四项操作在约 300dp
-    // 的方形手表屏一屏即可放下，滚动仅作更小圆屏的兜底（v2.17.2 用户截图：v2.16.3 引入的
-    // 全屏外壳本身正确，但沿用常规字号与间距时 TXT 两项被截出首屏，手表上滚动手势并不可靠）。
+    // 手表档自 v2.17.3 改用卡片式菜单：符号 + 单行标题 + 分隔线的分组卡片（同设置页
+    // SettingsGroup 的视觉语言），四行合计约 171dp；v2.17.2 的紧凑 TextButton 布局
+    // 约摸一屏边缘，用户实测（v2.17.2 截图）底部 TXT 项仍被压到——卡片化后总高约
+    // 285dp，在约 320dp 可用高度内一屏完整显示，滚动仅作更小圆屏的兜底。
     val compact = rememberIsWatchWindow()
-    val menu: @Composable ColumnScope.() -> Unit = {
-        if (compact) {
+    val menu: @Composable ColumnScope.(Boolean) -> Unit = { isCompact ->
+        if (isCompact) {
             Text(
-                "备份导出 ZIP：每篇笔记一个 Markdown 文件，含收藏夹；恢复会替换本地数据。",
-                style = MaterialTheme.typography.bodySmall,
+                "ZIP 备份含每篇笔记 Markdown 与收藏夹；恢复会替换本地数据。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f),
+                shape = MaterialTheme.shapes.medium,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f))
+            ) {
+                Column {
+                    BackupMenuRow(symbol = "↥", title = "导出 Markdown ZIP", onClick = onExportZip)
+                    BackupMenuDivider()
+                    BackupMenuRow(symbol = "↧", title = "导入 ZIP 恢复", onClick = onImportZip)
+                    BackupMenuDivider()
+                    BackupMenuRow(symbol = "⇈", title = "导出 TXT 明文", onClick = onExportText)
+                    BackupMenuDivider()
+                    BackupMenuRow(symbol = "⇊", title = "导入 TXT 恢复", onClick = onImportText)
+                }
+            }
+            Text(
+                "TXT 为轻量明文本地备份。",
+                style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         } else {
@@ -723,25 +830,17 @@ internal fun BackupMenuDialog(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-        }
-        TextButton(onClick = onExportZip, modifier = Modifier.fillMaxWidth()) { Text("导出 Markdown ZIP 备份", modifier = Modifier.fillMaxWidth()) }
-        TextButton(onClick = onImportZip, modifier = Modifier.fillMaxWidth()) { Text("导入 Markdown ZIP 并完整恢复", modifier = Modifier.fillMaxWidth()) }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f))
-        if (compact) {
-            Text(
-                "TXT 为轻量明文备份。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        } else {
+            TextButton(onClick = onExportZip, modifier = Modifier.fillMaxWidth()) { Text("导出 Markdown ZIP 备份", modifier = Modifier.fillMaxWidth()) }
+            TextButton(onClick = onImportZip, modifier = Modifier.fillMaxWidth()) { Text("导入 Markdown ZIP 并完整恢复", modifier = Modifier.fillMaxWidth()) }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f))
             Text(
                 "TXT 明文备份保留为轻量、直接可读的本地备份格式。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            TextButton(onClick = onExportText, modifier = Modifier.fillMaxWidth()) { Text("导出 TXT 明文备份", modifier = Modifier.fillMaxWidth()) }
+            TextButton(onClick = onImportText, modifier = Modifier.fillMaxWidth()) { Text("导入 TXT 明文并完整恢复", modifier = Modifier.fillMaxWidth()) }
         }
-        TextButton(onClick = onExportText, modifier = Modifier.fillMaxWidth()) { Text("导出 TXT 明文备份", modifier = Modifier.fillMaxWidth()) }
-        TextButton(onClick = onImportText, modifier = Modifier.fillMaxWidth()) { Text("导入 TXT 明文并完整恢复", modifier = Modifier.fillMaxWidth()) }
     }
     if (compact) {
         // Watch 档（宽度 < 320dp 或方形小窗，手表/分屏小窗）：M3 AlertDialog 在此档位有两处硬伤——
@@ -762,31 +861,20 @@ internal fun BackupMenuDialog(
                         .statusBarsPadding()
                         .navigationBarsPadding()
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "备份与恢复",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.weight(1f)
-                        )
-                        TextButton(onClick = onDismiss) { Text("关闭") }
-                    }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                    // weight(1f) 已把菜单限制在标题行与屏幕底边之间的剩余空间，菜单自身滚动即可。
-                    // 手表档排版收紧（短说明 + bodySmall + 4dp 间距 + 12/8dp 内边距）：
-                    // 常规方形手表一屏容纳全部四项操作，更小的圆屏由滚动兜底。
+                    WatchDialogTitleRow(
+                        title = "备份与恢复",
+                        actionLabel = "关闭",
+                        onAction = onDismiss
+                    )
+                    // weight(1f) 已把菜单限制在标题行与屏幕底边之间的剩余空间，菜单自身滚动即可；
+                    // 更小的圆屏由滚动兜底。
                     Column(
                         modifier = Modifier
                             .weight(1f)
                             .verticalScroll(rememberScrollState())
                             .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                        content = menu
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        content = { menu(true) }
                     )
                 }
             }
@@ -798,7 +886,7 @@ internal fun BackupMenuDialog(
             text = {
                 // 限高 + 内部滚动：矮窗口（横屏手机、方形兼容窗口）下说明与四个操作
                 // 不会被顶出屏幕，同 WebDavBackupDialog 的 DialogContentColumn 范式。
-                DialogContentColumn(spacing = 8.dp, content = menu)
+                DialogContentColumn(spacing = 8.dp) { menu(false) }
             },
             confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
         )

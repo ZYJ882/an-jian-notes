@@ -5,10 +5,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -161,28 +166,74 @@ data class DialogAction(
  *
  * 使用 FlowRow 自动换行：按钮总宽超过对话框宽度时折到下一行，
  * 替代固定单行 Row——后者在窄手机与手表上会把按钮直接裁掉。
+ *
+ * compact 模式（手表档全屏外壳底部操作区）：36dp 胶囊底色按钮 + labelMedium 小字。
+ * 常规 TextButton 遵循 M3 的 40dp 最小高度与宽松内边距，四个操作在约 274dp 宽的
+ * 手表内容区会折成三行、连同间距占据约 130dp——这是 v2.17.3 之前手表上
+ * 「底部操作区太大、上方滚动区太小」的主因（用户截图实测）。胶囊按钮折两行
+ * 约 78dp，为滚动区多让出约 50dp；底色也给了小屏更清晰的触控范围。
+ * 非紧凑路径（常规手机/平板对话框）渲染完全不变。
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DialogActionButtons(
     actions: List<DialogAction>,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    compact: Boolean = false
 ) {
     FlowRow(
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 4.dp),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 4.dp)
     ) {
         actions.forEach { action ->
-            TextButton(
-                onClick = action.onClick,
-                enabled = action.enabled
-            ) {
-                Text(
-                    text = action.label,
-                    fontWeight = if (action.emphasized) FontWeight.SemiBold else null,
-                    color = if (action.destructive) MaterialTheme.colorScheme.error else Color.Unspecified
-                )
+            if (compact) {
+                // 胶囊尺寸：36dp 高、水平 14dp 内边距；强调动作用实心主色，
+                // 其余用次级容器色，破坏性动作文字标红。
+                if (action.emphasized) {
+                    Button(
+                        onClick = action.onClick,
+                        enabled = action.enabled,
+                        modifier = Modifier.height(36.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = action.label,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                } else {
+                    FilledTonalButton(
+                        onClick = action.onClick,
+                        enabled = action.enabled,
+                        modifier = Modifier.height(36.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                        colors = if (action.destructive) {
+                            ButtonDefaults.filledTonalButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error
+                            )
+                        } else {
+                            ButtonDefaults.filledTonalButtonColors()
+                        }
+                    ) {
+                        Text(
+                            text = action.label,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                }
+            } else {
+                TextButton(
+                    onClick = action.onClick,
+                    enabled = action.enabled
+                ) {
+                    Text(
+                        text = action.label,
+                        fontWeight = if (action.emphasized) FontWeight.SemiBold else null,
+                        color = if (action.destructive) MaterialTheme.colorScheme.error else Color.Unspecified
+                    )
+                }
             }
         }
     }
