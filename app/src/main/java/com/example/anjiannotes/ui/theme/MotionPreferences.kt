@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /** 轻量持久化动效档位偏好；默认极速档，写入后立即驱动主题注入点重组。 */
 class MotionPreferences(context: Context) {
-    private val preferences = context.applicationContext.getSharedPreferences("motion_preferences", Context.MODE_PRIVATE)
+    private val preferences = context.applicationContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     private val mutableLevel = MutableStateFlow(MotionLevel.fromKey(preferences.getString(KEY_LEVEL, null)))
 
     val level: StateFlow<MotionLevel> = mutableLevel.asStateFlow()
@@ -18,6 +18,7 @@ class MotionPreferences(context: Context) {
     }
 
     private companion object {
+        const val PREFERENCES_NAME = "motion_preferences"
         const val KEY_LEVEL = "motion_level"
     }
 }

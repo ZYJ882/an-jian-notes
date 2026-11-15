@@ -16,7 +16,7 @@ enum class NoteFont(val key: String, val label: String) {
 }
 
 class FontPreferences(context: Context) {
-    private val preferences = context.applicationContext.getSharedPreferences("font_preferences", Context.MODE_PRIVATE)
+    private val preferences = context.applicationContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     private val mutableFont = MutableStateFlow(NoteFont.fromKey(preferences.getString(KEY_FONT, null)))
     private val mutableCustomPath = MutableStateFlow(preferences.getString(KEY_CUSTOM_PATH, null))
 
@@ -35,6 +35,7 @@ class FontPreferences(context: Context) {
     }
 
     private companion object {
+        const val PREFERENCES_NAME = "font_preferences"
         const val KEY_FONT = "note_font"
         const val KEY_CUSTOM_PATH = "custom_font_path"
     }

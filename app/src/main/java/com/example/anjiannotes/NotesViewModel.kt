@@ -90,6 +90,27 @@ class NotesViewModel(
         }
     }
 
+    /**
+     * WebDAV 任务的唯一启动入口：先把状态从 IDLE 原子切换到目标态，抢占失败
+     * 立即回报「忙碌」；成功后在 viewModelScope 内执行 block。
+     *
+     * 收口前 testWebDav / syncWebDav / previewWebDavRestore 三处各自复制了
+     * 「compareAndSet + 同一句忙碌提示 + launch」；收口后新增任务只需指定目标态。
+     * 各任务仍在自己的 block 内决定何时复位为 IDLE（预览态需保持到确认/取消，
+     * 备份态在 finally 中复位），状态机语义不变。
+     */
+    private fun launchWebDavTask(
+        task: WebDavTask,
+        onFailure: (String) -> Unit,
+        block: suspend () -> Unit
+    ) {
+        if (!webDavTaskState.compareAndSet(WebDavTask.IDLE, task)) {
+            onFailure("已有 WebDAV 任务正在执行")
+            return
+        }
+        viewModelScope.launch { block() }
+    }
+
     private fun <T> launchDeferred(action: suspend () -> T): Deferred<T> {
         val result = CompletableDeferred<T>()
         viewModelScope.launch {
@@ -165,11 +186,7 @@ class NotesViewModel(
         onSuccess: () -> Unit,
         onFailure: (String) -> Unit
     ) {
-        if (!webDavTaskState.compareAndSet(WebDavTask.IDLE, WebDavTask.BACKUP)) {
-            onFailure("已有 WebDAV 任务正在执行")
-            return
-        }
-        viewModelScope.launch {
+        launchWebDavTask(WebDavTask.BACKUP, onFailure) {
             try {
                 withContext(Dispatchers.Default) { webDavBackupClient.testConnection(config) }
                 onSuccess()
@@ -186,11 +203,7 @@ class NotesViewModel(
         onSuccess: (String) -> Unit,
         onFailure: (String) -> Unit
     ) {
-        if (!webDavTaskState.compareAndSet(WebDavTask.IDLE, WebDavTask.BACKUP)) {
-            onFailure("已有 WebDAV 任务正在执行")
-            return
-        }
-        viewModelScope.launch {
+        launchWebDavTask(WebDavTask.BACKUP, onFailure) {
             try {
                 val message = withContext(Dispatchers.Default) {
                     val normalized = persistWebDavConfig(config)
@@ -215,11 +228,7 @@ class NotesViewModel(
         onSuccess: (WebDavRemoteSnapshot) -> Unit,
         onFailure: (String) -> Unit
     ) {
-        if (!webDavTaskState.compareAndSet(WebDavTask.IDLE, WebDavTask.RESTORE)) {
-            onFailure("已有 WebDAV 任务正在执行")
-            return
-        }
-        viewModelScope.launch {
+        launchWebDavTask(WebDavTask.RESTORE, onFailure) {
             try {
                 onSuccess(withContext(Dispatchers.Default) { webDavBackupClient.fetchRemoteSnapshot(config) })
             } catch (error: Throwable) {

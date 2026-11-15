@@ -86,6 +86,30 @@ import java.util.Date
 import kotlinx.coroutines.launch
 
 
+/**
+ * 三个设置页共用的页面骨架：统一的 TopAppBar（标题 / 返回按钮 / 背景色）
+ * 与 Scaffold 容器色。收口前逐页复制同一份定义，新增设置页容易漏改其中一项。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SettingsPageScaffold(
+    title: String,
+    onBack: () -> Unit,
+    content: @Composable (PaddingValues) -> Unit
+) {
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            TopAppBar(
+                title = { Text(title, fontWeight = FontWeight.SemiBold) },
+                navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
+            )
+        },
+        content = content
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun SettingsPage(
@@ -100,16 +124,7 @@ internal fun SettingsPage(
     onWebDavClick: () -> Unit,
     webDavConfigured: Boolean
 ) {
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                title = { Text("设置", fontWeight = FontWeight.SemiBold) },
-                navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
-            )
-        }
-    ) { padding ->
+    SettingsPageScaffold(title = "设置", onBack = onBack) { padding ->
         val compact = rememberIsWatchWindow()
         // 宽屏内容封顶居中：设置项不横贯平板；手机竖屏与手表不封顶，布局不变。
         Box(
@@ -180,16 +195,7 @@ internal fun AppearanceSettingsPage(
     onFontSelect: (NoteFont) -> Unit,
     onCustomFontPath: (String) -> Unit
 ) {
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                title = { Text("外观", fontWeight = FontWeight.SemiBold) },
-                navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
-            )
-        }
-    ) { padding ->
+    SettingsPageScaffold(title = "外观", onBack = onBack) { padding ->
         val context = LocalContext.current
         val fontPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             uri ?: return@rememberLauncherForActivityResult
@@ -282,16 +288,7 @@ internal fun MotionSettingsPage(
     onBack: () -> Unit,
     onSelect: (MotionLevel) -> Unit
 ) {
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                title = { Text("动画", fontWeight = FontWeight.SemiBold) },
-                navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
-            )
-        }
-    ) { padding ->
+    SettingsPageScaffold(title = "动画", onBack = onBack) { padding ->
         // 宽屏内容封顶居中：与外观页同一布局约定；手机竖屏与手表不封顶。
         Box(
             modifier = Modifier.fillMaxSize().padding(padding),
@@ -375,8 +372,20 @@ internal data class SettingsEntry(
     val onClick: () -> Unit
 )
 
+/**
+ * SettingsGroup / SettingsToggleGroup 共用的卡片外壳：分组标题 + 圆角描边
+ * Surface + 逐行内容 + 行间分隔线。两者仅「行尾控件与点击行为」不同，
+ * 收口后新增同类设置组不会再复制一遍外壳与分隔线判定。
+ *
+ * 等价性：原两处均为 items.forEachIndexed + `index != items.lastIndex` 判定分隔线；
+ * `items.lastIndex == items.size - 1`，空列表时两者都不产生任何行。
+ */
 @Composable
-internal fun SettingsGroup(title: String, items: List<SettingsEntry>) {
+private fun SettingsCardFrame(
+    title: String,
+    itemCount: Int,
+    row: @Composable (index: Int, compact: Boolean) -> Unit
+) {
     val compact = rememberIsWatchWindow()
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
@@ -391,29 +400,9 @@ internal fun SettingsGroup(title: String, items: List<SettingsEntry>) {
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.14f))
         ) {
             Column {
-                items.forEachIndexed { index, item ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(if (compact) 56.dp else 60.dp)
-                            .clickable(onClick = item.onClick)
-                            .padding(horizontal = if (compact) 12.dp else 16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier.width(24.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(item.symbol, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-                        }
-                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                            Text(item.title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(item.subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                        Text("›", fontSize = 24.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f))
-                    }
-                    if (index != items.lastIndex) {
+                repeat(itemCount) { index ->
+                    row(index, compact)
+                    if (index != itemCount - 1) {
                         HorizontalDivider(
                             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f),
                             modifier = Modifier.padding(start = 52.dp)
@@ -421,6 +410,34 @@ internal fun SettingsGroup(title: String, items: List<SettingsEntry>) {
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+internal fun SettingsGroup(title: String, items: List<SettingsEntry>) {
+    SettingsCardFrame(title, items.size) { index, compact ->
+        val item = items[index]
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(if (compact) 56.dp else 60.dp)
+                .clickable(onClick = item.onClick)
+                .padding(horizontal = if (compact) 12.dp else 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier.width(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(item.symbol, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                Text(item.title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(item.subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Text("›", fontSize = 24.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f))
         }
     }
 }
@@ -436,53 +453,31 @@ internal data class SettingsToggleEntry(
 /** 与 SettingsGroup 同款卡片的开关设置组；整行可点切换。 */
 @Composable
 internal fun SettingsToggleGroup(title: String, items: List<SettingsToggleEntry>) {
-    val compact = rememberIsWatchWindow()
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(
-            title.uppercase(),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 4.dp)
-        )
-        Surface(
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
-            shape = MaterialTheme.shapes.medium,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.14f))
+    SettingsCardFrame(title, items.size) { index, compact ->
+        val item = items[index]
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(if (compact) 56.dp else 60.dp)
+                .clickable { item.onCheckedChange(!item.checked) }
+                .padding(horizontal = if (compact) 12.dp else 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Column {
-                items.forEachIndexed { index, item ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(if (compact) 56.dp else 60.dp)
-                            .clickable { item.onCheckedChange(!item.checked) }
-                            .padding(horizontal = if (compact) 12.dp else 16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier.width(24.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(item.symbol, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-                        }
-                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                            Text(item.title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(item.subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                        Switch(
-                            checked = item.checked,
-                            onCheckedChange = item.onCheckedChange
-                        )
-                    }
-                    if (index != items.lastIndex) {
-                        HorizontalDivider(
-                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.20f),
-                            modifier = Modifier.padding(start = 52.dp)
-                        )
-                    }
-                }
+            Box(
+                modifier = Modifier.width(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(item.symbol, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                Text(item.title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(item.subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Switch(
+                checked = item.checked,
+                onCheckedChange = item.onCheckedChange
+            )
         }
     }
 }

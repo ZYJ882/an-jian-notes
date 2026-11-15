@@ -78,9 +78,6 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
@@ -111,6 +108,8 @@ import com.example.anjiannotes.ui.extractLinkAt
 import com.example.anjiannotes.ui.findSearchMatchRanges
 import com.example.anjiannotes.ui.linkifyPlainText
 import com.example.anjiannotes.ui.searchHighlightColors
+import com.example.anjiannotes.ui.drawScrollbarThumb
+import com.example.anjiannotes.ui.scrollbarThumbGeometry
 import com.example.anjiannotes.ui.theme.motionSpec
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -476,6 +475,14 @@ internal fun NoteDetailPage(
         searchActiveOrdinal = ((searchActiveOrdinal + step) % searchTotal + searchTotal) % searchTotal
     }
 
+    // 「关闭正文搜索」的单一决策点：系统返回、🔍 按钮、搜索栏 × 三条入口共用，
+    // 保证收起、清空查询、命中序号归零始终作为一个整体动作，不会各自漂移。
+    fun closeDetailSearch() {
+        searchVisible = false
+        searchQuery = ""
+        searchActiveOrdinal = 0
+    }
+
     fun toggleDetailMode() {
         if (detailMode == DetailMode.PREVIEW) {
             enterEdit(InlineEditTarget.CONTENT)
@@ -509,16 +516,13 @@ internal fun NoteDetailPage(
     val latestFinalizeAndLeave by rememberUpdatedState(::finalizeAndLeave)
     // 系统返回分层回退：预览搜索栏展开时先收起搜索并清空查询（与 🔍 按钮的关闭
     // 行为一致），专注阅读时先恢复普通阅读，两者都不满足才最终确认离开（自动保存
-    // 后回列表）；第二次返回才真正离开笔记。
+    // 后回列表）；第二次返回才真正离开笔记。优先级由纯函数 resolveDetailBackAction
+    // 统一给出（见 BackNavigation.kt），与关闭动作 closeDetailSearch 一起被单测固化。
     BackHandler(enabled = true) {
-        when {
-            searchVisible -> {
-                searchVisible = false
-                searchQuery = ""
-                searchActiveOrdinal = 0
-            }
-            focusMode -> focusMode = false
-            else -> latestFinalizeAndLeave(false)
+        when (resolveDetailBackAction(searchVisible, focusMode)) {
+            DetailBackAction.CLOSE_SEARCH -> closeDetailSearch()
+            DetailBackAction.EXIT_FOCUS -> focusMode = false
+            DetailBackAction.LEAVE -> latestFinalizeAndLeave(false)
         }
     }
 
@@ -583,11 +587,9 @@ internal fun NoteDetailPage(
                     if (detailMode == DetailMode.PREVIEW && !focusMode) {
                         TextButton(
                             onClick = {
-                                searchVisible = !searchVisible
-                                if (!searchVisible) {
-                                    searchQuery = ""
-                                    searchActiveOrdinal = 0
-                                }
+                                // 关闭走单一决策点，与系统返回、搜索栏 × 行为一致；
+                                // 展开仅置位开关，查询与命中序号保持不变。
+                                if (searchVisible) closeDetailSearch() else searchVisible = true
                             },
                             modifier = Modifier.size(48.dp)
                         ) {
@@ -690,11 +692,7 @@ internal fun NoteDetailPage(
                     matchTotal = searchTotal,
                     onPrevious = { moveSearchMatch(-1) },
                     onNext = { moveSearchMatch(1) },
-                    onClose = {
-                        searchVisible = false
-                        searchQuery = ""
-                        searchActiveOrdinal = 0
-                    },
+                    onClose = { closeDetailSearch() },
                     modifier = Modifier.fillMaxWidth().padding(horizontal = screenHorizontalPadding(), vertical = 4.dp)
                 )
             }
@@ -1278,14 +1276,11 @@ internal fun DraggableNativeEditorScrollbar(
     ) {
         // 仅引用版本号以保证原生滚动回调触发后重新绘制滑条位置。
         if (scrollVersion < 0 || !canScroll) return@Canvas
-        val actualThumbHeight = thumbHeightPx.coerceAtMost(size.height)
         val scrollFraction = (editor.scrollY.toFloat() / scrollRange).coerceIn(0f, 1f)
-        val thumbY = (size.height - actualThumbHeight) * scrollFraction
-        drawRoundRect(
+        drawScrollbarThumb(
             color = thumbColor.copy(alpha = if (dragging) 0.72f else 0.52f),
-            topLeft = Offset(size.width - thumbWidthPx, thumbY),
-            size = Size(thumbWidthPx, actualThumbHeight),
-            cornerRadius = CornerRadius(thumbWidthPx, thumbWidthPx)
+            thumbWidth = thumbWidthPx,
+            geometry = scrollbarThumbGeometry(size.height, thumbHeightPx, scrollFraction)
         )
     }
 }
@@ -1332,16 +1327,11 @@ internal fun DraggableDetailScrollbar(
     ) {
         if (!canScroll || (!scrollState.isScrollInProgress && !dragging)) return@Canvas
 
-        val viewportHeight = size.height
-        val actualThumbHeight = thumbHeightPx.coerceAtMost(viewportHeight)
         val scrollFraction = (scrollState.value.toFloat() / scrollState.maxValue).coerceIn(0f, 1f)
-        val thumbY = (viewportHeight - actualThumbHeight) * scrollFraction
-
-        drawRoundRect(
+        drawScrollbarThumb(
             color = thumbColor.copy(alpha = 0.52f),
-            topLeft = Offset(size.width - thumbWidthPx, thumbY),
-            size = Size(thumbWidthPx, actualThumbHeight),
-            cornerRadius = CornerRadius(thumbWidthPx, thumbWidthPx)
+            thumbWidth = thumbWidthPx,
+            geometry = scrollbarThumbGeometry(size.height, thumbHeightPx, scrollFraction)
         )
     }
 }

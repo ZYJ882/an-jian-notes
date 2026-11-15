@@ -62,9 +62,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
@@ -83,6 +80,8 @@ import com.example.anjiannotes.ui.contentMaxWidth
 import com.example.anjiannotes.ui.contentWidthCap
 import com.example.anjiannotes.ui.drawerMaxWidth
 import com.example.anjiannotes.ui.listPaneWidth
+import com.example.anjiannotes.ui.drawScrollbarThumb
+import com.example.anjiannotes.ui.scrollbarThumbGeometry
 import com.example.anjiannotes.ui.theme.motionSpec
 import java.util.Date
 import kotlinx.coroutines.launch
@@ -572,14 +571,10 @@ internal fun DraggableNoteListScrollbar(
             !listState.canScrollForward -> 1f
             else -> estimatedFraction
         }
-        val actualThumbHeight = thumbHeightPx.coerceAtMost(viewportHeight)
-        val thumbY = (viewportHeight - actualThumbHeight) * scrollFraction
-
-        drawRoundRect(
+        drawScrollbarThumb(
             color = thumbColor,
-            topLeft = Offset(size.width - thumbWidthPx, thumbY),
-            size = Size(thumbWidthPx, actualThumbHeight),
-            cornerRadius = CornerRadius(thumbWidthPx, thumbWidthPx)
+            thumbWidth = thumbWidthPx,
+            geometry = scrollbarThumbGeometry(viewportHeight, thumbHeightPx, scrollFraction)
         )
     }
 }

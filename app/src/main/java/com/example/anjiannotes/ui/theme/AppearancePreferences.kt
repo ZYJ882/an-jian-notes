@@ -17,7 +17,7 @@ enum class AppearanceMode(val key: String, val label: String) {
 
 /** 轻量持久化外观偏好；默认跟随系统，写入后立即驱动 Compose 主题重组。 */
 class AppearancePreferences(context: Context) {
-    private val preferences = context.applicationContext.getSharedPreferences("appearance_preferences", Context.MODE_PRIVATE)
+    private val preferences = context.applicationContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     private val mutableMode = MutableStateFlow(AppearanceMode.fromKey(preferences.getString(KEY_MODE, null)))
 
     val mode: StateFlow<AppearanceMode> = mutableMode.asStateFlow()
@@ -28,6 +28,7 @@ class AppearancePreferences(context: Context) {
     }
 
     private companion object {
+        const val PREFERENCES_NAME = "appearance_preferences"
         const val KEY_MODE = "theme_mode"
     }
 }

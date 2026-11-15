@@ -2,6 +2,103 @@
 
 所有可感知的界面与功能变化都会记录在这里。格式参考「 Keep a Changelog 」，版本号遵循 语义化版本（主版本.次版本.修订号）。
 
+## v2.18.2 — 2026-11-15
+
+代码结构优化：把四类「同一套逻辑散落在多处各自维护」的重复实现收口为单一实现，并把滚动条几何规则固化为可单元测试的纯函数契约。**行为零变化**——不改任何界面文案、颜色、尺寸、间距、动画、数据格式、备份／WebDAV 协议、返回层级与键盘避让规则。属于 SemVer Patch 修订：纯内部重构 + 契约测试，无新功能、无可感知行为变化（沿用 v2.16.5 优化代码／v2.16.6 优化性能／v2.16.7 优化动画／v2.18.1 操作逻辑一致性优化均记 Patch 的项目惯例）。
+
+### 1. 需求解析与审查边界
+
+| 项 | 结论 |
+|---|---|
+| 基线 | v2.18.1（versionCode 134），基于上传的 v2.18.0 优化链 |
+| 目标 | 优化代码：消除重复实现、统一命名约定、固化可回归契约 |
+| 边界 | 只做可静态判定为等价的收口；不触碰任何可感知行为 |
+| 版本 | v2.18.2（versionCode 135），Patch |
+| 交付 | 仅完整干净源码压缩包，不构建 APK/AAB |
+
+上一版刚把返回状态机逐层适配完成，且沙箱无法运行 Kotlin 编译与真机验证，因此本版不引入任何新的运行时机制、不改签名语义、不改调度时序，只做「同一份代码只写一遍」的结构整理。
+
+### 2. 优化内容（单一实现清单）
+
+| 用户不可见的重复逻辑 | 收口前 | 收口后 |
+|---|---|---|
+| WebDAV 任务启动守卫（`compareAndSet` + 忙碌提示 + `launch`） | 3 处复制 | `launchWebDavTask()` |
+| 滚动条滑块几何与绘制 | 3 处 Canvas 各写一遍 | `scrollbarThumbGeometry()` + `drawScrollbarThumb()` |
+| 设置页 `Scaffold`／`TopAppBar` 骨架 | 3 页逐页复制 | `SettingsPageScaffold()` |
+| 设置分组卡片外壳与行间分隔线判定 | 2 个 Group 各写一遍 | `SettingsCardFrame()` |
+| 主题偏好的 SharedPreferences 文件名 | 3 处裸字面量 | 各自 `PREFERENCES_NAME` 常量 |
+
+- **WebDAV 任务守卫**（`NotesViewModel.kt`）：新增 `private fun launchWebDavTask(task, onFailure, block)`。`testWebDav`／`syncWebDav` 以 `BACKUP`、`previewWebDavRestore` 以 `RESTORE` 进入同一入口；`compareAndSet` 仍在调用线程同步抢占，抢占失败仍同步回报「已有 WebDAV 任务正在执行」，成功后仍在同一 `viewModelScope.launch` 内执行 `block`。三个任务各自的 `try/catch/finally` 与状态复位时机逐字保留（预览态成功时保持 `RESTORE` 直到确认／取消，备份态在 `finally` 复位），状态机语义不变。
+- **滚动条几何与绘制**（新增 `ui/ScrollbarSupport.kt`）：把「高度受视口封顶 → 比例钳制 → 线性定位」抽为纯函数 `scrollbarThumbGeometry()`，把三处逐字相同的 `drawRoundRect` 抽为 `DrawScope.drawScrollbarThumb()`。显式规则：① 高度 = `min(thumbHeight, viewportHeight)`；② 比例钳制在 `[0,1]`；③ `top = (viewportHeight - 高度) × 比例`。三处调用方仍各自决定颜色（拖动态 0.72／常态 0.52／列表实色由外层 `graphicsLayer` 淡出）与滚动比例来源，`size.height` 与 `viewportHeight` 的传值逐点对齐。
+- **设置页骨架**（`SettingsPages.kt`）：`SettingsPageScaffold(title, onBack, content)` 统一 `containerColor`、`TopAppBar` 的标题字重、返回按钮与背景色；三页只传标题与内容 lambda，原 `{ padding -> ... }` 内容体逐字保留。
+- **设置分组卡片**（`SettingsPages.kt`）：`SettingsCardFrame(title, itemCount, row)` 统一分组标题、圆角描边 `Surface`、行容器与分隔线。`SettingsGroup`／`SettingsToggleGroup` 仅保留各自的「行尾控件 + 点击行为」。等价性：原 `items.forEachIndexed` + `index != items.lastIndex` 改为 `repeat(itemCount)` + `index != itemCount - 1`，因 `items.lastIndex == items.size - 1`，且空列表时两者都不产生行；`compact` 由外壳计算后传入各行，取值仍来自 `rememberIsWatchWindow()`。
+- **偏好命名统一**：`AppearancePreferences`／`FontPreferences`／`MotionPreferences` 增加 `PREFERENCES_NAME` 常量，与 `data` 层三个偏好文件写法一致；常量值与原字面量完全相同，SharedPreferences 文件名不变，已有用户数据不受影响。
+
+### 3. 新增文件
+
+| 文件 | 作用 |
+|---|---|
+| `app/src/main/java/com/example/anjiannotes/ui/ScrollbarSupport.kt` | `ScrollbarThumbGeometry` 数据类 + 几何纯函数 + `DrawScope` 绘制扩展 |
+| `app/src/test/java/com/example/anjiannotes/ui/ScrollbarGeometryTest.kt` | 6 个用例固化几何契约 |
+
+### 4. 测试
+
+新增 `ScrollbarGeometryTest`：覆盖高度封顶、比例钳制（越界输入）、起点／中点／终点位置、零高度视口。既有 16 个测试文件不受影响；WebDAV 守卫与设置骨架因涉及 `MutableStateFlow`／Compose 组合树，采用逐点 diff 静态核对而非单测。
+
+### 5. 评估后有意保留原状的方向（透明边界）
+
+| 候选 | 保留原因 |
+|---|---|
+| `Markdown.kt` 14 处回调透传打包为 context 对象 | 会把 8 个独立 lambda 参数变为一个数据类，改变 Compose 稳定性判定与 skip／重组范围；在无法编译验证的前提下可能回退 v2.16.6 的性能优化，风险高于收益 |
+| 备份 JSON 键全量常量化 | JSON／TXT `key=value`／YAML Front Matter 三套格式键名并不一致（`isPinned` 对 `pinned` 等），替换面约 60 处且需跨格式分组，本版按零风险边界不做 |
+| 长文 `MarkdownPreview` 改 `LazyColumn` | 属结构性重写，会改变阅读位置恢复与搜索命中滚动行为，留待独立版本 |
+| 其余短对话框在手表上的 280dp 窄卡片 | 属可感知布局变化，需真机逐设备确认 |
+
+### 6. 验证与兼容性
+
+- **静态验证**：全项目改动文件括号／花括号词法清洗后配平 0 问题；未使用 import 0；基线 vs 新版的字符串字面量集合 **812 个、零增零减**（文案、键名、偏好文件名全部未变）；卡片骨架在 0／1／2／3／5 项下的行数与分隔线数逐项一致；滑块几何公式 8 组采样（含边界）与收口前逐值相等；7 个既有源码文件 + 2 个新增文件 + 版本号／日志逐个 diff 审阅，无计划外改动。
+- **行为等价**：三处守卫的目标态、抢占失败路径、异常捕获与复位时机；三处滑块的颜色／宽度／视口高度传值；三个设置页的标题与内容体；两个分组的行内容与点击行为，均逐点核对一致。
+- **兼容性**：`versionCode 135 / versionName 2.18.2`；备份格式、WebDAV 清单、SharedPreferences 文件名、动画档位持久化键均未变化，可从 v2.18.1 直接覆盖安装。
+- **局限（如实告知）**：沙箱仍无法运行 Kotlin 编译／KSP 与真机测试（历轮同此局限），本版结论基于静态等价验证；Compose 重组范围、真机滚动条观感与 WebDAV 任务的协程时序仍需本地构建后确认。不构建安装包，仅交付完整干净源码压缩包。
+
+## v2.18.1 — 2026-11-14
+
+操作逻辑一致性优化：把「同一个用户动作散落在多条触发路径上各自维护」的状态转移收口到单一决策点，并把系统返回的层级优先级固化为可单元测试的显式契约。**行为零变化**——不改 v2.18.0 刚适配的返回层级顺序、编辑/预览两段式返回、详情页「←」箭头与系统返回的有意差异，也不触碰任何动画、数据、备份与 WebDAV 格式。属于 SemVer Patch 修订：纯内部优化 + 契约测试，无新功能、无可感知行为变化（沿用 v2.16.5 优化代码 / v2.16.6 优化性能 / v2.16.7 优化动画均记 Patch 的项目惯例）。
+
+### 动机与审查边界
+
+v2.18.0 新增的系统返回逐级回退是一套刚逐层声明、经多形态适配的操作状态机（5 处 `BackHandler` + 详情离开令牌 + 预测性返回）。在缺少具体现象、且沙箱无法真机运行验证的前提下，擅自改动任何可感知行为都可能推翻刚适配好的交互习惯。因此本版只做一类客观、等价、可静态判定的优化：**消除同一动作的多入口重复实现**，让「系统返回 / 界面按钮 / 关闭图标」三条入口共用同一状态转移，杜绝将来新增入口时的行为漂移。
+
+### 优化内容
+
+- **正文搜索「关闭」收口**：`NoteDetailPage` 新增 `closeDetailSearch()`（收起 + 清空查询 + 命中序号归零），系统返回、右上角 🔍、搜索栏 × 三处由原先各自手写三行赋值改为共用。🔍 由 toggle 明确拆为「展开仅置位 / 关闭走决策点」。
+- **列表搜索「关闭」收口**：`NotesApp` 新增 `closeListSearch()`（收起 + 清空关键词 + 退出全局搜索），系统返回与右上角 × 共用；「×」按钮由 toggle 拆为「展开进全局搜索 / 关闭走决策点」。
+- **双栏 pane 清理收口**：新增 `clearDetailPaneSelection()`（选中态 + 离开意图 + 令牌一并归零），批量删除与单条删除确认两处字面重复的三连复位共用。
+- **返回优先级显式化（单一事实来源）**：新增顶层纯函数文件 `BackNavigation.kt`——
+  - `resolveDetailBackAction(searchVisible, focusMode)` 返回 `DetailBackAction`（`CLOSE_SEARCH / EXIT_FOCUS / LEAVE`），把「搜索 > 专注 > 离开」从内联 `when` 抽成可验证契约，详情页 `BackHandler` 改用它分派；
+  - `settingsBackTarget(page)` 统一「外观/动画 → 设置 → 列表」，系统返回 `BackHandler` 与三个设置页自带的返回箭头共用同一决策点，层级定义不再分散在四处。
+  这两者与项目既有的 `isNewDraftEmpty` / `shouldForceFinalDraftSave` 退出策略同源。
+
+### 单一决策点清单
+
+| 用户动作 | 收口前入口数 | 收口后 |
+|---|---|---|
+| 关闭正文搜索栏 | 3（系统返回 / 🔍 / ×） | `closeDetailSearch()` |
+| 关闭列表搜索栏 | 2（系统返回 / ×） | `closeListSearch()` |
+| 清空双栏选中详情 | 2（批量删除 / 删除确认） | `clearDetailPaneSelection()` |
+| 详情页返回层级判定 | 内联 `when`、不可测 | `resolveDetailBackAction()` 纯函数 |
+| 设置层级回退目标 | 4（系统返回 + 3 个箭头） | `settingsBackTarget()` 纯函数 |
+
+### 测试
+
+新增 `BackNavigationTest`：覆盖返回优先级全组合（含「搜索态残留 + 专注」时搜索优先）、设置层级逐级回退、非设置页回落到列表——把返回操作逻辑固化为可回归契约。既有 15 个测试文件不受影响。
+
+### 验证与兼容性
+
+- 静态验证：全项目括号/花括号配平 0 问题、未使用 import 0；逐点核对每个决策点与原内联逻辑行为等价（含 🔍/× 的 toggle 语义、设置三页回退目标、纯函数分支穷尽）。
+- 沙箱无法运行 Kotlin 编译与真机测试（历轮同此局限）；本版改动为局部函数收口 + 等价纯函数 + 新增测试，不涉及签名、数据结构或导航时序变更。
+- 升级直接覆盖安装即可，无数据迁移。
+
 ## v2.18.0 — 2026-11-03
 
 系统返回手势全面适配：手机、手表、平板与折叠屏上，任何页面、任何二级状态按系统返回（边缘侧滑或三键返回；手表为侧键）都是**逐级回退**——先关搜索栏、抽屉、多选、菜单、对话框，再退设置层级，最后才回到列表；只有停在根页面（列表、无任何浮层）时按返回才会退出应用。此前有 4 处二级状态没有接管返回事件，按返回会**直接退出应用**：动画设置页、列表顶部搜索栏、平板双栏右栏的选中详情、笔记预览的正文搜索栏。本版全部补齐，并核对每一层的接管顺序，属于 SemVer Minor 修订：新增系统返回手势适配这一行为能力，不触碰笔记数据库、备份与 WebDAV 格式；手机 / 手表 / 平板全形态一致生效。

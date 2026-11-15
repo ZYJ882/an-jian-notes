@@ -309,6 +309,22 @@ private fun NotesApp(
         else -> activeFolderId
     }
 
+    // 「关闭列表顶部搜索」的单一决策点：系统返回与右上角 × 共用，保证收起、
+    // 清空关键词、退出全局搜索始终作为一个整体动作，不会各自漂移。
+    fun closeListSearch() {
+        showSearch = false
+        viewModel.setSearchQuery("")
+        if (isGlobalSearch) viewModel.closeGlobalSearch()
+    }
+
+    // 「清空双栏选中详情」的单一决策点：批量删除、单条删除确认命中当前 pane
+    // 笔记时共用，选中态与离开意图/令牌一并归零，避免残留令牌重复触发保存。
+    fun clearDetailPaneSelection() {
+        selectedDetail = null
+        pendingDetailIntent = null
+        detailLeaveRequest = 0
+    }
+
     /** 打开详情目标：单栏走整页导航；双栏先冲刷当前详情的未保存内容再切换选中。 */
     fun openDetailTarget(target: AppPage.Detail) {
         if (!twoPane) {
@@ -579,22 +595,18 @@ private fun NotesApp(
     BackHandler(enabled = twoPane && page is AppPage.List && selectedDetail != null) {
         detailLeaveRequest += 1
     }
-    // 2) 设置层级：动效 / 外观 → 设置 → 列表。
+    // 2) 设置层级：动效 / 外观 → 设置 → 列表。目标由纯函数 settingsBackTarget
+    //    统一给出（见 BackNavigation.kt），与各设置页返回箭头共用同一决策点。
     BackHandler(
         enabled = page is AppPage.Settings || page is AppPage.Appearance || page is AppPage.Motion
     ) {
-        page = when {
-            page is AppPage.Appearance || page is AppPage.Motion -> AppPage.Settings
-            else -> AppPage.List
-        }
+        page = settingsBackTarget(page)
     }
     // 3) 列表页搜索栏展开：返回先收起搜索并清空查询。抽屉与多选的返回处理注册在
     //    列表页内部（组合更深、优先级更高），抽屉开着或多选时优先关抽屉/退多选；
     //    顶部创建菜单与各对话框是弹出层，返回事件由其自身窗口消费，不经过这里。
     BackHandler(enabled = page is AppPage.List && showSearch) {
-        showSearch = false
-        viewModel.setSearchQuery("")
-        if (isGlobalSearch) viewModel.closeGlobalSearch()
+        closeListSearch()
     }
 
     // 双栏与整页随窗口互转：缩窄（旋转/退出分屏/合上折叠屏）把选中态提升为整页导航，
@@ -619,12 +631,12 @@ private fun NotesApp(
             showSearch = showSearch,
             globalSearch = isGlobalSearch,
             onSearchToggle = {
-                showSearch = !showSearch
-                if (!showSearch) {
-                    viewModel.setSearchQuery("")
-                    if (isGlobalSearch) viewModel.closeGlobalSearch()
+                // 关闭走单一决策点，与系统返回行为一致；展开时进入全局搜索
+                // （面向全部笔记，不受当前收藏夹限制，收藏夹仍可经抽屉单独浏览）。
+                if (showSearch) {
+                    closeListSearch()
                 } else {
-                    // 顶部搜索面向全部笔记，不受当前收藏夹限制；收藏夹仍可通过抽屉单独浏览。
+                    showSearch = true
                     viewModel.openGlobalSearch()
                 }
             },
@@ -677,9 +689,7 @@ private fun NotesApp(
                     // 窗口内完成，实际不可达，故不为它引入第二套取消机制。
                     val selectedId = selectedDetail?.note?.id
                     if (selectedId != null && selectedId in ids) {
-                        selectedDetail = null
-                        pendingDetailIntent = null
-                        detailLeaveRequest = 0
+                        clearDetailPaneSelection()
                     }
                 }
             },
@@ -744,7 +754,7 @@ private fun NotesApp(
             } else null
         )
         AppPage.Settings -> SettingsPage(
-            onBack = { page = AppPage.List },
+            onBack = { page = settingsBackTarget(currentPage) },
             onOpenAppearance = { page = AppPage.Appearance },
             appearanceMode = appearanceMode,
             onOpenMotion = { page = AppPage.Motion },
@@ -759,14 +769,14 @@ private fun NotesApp(
             appearanceMode = appearanceMode,
             noteFont = noteFont,
             customFontPath = customFontPath,
-            onBack = { page = AppPage.Settings },
+            onBack = { page = settingsBackTarget(currentPage) },
             onSelect = onAppearanceChange,
             onFontSelect = onFontChange,
             onCustomFontPath = onCustomFontPath
         )
         AppPage.Motion -> MotionSettingsPage(
             motionLevel = motionLevel,
-            onBack = { page = AppPage.Settings },
+            onBack = { page = settingsBackTarget(currentPage) },
             onSelect = onMotionLevelChange
         )
         is AppPage.Detail -> NoteDetailPage(
@@ -810,9 +820,7 @@ private fun NotesApp(
                 // 展示已删除内容（且后续编辑会经 upsert 复活该行）。残留竞态与
                 // 批量删除同一论证：删除前 700ms 内的迟到保存实际不可达。
                 if (selectedDetail?.note?.id == note.id) {
-                    selectedDetail = null
-                    pendingDetailIntent = null
-                    detailLeaveRequest = 0
+                    clearDetailPaneSelection()
                 }
             }
         )
